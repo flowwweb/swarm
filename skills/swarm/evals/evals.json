@@ -865,7 +865,7 @@
         "Substantive implementation, asset generation, and task-level proof have explicit non-CTRL work owners",
         "CTRL retains outcome lock, shaping, priority, collision and ownership control, composed portfolio acceptance, and shared release-surface leases",
         "A deployable LEAD owns provider/deploy control, rollback receipt, and production proof for its lane",
-        "CTRL delegates edits, including a tiny integration or collision seam, unless CTRL_DIRECT is explicitly justified",
+        "CTRL delegates every edit, including a tiny integration or collision seam; CTRL_DIRECT is retired",
         "The one-line seam has a bounded DOER, TASK, or ASSIST owner",
         "The hierarchy remains fast by delegating a bounded worthwhile seam without creating another authority layer"
       ]
@@ -1179,10 +1179,10 @@
     {
       "id": 90,
       "prompt": "Use SWARM for a one-file copy typo, a medium landing-page implementation, and three mockups for the selected direction. Keep the small-work clause, let bounded control work use subagents when appropriate, have visual work use an efficient Designer skill, and do not let CTRL start producing the mockups.",
-      "expected_output": "Keep the one-file copy typo with CTRL as a low-risk atomic GENERAL direct task when measured coordination overhead exceeds the work. Route the medium implementation to a visible Codex task with a LEAD and DOERs so it can have its own subagents. Route mockup and image-generation work as CTRL_DELEGATED to a visible DESIGNER lane even if the visual slice is small; the DESIGNER owns the candidates and visual proof, and CTRL surfaces the complete decision set, waits for selection, and then delegates implementation. Small bounded GENERAL control work may use a subagent when its measured economics justify it. Any agent may request a task-local approved skill with exact source/version or digest, purpose, scope, and host audit/rollback receipt; the skill does not grant authority. If the Designer lane cannot be materialized, preserve the exact blocker or an explicitly degraded unverified route rather than generating the mockups in a subagent.",
+      "expected_output": "Delegate the one-file copy typo to the smallest separate producer; CTRL coordinates even when measured coordination overhead exceeds the work. Route the medium implementation to a visible Codex task with a LEAD and DOERs so it can have its own subagents. Route mockup and image-generation work as CTRL_DELEGATED to a visible DESIGNER lane even if the visual slice is small; the DESIGNER owns the candidates and visual proof, and CTRL surfaces the complete decision set, waits for selection, and then delegates implementation. Small bounded GENERAL control work may use a subagent when its measured economics justify it. Any agent may request a task-local approved skill with exact source/version or digest, purpose, scope, and host audit/rollback receipt; the skill does not grant authority. If the Designer lane cannot be materialized, preserve the exact blocker or an explicitly degraded unverified route rather than generating the mockups in a subagent.",
       "files": [],
       "assertions": [
-        "The small-work clause still permits a low-risk atomic GENERAL CTRL_DIRECT outcome",
+        "CTRL_DIRECT is retired; the small-work clause routes even a low-risk atomic GENERAL outcome to a separate producer",
         "Small bounded GENERAL CTRL work may use a subagent when its economics justify it",
         "Medium and large CTRL-owned work opens a visible Codex task rather than using a root-level subagent",
         "Mockup and image-generation work cannot enter CTRL_DIRECT merely because it is small",

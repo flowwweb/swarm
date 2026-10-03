@@ -16,6 +16,14 @@ SPEC.loader.exec_module(contract)
 
 
 class SwarmContractTests(unittest.TestCase):
+    def test_lab_and_factory_entrypoints_share_default_ctrl_goal_policy(self):
+        matching=contract.Goal("CTRL","parent","Factory outcome","Accepted blocks","Coordination only","Independent block acceptance")
+        for entry in ("CTRL","Lab","Factory"):
+            self.assertEqual(contract.goal_decision(entry,None,"parent").action,"create")
+            self.assertEqual(contract.goal_decision(entry,matching,"parent").action,"continue")
+            self.assertEqual(contract.goal_decision(entry,None,"parent",goal_controls_available=False).action,"blocked")
+            self.assertEqual(contract.goal_decision(entry,None,"parent",use_goals=False).action,"disabled")
+
     def test_mandatory_roles_are_independent_of_boost(self) -> None:
         self.assertEqual(
             contract.MANDATORY_DURABLE_GOAL_ROLES,

@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "manifest_contract": {
-    "shape": "One Lab is one normal task under its owning CTRL.",
-    "delegation": "The owning CTRL handles delegation. The Lab chooses the roles and methods needed for its goal.",
+    "shape": "One Lab or Factory is one coordinated work unit under its owning CTRL.",
+    "delegation": "CTRL routes the request to the unit coordinator. The coordinator delegates bounded child tasks with independent review.",
     "progress": {
-      "source": "The Lab task's existing blocks.",
+      "source": "The work unit coordinator's existing blocks.",
       "steps": [
         {
           "value": 0.25,
@@ -24,7 +24,7 @@
         }
       ]
     },
-    "custom": "A CTRL may name a new Lab for any focused area and apply this same manifest shape."
+    "custom": "Name a focused unit with its own objective, parent goal, coordinator, bounded tasks and reviewed results."
   },
   "labs": [
     {
@@ -85,8 +85,8 @@
       "id": "build",
       "name": "Build Lab",
       "icon": "git-branch",
-      "summary": "Architect and ship working software.",
-      "outcome": "One integrated increment across architecture, code, integrations, or automation with focused proof.",
+      "summary": "Test architecture and prototypes before committing to a build.",
+      "outcome": "A proven architecture or prototype that resolves the next engineering decision.",
       "suggested_roles": [
         "developer",
         "architect",
@@ -94,9 +94,9 @@
         "reviewer"
       ],
       "guide": [
-        "Frame the increment and acceptance proof.",
-        "Build in small inspectable blocks.",
-        "Integrate the accepted result."
+        "Name the engineering uncertainty and evidence needed.",
+        "Compare small prototypes or bounded technical experiments.",
+        "Return the finding and promote accepted work to a Factory."
       ]
     },
     {
@@ -169,6 +169,26 @@
         "Frame the delivery target and safe operating boundary.",
         "Connect, automate, launch, and observe the smallest complete path.",
         "Verify the live result and recovery route."
+      ]
+    }
+  ],
+  "factories": [
+    {
+      "id": "software",
+      "name": "Software Factory",
+      "icon": "git-branch",
+      "summary": "Build a defined deliverable through bounded tasks.",
+      "outcome": "A working increment with focused tests, independent review and release evidence.",
+      "suggested_roles": [
+        "manager",
+        "developer",
+        "tester",
+        "reviewer"
+      ],
+      "guide": [
+        "Define the deliverable and its acceptance evidence.",
+        "Delegate bounded implementation, test and review tasks.",
+        "Integrate and release the accepted increment."
       ]
     }
   ]

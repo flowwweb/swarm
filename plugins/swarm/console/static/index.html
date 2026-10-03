@@ -74,6 +74,7 @@
             <button class="nav-item is-active" data-view="overview" id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-layout-dashboard"></use></svg></span><b>Overview</b></button>
             <button class="nav-item" data-view="agents" id="tab-agents" role="tab" aria-selected="false" aria-controls="view-agents" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-users"></use></svg></span><b>Agents</b></button>
             <button class="nav-item" data-view="labs" id="tab-labs" role="tab" aria-selected="false" aria-controls="view-labs" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-flask-conical"></use></svg></span><b>Labs</b></button>
+            <button class="nav-item" data-view="factories" id="tab-factories" role="tab" aria-selected="false" aria-controls="view-factories" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-git-branch"></use></svg></span><b>Factories</b></button>
             <button class="nav-item" data-view="review" id="tab-review" role="tab" aria-selected="false" aria-controls="view-review" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-shield-check"></use></svg></span><b>Review</b></button>
             <button class="nav-item" data-view="roles" id="tab-roles" role="tab" aria-selected="false" aria-controls="view-roles" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-list-tree"></use></svg></span><b>Roles</b></button>
             <button class="nav-item" data-view="assets" id="tab-assets" role="tab" aria-selected="false" aria-controls="view-assets" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-image"></use></svg></span><b>Assets</b></button>
@@ -137,9 +138,16 @@
           </div>
         </section>
         <section class="view labs-view" id="view-labs" data-view-panel="labs" role="tabpanel" aria-labelledby="tab-labs" tabindex="0" hidden>
-          <header class="labs-intro"><p>Open frameworks for focused work. CTRL handles delegation.</p></header>
-          <p class="sr-only" id="lab-status" role="status" aria-live="polite">Loading labs</p>
+          <header class="labs-intro"><p>Investigate uncertainty. Explore, measure, and return the finding that changes a decision.</p></header>
+          <p id="lab-status" role="status" aria-live="polite">Loading labs</p>
           <div class="lab-catalog" id="lab-catalog" role="list" aria-label="Lab templates"></div>
+          <section id="lab-instances" aria-label="Started Labs"></section>
+        </section>
+        <section class="view labs-view" id="view-factories" data-view-panel="factories" role="tabpanel" aria-labelledby="tab-factories" tabindex="0" hidden>
+          <header class="labs-intro"><p>Build a defined deliverable. Coordinate bounded implementation, tests, review, and release.</p></header>
+          <p id="factory-status" role="status" aria-live="polite">Loading factories</p>
+          <div class="lab-catalog" id="factory-catalog" role="list" aria-label="Factory templates"></div>
+          <section id="factory-instances" aria-label="Started Factories"></section>
         </section>
         <section class="view roles-view" id="view-roles" data-view-panel="roles" role="tabpanel" aria-labelledby="tab-roles" tabindex="0" hidden>
           <header class="view-head compact-view-head"><div><p class="eyebrow">Role library</p><h2 id="roles-heading" tabindex="-1">Roles</h2></div><p>Reusable role definitions for new work.</p></header>

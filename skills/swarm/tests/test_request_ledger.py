@@ -1,6 +1,7 @@
 from __future__ import annotations
 import importlib.util
 import json
+from dataclasses import replace
 from hashlib import sha256
 import tempfile
 import unittest
@@ -17,13 +18,13 @@ def task(identity="T"):
     artifact=ArtifactIdentity(f"request-{identity}","v1","non-artifact"); path=f"requests/{identity}.receipt"
     contract=DelegationContract(identity,f"Return the exact {identity} request outcome.","D",(path,),artifact,(path,),(ProofClass.SOURCE,),2)
     return Task(identity,"D","creator",1,{},subagent_receipt=f"host:thread:{identity}",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty(),delegation_contract=contract,owning_lead_id="L",goal_id=f"goal-{identity}")
-def delegated_accept(value, identity="T"):
+def delegated_accept(value, identity="T", *, actor=Role.DOER):
     current=value.tasks[identity]; contract=current.delegation_contract
     if current.delegated_return_receipts: return
     file=ArtifactFileEvidence(contract.artifact_paths[0],1,sha256(identity.encode()).hexdigest()); parity=ArtifactParityReceipt.from_files(contract.artifact,(file,))
     evidence=DelegatedEvidence(f"evidence-{identity}",ProofClass.SOURCE,contract.artifact.key(),sha256(f"proof-{identity}".encode()).hexdigest(),"Source request-ledger contract test only.")
     receipt=DelegatedReturnReceipt(f"return-{identity}",identity,contract.owner_id,DelegatedReceiptVerdict.ACCEPT,contract.artifact,"Exact request-ledger owner return.",(evidence,),parity,(),1)
-    value.record_delegated_return(Role.DOER,identity,receipt,actor_id=contract.owner_id)
+    value.record_delegated_return(actor,identity,receipt,actor_id=contract.owner_id)
 def swarm(root):
     value=Swarm(request_lifecycle_ledger=Ledger(root)); value.add_lead(Role.CTRL,"L"); value.add_worker(Role.LEAD,Worker("D","L",1)); value.attach_request_store(root); return value
 def event(value,task_id,request_ids,suffix,kind,proof_prefix="evd",proof_override=""):
@@ -34,6 +35,87 @@ def accepted(value,identity="T"):
     staged=value.stage_request_task(Role.CTRL,task(identity)); decision,_=event(value,identity,(staged.request_id,),f"accept{identity}",CtrlFeedEventKind.DECISION,"usr"); view=bridge.register(value,staged.id,decision,accepted_at=1,due=RequestDue("due-accept",2)); value.activate_accepted_task(Role.LEAD,identity,view.record.id); return view
 
 class RequestLedgerTests(unittest.TestCase):
+    def test_lab_and_factory_opt_out_holders_complete_coordination_without_goal_ids(self):
+        for kind in ("LAB","FACTORY"):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp); value=swarm(root); current=task(kind)
+                current.goal_id=""; current.owner="L"
+                current.delegation_contract=replace(current.delegation_contract,owner_id="L")
+                current.work_unit={"kind":kind,"goal_id":None,"parent_goal_id":None,"parent_unit_task_id":None}
+                before=value.request_store.peek()
+                with self.assertRaisesRegex(Exception,"bound goal ID"):
+                    value.stage_request_task(Role.CTRL,current)
+                self.assertEqual(value.request_store.peek(),before)
+                self.assertNotIn(kind,value.tasks)
+                value.use_goals=False
+                staged=value.stage_request_task(Role.CTRL,current)
+                decision,_=event(value,kind,(staged.request_id,),kind+"intake",CtrlFeedEventKind.DECISION,"usr")
+                view=bridge.register(value,staged.id,decision,accepted_at=1,due=RequestDue("unit-due",2))
+                self.assertIsNone(view.record.goal_id)
+                value.activate_accepted_task(Role.LEAD,kind,view.record.id)
+                self.assertEqual(current.state,TaskState.ACTIVE)
+                replayed=swarm(root); replayed.use_goals=False; replayed.tasks[kind]=current
+                self.assertIsNone(replayed.request_audit(2).records[0].goal_id)
+                self.assertEqual(replayed.request_audit(2).orphaned_ids,())
+                replayed.use_goals=True
+                self.assertEqual(replayed.request_audit(2).orphaned_ids,(view.record.id,))
+                delegated_accept(value,kind,actor=Role.LEAD)
+                review_receipt="rev-unit_"+kind+"000"
+                value.review(Role.REVIEW,kind,ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE),True)
+                result,_=event(value,kind,(view.record.id,),kind+"result",CtrlFeedEventKind.RESULT,proof_override=review_receipt)
+                value.advance_request(Role.LEAD,view.record.id,result,RequestDue("unit-final",4))
+                with self.assertRaises(Exception): value.complete(Role.CTRL,kind,True,True,5,actor_id="CTRL")
+                value.complete(Role.LEAD,kind,True,True,5,actor_id="L")
+                acceptance,_=event(value,kind,(view.record.id,),kind+"accepted",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt)
+                done=value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt)
+                self.assertEqual(done.record.state,RequestState.COMPLETED)
+                self.assertIsNone(done.record.goal_id)
+                self.assertEqual(current.goal_id,"")
+                self.assertIsNone(current.work_unit["goal_id"])
+                self.assertEqual(current.artifacts,{})
+                self.assertEqual(value.request_audit(6).orphaned_ids,())
+                self.assertEqual(value.request_audit(6).unresolved_ids,())
+                self.assertEqual(value.request_watchdog_evidence(6),())
+                self.assertIsNone(value.request_lifecycle_ledger.project_request_lifecycles()["records"][0]["record"]["goal_id"])
+                restarted=swarm(root); restarted.use_goals=False; restarted.tasks[kind]=current
+                self.assertEqual(restarted.request_audit(6).records[0],done.record)
+
+    def test_atomic_request_stays_with_exact_producer_through_completion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); value=Swarm(request_lifecycle_ledger=Ledger(root)); value.attach_request_store(root)
+            current=task(); current.owning_lead_id=""
+            value.start_atomic(Role.CTRL,current)
+            staged=value.stage_request_task(Role.CTRL,current)
+            decision,_=event(value,current.id,(staged.request_id,),"atomicintake",CtrlFeedEventKind.DECISION,"usr")
+            view=bridge.register(value,staged.id,decision,accepted_at=1,due=RequestDue("atomic-due",2))
+            self.assertEqual(view.record.accepted_owner,"D")
+            self.assertEqual(view.record.accepting_route,("D","INDEPENDENT_REVIEW","CTRL"))
+            with self.assertRaises(Exception): value.activate_accepted_task(Role.CTRL,current.id,view.record.id)
+            with self.assertRaises(Exception): value.activate_accepted_task(Role.DOER,current.id,view.record.id,actor_id="other")
+            value.activate_accepted_task(Role.DOER,current.id,view.record.id,actor_id="D")
+            from dataclasses import replace
+            replacement=task("second"); replacement.owning_lead_id=""; replacement.owner="replacement-worker"
+            replacement.delegation_contract=replace(replacement.delegation_contract,owner_id=replacement.owner)
+            value.start_atomic(Role.CTRL,replacement)
+            with self.assertRaisesRegex(Exception,"request ledger blocks this lifecycle change"):
+                value.retire(Role.LEAD,"D",replacement.owner)
+            self.assertEqual((current.owner,current.delegation_contract.owner_id),("D","D"))
+            blocker,_=event(value,current.id,(view.record.id,),"atomicblocker",CtrlFeedEventKind.BLOCKER)
+            value.refresh_blocked_request(Role.DOER,view.record.id,blocker,RequestDue("atomic-retry",4),actor_id="D")
+            delegated_accept(value)
+            review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance","rev-atomic-request000"),),scope=ReviewScope.ACCEPTANCE)
+            value.review(Role.REVIEW,current.id,review,True)
+            result,_=event(value,current.id,(view.record.id,),"atomicresult",CtrlFeedEventKind.RESULT,proof_override="rev-atomic-request000")
+            value.advance_request(Role.DOER,view.record.id,result,RequestDue("atomic-next",6),actor_id="D")
+            value.complete(Role.DOER,current.id,True,True,5,actor_id="D")
+            acceptance,_=event(value,current.id,(view.record.id,),"atomicaccepted",CtrlFeedEventKind.ACCEPTANCE,proof_override="rev-atomic-request000")
+            with self.assertRaises(Exception): value.complete_request(Role.CTRL,view.record.id,acceptance,"rev-atomic-request000")
+            done=value.complete_request(Role.DOER,view.record.id,acceptance,"rev-atomic-request000",actor_id="D")
+            self.assertEqual(done.record.state,RequestState.COMPLETED)
+            audit=value.request_audit(7)
+            self.assertEqual(audit.orphaned_ids,())
+            self.assertEqual(len(audit.records),1)
+
     def test_attachment_preserves_construction_authority_and_rejects_other_roots_without_mutation(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); ledger=Ledger(root)

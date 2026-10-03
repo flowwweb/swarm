@@ -13,12 +13,16 @@ from skills.swarm.runtime import (
     AdapterPlanStatus,
     AdapterRegistry,
     ChatGPTRouteStatus,
+    ArtifactFileEvidence,
     ArtifactIdentity,
+    ArtifactParityReceipt,
     CodexAppServerAdapter,
     ContinuationSnapshot,
     CtrlMode,
+    DelegatedEvidence,
     DelegatedReceiptVerdict,
     DelegatedReturnReceipt,
+    DelegationContract,
     ExecutionAdapter,
     ExecutionAdapterRequest,
     ExecutionConfigGeneration,
@@ -34,6 +38,7 @@ from skills.swarm.runtime import (
     LaneKind,
     LaneMaterialization,
     ProfessionAssignment,
+    ProofClass,
     ReviewEvidence,
     ReviewScope,
     ReviewStrategy,
@@ -1287,11 +1292,20 @@ class ExecutionDispatchLedgerTests(unittest.TestCase):
         runtime.add_worker(Role.LEAD, Worker("worker", "lead", 1))
         task = Task(
             "queue-task", "worker", "creator", 1, {},
-            subagent_receipt="host:thread:queue-task", ctrl_mode=CtrlMode.DIRECT,
+            subagent_receipt="host:thread:queue-task", ctrl_mode=CtrlMode.DELEGATED,
             lane_kind=LaneKind.OTHER, owning_lead_id="lead",
             acceptance_contract=AcceptanceContract(self.artifact, ()),
+            goal_id="goal-queue-delivery",
+            delegation_contract=DelegationContract("queue-task", "Return the exact queue result.", "worker", ("queue-result.txt",), self.artifact, ("queue-result.txt",), (ProofClass.SOURCE,), 20),
         )
         runtime.assign(Role.LEAD, task)
+        content = b"Exact bounded material result."
+        digest = sha256(content).hexdigest()
+        runtime.record_delegated_return(Role.DOER, task.id, replace(
+            self.material_receipt(),
+            evidence=(DelegatedEvidence("queue-source", ProofClass.SOURCE, self.artifact.key(), digest, "Synthetic source evidence for the dispatch lifecycle contract."),),
+            parity=ArtifactParityReceipt.from_files(self.artifact, (ArtifactFileEvidence("queue-result.txt", len(content), digest),)),
+        ), actor_id="worker")
         plan = task.acceptance_contract.proof_plan
         self.assertIsNotNone(plan)
         runtime.review(

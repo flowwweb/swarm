@@ -31,6 +31,7 @@ class DelegatedReturnContractTests(unittest.TestCase):
 
     def assign(self, *, contract=None, work_kind=WorkKind.GENERAL, visual_ownership=VisualOwnership.PRODUCT_EXPERIENCE, profession=None) -> Task:
         task=Task("task","worker","creator",1,{},subagent_receipt="host:thread:task",lane_kind=LaneKind.OTHER,owning_lead_id="lead",acceptance_contract=AcceptanceContract(self.artifact,()),delegation_contract=contract,work_kind=work_kind,visual_ownership=visual_ownership,profession_assignment=profession)
+        task.goal_id="goal-delegation"
         self.swarm.assign(Role.LEAD,task); return task
 
     def parity(self, *, path="artifact.txt") -> ArtifactParityReceipt:

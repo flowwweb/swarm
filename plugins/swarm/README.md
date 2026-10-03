@@ -33,7 +33,7 @@ flowchart TB
   C("🐙<br/>CTRL<br/>Objective, routing, integration")
   C -->|durable outcome boundary| L("🧭<br/>PROFESSION LEAD<br/>Owns one lane")
   L -->|bounded artifact when useful| D("🛠️<br/>PROFESSION DOER<br/>Owns one artifact")
-  C -.->|one low-risk atomic GENERAL outcome| X("CTRL_DIRECT<br/>No separate lane")
+  C -->|small bounded production| D
   C -.->|bounded GENERAL inspection or check| S("SUBAGENT<br/>No durable ownership")
 
   classDef ctrl fill:#fff1ed,stroke:#ff5b45,color:#172033,stroke-width:3px;
@@ -43,7 +43,7 @@ flowchart TB
   class C ctrl;
   class L lead;
   class D doer;
-  class X,S internal;
+  class S internal;
   linkStyle default stroke:#36aeca,stroke-width:1.5px;
 ```
 
@@ -56,8 +56,8 @@ titles are rejected before creation.
 - **LEAD** appears when an outcome needs durable ownership, integration,
   resumption, or its own acceptance route.
 - **DOER** appears when a bounded artifact benefits from an explicit producer.
-- **CTRL_DIRECT** is limited to one low-risk atomic `GENERAL` outcome on one
-  mutable surface with no external side effect.
+- **CTRL_DIRECT** is retired. CTRL is the switchboard operator; every build,
+  fix, test, review, asset and release goes to an assigned owner.
 - **Bounded subagents** may handle small `GENERAL` inspection, search,
   formatting, or a focused check inside their accountable owner. They never own
   a durable lane, review, handoff, or acceptance.
@@ -73,7 +73,7 @@ SWARM does not turn every request into a fleet.
 - A small or medium assignment on one surface can stay inside the current task and use bounded subagents.
 - A large, parallel, resumable, isolated, or independently accepted outcome earns a visible task lane.
 - A task lane can use its own subagents when that reduces overhead without hiding ownership.
-- Small `CTRL_DIRECT` work remains available for one low-risk atomic general outcome; design, mockup, and image-generation work goes to a DESIGNER lane even when it is small.
+- Small work goes to the smallest separate producer. Design, mockup, and image-generation work retains a visible Designer or Artist lane even when it is small.
 - Usage limits constrain the available route; they do not decide the structure when normal capacity is available.
 
 This keeps quick work quick while giving larger objectives durable lanes that can progress in parallel.

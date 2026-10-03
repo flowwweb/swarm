@@ -143,7 +143,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `monitoring.default_review_horizon_minutes` | Default event-driven goal review horizon | 1-60; default 30 |
 | `monitoring.max_review_horizon_minutes` | Hard ceiling for a locally selected review horizon | 1-60; default 60 |
 | `monitoring.small_task_review_horizon_minutes` | Preferred small-task horizon | 1-20; default 15 |
-| `coordination.ctrl_direct_horizon_minutes` | Maximum measurable CTRL_DIRECT window | 1-60; default 20 |
+| `coordination.ctrl_direct_horizon_minutes` | Legacy compatibility setting; grants no CTRL production | 1-60; default 20 |
 | `recovery.max_attempts` | Legacy owner recovery budget; WATCHDOG never consumes it | exactly 1; non-disableable |
 | `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
 | `lifecycle.pin_created_tasks` | Explicit opt-in to pin a newly created or adopted top-level CTRL through the host; fresh pinned membership and order must be verified before predecessor archive. Other roles and existing user pins stay untouched | boolean; default false |
@@ -419,18 +419,15 @@ handoff would add no value. Do not prebuild a three-by-three tree. `portfolio.ma
 packaged defaults, eight is the exceptional internal-subagent ceiling while
 three is the normal shape.
 
-## CTRL direct-work economics and role skills
+## Delegation economics and role skills
 
-The direct-work horizon is an economics clause, not a producer-role override.
-One low-risk atomic `GENERAL` outcome may remain with CTRL when measured
-coordination overhead is greater than the work. `DESIGN`, `IMAGEGEN`, mockups,
-and image edits require a visible Designer or Artist lane, selected by typed
-product-experience versus expressive-art ownership, even when they are small; never make a
-visual task direct merely to avoid startup cost.
-Small bounded `GENERAL` work may use a subagent under CTRL or a LEAD when its
-measured economics favor that route. Medium and large work opens a visible
-Codex task; its LEAD/DOER lanes may then use their own subagents. Visual work
-always remains a visible assigned visual-profession task.
+CTRL coordinates only. The retained direct-work horizon setting is legacy
+compatibility data and never permits production. Small bounded `GENERAL` work
+uses a separate producer; measured economics select the smallest eligible
+LEAD/DOER or permitted bounded subagent route. Medium and large work opens a
+visible Codex task. Visual work retains a visible Designer or Artist lane,
+selected by product-experience versus expressive-art ownership. If a required
+owner cannot be reached, retain the exact blocker instead of producing in CTRL.
 
 Any agent may request a skill for its assigned role. Bind the exact skill
 source and version/digest, the reason it improves the lane, the destination
@@ -455,7 +452,7 @@ See [monitoring.md](monitoring.md) for batching, stale-state, timing, and Boost
 
 Users can say "give feedback on SWARM" or "report a SWARM bug" at any time. SWARM
 returns a compact portable report and, when enabled, a privacy-safe diagnostic
-snapshot. It never gathers telemetry or sends feedback automatically. A
+snapshot. It never sends feedback automatically. Optional product telemetry sends bounded metadata to Flowwweb only after the user enables `telemetry.enabled`; it excludes prompts, responses, code, paths and personal identifiers. A
 configured destination is contacted only after a direct instruction to submit
 the visible packet. Do not store tokens, credentials, or private routing data
 in `feedback.destination`. Set `feedback.prompt_on_close = true` to allow one optional

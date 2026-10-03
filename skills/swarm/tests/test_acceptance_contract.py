@@ -10,6 +10,13 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactParityReceipt, ChangedSurface, ChangedSurfaceKind, CtrlSurfaceKind, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, DependencyReach, GateReceipt, IncidentLedger, InvariantError, LaneKind, ProofClaim, ProofClass, ProofInputs, ProofOutcome, RepoProofCapabilities, ReviewEvidence, ReviewScope, ReviewStrategy, Role, RuntimeSignal, Swarm, Task, TaskState, WatchdogReceipt, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, WorkerState, plan_proof
 
 
+RuntimeTask=Task
+
+def Task(*args, **kwargs):
+    kwargs.setdefault("goal_id",f"goal-{args[0]}")
+    return RuntimeTask(*args,**kwargs)
+
+
 def delegation(task_id, owner, artifact, *, path=None):
     path=path or f"artifacts/{task_id}.receipt"
     return DelegationContract(task_id,f"Return the exact {task_id} artifact.",owner,(path,),artifact,(path,),(ProofClass.SOURCE,),60)
@@ -47,6 +54,33 @@ class AcceptanceContractTests(unittest.TestCase):
 
     def pass_gates(self):
         for gate in ("typecheck","test","build"): self.run_gate(gate)
+
+    def test_atomic_producer_executes_and_completes_after_independent_acceptance(self):
+        from runtime import OperationClass, RoleGateDecision, role_gate
+        swarm=Swarm()
+        task=Task("atomic","atomic-doer","CTRL",1,{},subagent_receipt="host:thread:atomic",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(self.artifact,("test",),observation_root=self.temp.name),delegation_contract=delegation("atomic","atomic-doer",self.artifact,path="artifact.txt"))
+        swarm.start_atomic(Role.CTRL,task)
+        self.assertEqual(role_gate(Role.DOER,task,OperationClass.MUTATE,actor_id="atomic-doer",lease_version=1),RoleGateDecision.ALLOW)
+        self.assertEqual(role_gate(Role.CTRL,task,OperationClass.EXECUTE,actor_id="CTRL",lease_version=1),RoleGateDecision.DELEGATE)
+        self.assertEqual(role_gate(Role.CTRL,task,OperationClass.INSPECT,actor_id="CTRL",lease_version=1),RoleGateDecision.ALLOW)
+        swarm.add_artifact(Role.DOER,task.id,self.artifact)
+        swarm.consult_incidents(Role.DOER,task.id,IncidentLedger(self.temp.name),artifact="route",scope="atomic",actor_id="atomic-doer")
+        with self.assertRaisesRegex(InvariantError,"exact atomic delegated ownership"):
+            swarm.run_gate(Role.DOER,task.id,"test",(sys.executable,"-c","pass"),cwd=self.temp.name,actor_id="other-doer")
+        receipt=swarm.run_gate(Role.DOER,task.id,"test",(sys.executable,"-c","pass"),cwd=self.temp.name,actor_id="atomic-doer")
+        self.assertEqual(receipt.outcome,ProofOutcome.PASS)
+        with self.assertRaisesRegex(InvariantError,"exact-artifact acceptance"):
+            swarm.complete(Role.DOER,task.id,True,True,1,actor_id="atomic-doer")
+        delegated_accept(swarm,task.id)
+        self_review=ReviewEvidence(ReviewStrategy.LIGHT,"atomic-doer",True,self.artifact,receipt=(("acceptance","review:atomic"),),scope=ReviewScope.ACCEPTANCE)
+        with self.assertRaisesRegex(InvariantError,"creator cannot be sole independent reviewer"):
+            swarm.review(Role.REVIEW,task.id,self_review,True)
+        review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,self.artifact,receipt=(("acceptance","review:atomic"),),scope=ReviewScope.ACCEPTANCE)
+        swarm.review(Role.REVIEW,task.id,review,True)
+        with self.assertRaises(InvariantError):
+            swarm.complete(Role.CTRL,task.id,True,True,1,actor_id="CTRL")
+        swarm.complete(Role.DOER,task.id,True,True,1,actor_id="atomic-doer")
+        self.assertEqual(task.state,TaskState.COMPLETE)
 
     def test_external_timeout_and_runtime_fail_remain_open(self):
         self.run_gate("typecheck"); self.swarm.record_gate_receipt(Role.LEAD,"route",self.receipt("test",ProofOutcome.TIMEOUT),actor_id="lead"); self.run_gate("build","raise SystemExit(3)")
@@ -235,7 +269,7 @@ class AcceptanceContractTests(unittest.TestCase):
 
     def test_forced_state_cannot_bypass_complete_project_or_ctrl_acceptance(self):
         task=self.swarm.tasks["route"]; task.review_passed=True; task.reviewer="independent"; task.state=TaskState.COMPLETE
-        with self.assertRaisesRegex(InvariantError,"direct CTRL-bound"): self.swarm.complete(Role.CTRL,"route",True,True,1,actor_id="CTRL")
+        with self.assertRaisesRegex(InvariantError,"CTRL cannot perform this transition"): self.swarm.complete(Role.CTRL,"route",True,True,1,actor_id="CTRL")
         self.assertFalse(self.swarm.project_complete(Role.CTRL,True,True))
         self.swarm.register_ctrl_evidence(Role.LEAD,"route","receipt","proof","receipt.txt")
         self.swarm.surface_ctrl_evidence(Role.CTRL,"receipt",surface_kind=CtrlSurfaceKind.INLINE_RECEIPT,caption="Forced state has no acceptance receipt.",claim_limit="Runtime contract proof only.",surface_receipt="chat:receipt:forced")
@@ -288,7 +322,7 @@ class AcceptanceContractTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError,"bound owning LEAD"): self.swarm.record_gate_receipt(Role.LEAD,"route",self.receipt("typecheck"),actor_id="other-lead")
         self.pass_gates(); self.swarm.review(Role.REVIEW,"route",self.acceptance(),True)
         with self.assertRaisesRegex(InvariantError,"bound owning LEAD"): self.swarm.complete(Role.LEAD,"route",True,True,1,actor_id="other-lead")
-        with self.assertRaisesRegex(InvariantError,"direct CTRL-bound"): self.swarm.complete(Role.CTRL,"route",True,True,1,actor_id="CTRL")
+        with self.assertRaisesRegex(InvariantError,"CTRL cannot perform this transition"): self.swarm.complete(Role.CTRL,"route",True,True,1,actor_id="CTRL")
 
     def test_watchdog_receipt_cannot_enter_gate_review_or_acceptance(self):
         alert=WatchdogReceipt("route","goal","lead",WatchdogScope.OUTCOME_INTEGRITY,WatchdogSignal.BLOCKER,"0"*64,"provider outage","lead",((WatchdogRouteRole.CTRL,"CTRL"),),1)

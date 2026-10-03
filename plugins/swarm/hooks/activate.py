@@ -20,6 +20,10 @@ def main():
     context = (
         "SWARM is active for this Codex task. Before substantive work, read "
         f"{skill} and apply its workflow within this task's assigned role. "
+        "CTRL is the switchboard operator: user conversation, bounded task intake, "
+        "delegation, dependencies and result relay only. Every build, fix, test, "
+        "review or release goes to an eligible owner, even a tiny edit; missing "
+        "owners never permit CTRL fallback. Assigned LEAD/DOER agents keep their role. "
         "Explicit user instructions and opt-outs take precedence. "
         "Resolve the skill's relative references from its directory."
     )

@@ -21,12 +21,32 @@ const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8").replace(/\r\n/g, "\n");
 const html = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
 assert.match(html, /data-view="labs"[\s\S]*id="view-labs"/);
-assert.match(app, /api\('\/api\/labs'\)/);
+assert.match(app, /api\('\/api\/' \+ key\)/);
 assert.match(app, /\/assets\/role-avatars\//);
 assert.match(app, /function labManifestMarkup[\s\S]*Block progress/);
 assert.doesNotMatch(app, /function startLab|data-lab-form|data-custom-lab-form/);
 assert.doesNotMatch(app, /LAB_CATALOG|\/api\/labs\/commands/);
 assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(3/);
+{
+  for (const scenario of ["user-focus", "scope-changed", "restore"]) {
+    let finish, restored=0;
+    const body={}, trigger={id:"removed-option"}, target={focus(){restored++;}};
+    const state={projectId:"before",view:"assets"};
+    const document={body,activeElement:body};
+    const sandbox={state,document,CSS:{escape:value=>value},Promise,
+      savedProjectRoster:()=>({state:"KNOWN",projects:[{id:"selected"}]}),
+      setProjectSelection:id=>state.projectId=id,scopeLabel:()=>"Project",writeRoute(){},renderProjectNavigation(){},renderAllViews(){},
+      mobileDrawerQuery:{matches:false},refreshOverview:()=>new Promise(resolve=>finish=resolve),
+      requestAnimationFrame:callback=>callback(),$:()=>target};
+    vm.createContext(sandbox);
+    vm.runInContext(app.slice(app.indexOf('async function selectProjectScope('),app.indexOf('function runLogBindingForCtrl(')),sandbox);
+    const pending=sandbox.selectProjectScope("selected",trigger);
+    if(scenario==="user-focus") document.activeElement={id:"project-navigation-heading"};
+    if(scenario==="scope-changed") state.projectId="newer";
+    finish();await pending;
+    assert.equal(restored,scenario==="restore"?1:0,"An async project refresh must preserve a newer keyboard focus or project selection.");
+  }
+}
 {
   const sandbox={escapeHTML:value=>String(value),milestoneSummary:items=>items[0]};
   vm.createContext(sandbox);
@@ -381,7 +401,7 @@ for (const status of ["Live", "Reconnecting", "Offline"]) assert.match(app, new 
 assert.match(css, /\.status-dot\.is-reconnecting/);
 assert.match(css, /\.status-dot\.is-offline/);
 
-for (const [tab, icon] of [["overview", "layout-dashboard"], ["agents", "users"], ["labs", "flask-conical"], ["roles", "list-tree"], ["review", "shield-check"], ["assets", "image"], ["diagnostics", "activity"], ["settings", "settings"]]) {
+for (const [tab, icon] of [["overview", "layout-dashboard"], ["agents", "users"], ["labs", "flask-conical"], ["factories", "git-branch"], ["roles", "list-tree"], ["review", "shield-check"], ["assets", "image"], ["diagnostics", "activity"], ["settings", "settings"]]) {
   assert.match(indexHtml, new RegExp(`id="tab-${tab}"[\\s\\S]*?<use href="#lucide-${icon}"></use>`));
   assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 }
@@ -1389,7 +1409,7 @@ assert.ok(css.includes('.settings-save-bar[hidden] { display:none; }'));
 assert.ok(css.includes('@media (min-width:901px) and (pointer:fine)'));
 assert.ok(css.includes('.project-scope-button { min-height:32px; }'));
 assert.ok(app.includes('filter(tab => !tab.closest("details") || tab.closest("details").open)'));
-assert.match(app, /\["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"\]/);
+assert.match(app, /\["overview", "agents", "labs", "factories", "roles", "review", "assets", "diagnostics", "settings"\]/);
 assert.doesNotMatch(app.slice(app.indexOf("function routeView"), app.indexOf("function setView")), /dashboard|hierarchy|kanban/);
 for (const retiredView of ["dashboard", "hierarchy", "kanban"]) {
   assert.doesNotMatch(indexHtml, new RegExp(`id="view-${retiredView}"`));
@@ -2857,6 +2877,7 @@ async function mount(page, overview, overrides = {}) {
   const profileRequests = [];
   const projectRequests = [];
   const repairRequests = [];
+  const unitControl = overrides.unitControl || {instances:[],prepares:[],submissions:[],failFirst:false};
   const proofFeed = overrides.proofFeed || fixture.proofFeed;
   const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
   const notificationControl = overrides.notificationControl || { failGet: false, failSeen: false, feed: structuredClone(overrides.notifications || notificationFixture()) };
@@ -3132,7 +3153,21 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/storage") return route.fulfill(response(fixture.storage));
     if (url.pathname === "/api/ctrl-settings") return route.fulfill(response(configControl.ctrlFeed));
     if (url.pathname === "/api/skills") return route.fulfill(response({ ok: true, settings: { inheritance_enabled: true }, skills: [], overlays: { global: null, project: null, ctrl: null } }));
-    if (url.pathname === "/api/labs") return route.fulfill(response({ ok: true, labs: labCatalogFixture.labs, manifest_contract: labCatalogFixture.manifest_contract }));
+    if (["/api/labs", "/api/factories"].includes(url.pathname)) {
+      const kind = url.pathname === "/api/labs" ? "LAB" : "FACTORY", key = kind === "LAB" ? "labs" : "factories";
+      return route.fulfill(response({ok:true,[key]:labCatalogFixture[key],manifest_contract:labCatalogFixture.manifest_contract,instances:unitControl.instances.filter(item=>item.work_unit.kind===kind)}));
+    }
+    if (url.pathname === "/api/work-units/prepare") {
+      const payload = request.postDataJSON(); unitControl.prepares.push(payload);
+      return route.fulfill(response({ok:true,status:"PREPARED",endpoint:"/api/tasks/create",command_digest:"digest-"+payload.request_id,submission:{acknowledge:true,instruction:payload.objective,envelope:{command_id:payload.request_id,idempotency_key:payload.request_id,project_id:payload.project_id,ctrl_id:payload.ctrl_id,unit_request:payload}}}));
+    }
+    if (url.pathname === "/api/tasks/create") {
+      const payload = request.postDataJSON(); unitControl.submissions.push(payload);
+      if (unitControl.failFirst && unitControl.submissions.length===1) return route.abort();
+      const unit = payload.envelope.unit_request, thread = "native-"+unit.kind.toLowerCase();
+      if (!unitControl.instances.some(item=>item.coordinator_id===thread)) unitControl.instances.push({task_id:thread,coordinator_id:thread,name:unit.name,project_id:unit.project_id,ctrl_id:unit.ctrl_id,work_unit:{kind:unit.kind,goal_id:null,parent_goal_id:unit.parent_goal_id,parent_unit_task_id:null},child_task_ids:[],blocks:[{block_id:"unit-block-0",title:"Frame the first bounded outcome",lifecycle_state:"UNKNOWN"}],outcome_acceptance:"UNKNOWN"});
+      return route.fulfill(response({ok:true,status:unitControl.submissions.length>1?"REPLAY":"RESULT",thread_id:thread,command_digest:"digest-"+payload.envelope.command_id,work_completed:false}));
+    }
     if (url.pathname.startsWith("/api/proof-media/")) return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#0f1726"/></svg>' });
     if (/^\/api\/assets\/[a-z0-9_-]+\/preview$/i.test(url.pathname)) return route.fulfill({ status: 200, contentType: "image/png", body: mascotAsset });
     if (url.pathname === "/assets/swarm-wordmark.png") return route.fulfill({ status: 200, contentType: "image/png", body: wordmarkAsset });
@@ -3341,6 +3376,54 @@ const executablePath = browserCandidates.find((candidate) => fs.existsSync(candi
 const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
 const evidenceDir = process.env.SWARM_UI_EVIDENCE_DIR || "";
 if (evidenceDir) fs.mkdirSync(evidenceDir, { recursive: true });
+async function assertWorkUnitCreation() {
+  for (const width of [1440,390]) {
+    const page = await browser.newPage({viewport:{width,height:980}});
+    const unitControl = {instances:[],prepares:[],submissions:[],failFirst:true};
+    await mount(page, structuredClone(fixture.overview), {unitControl});
+    await page.evaluate(() => {state.projectId="all";state.ctrlId="";renderLabs();});
+    if(width===390) await page.locator('#mobile-menu-button').click();
+    await openPrimaryView(page,"factories");
+    assert.equal(await page.locator('#factory-catalog button[type="submit"]').isDisabled(),true);
+    await page.evaluate(() => {state.projectId="project:fixture";state.ctrlId="ctrl";state.auto={ctrl_id:"foreign",project_id:"foreign",goal_id:"foreign-goal"};renderLabs();});
+    const form = page.locator('#factory-catalog .unit-create-form');
+    await form.locator('[name="name"]').fill("Software delivery");
+    await form.locator('[name="objective"]').fill("Ship one reviewed deliverable");
+    await page.evaluate(() => renderAllViews());
+    assert.equal(await form.locator('[name="objective"]').inputValue(),"Ship one reviewed deliverable");
+    await form.locator('button[type="submit"]').click();
+    await page.waitForFunction(() => state.unitLaunch?.pending===false && Boolean(state.unitLaunch?.submission));
+    assert.equal(unitControl.prepares.length,1);
+    assert.equal(unitControl.prepares[0].parent_goal_id,null);
+    await form.getByRole('button',{name:'Check launch'}).click();
+    await page.waitForFunction(() => state.unitLaunch?.pending===false && !state.unitLaunch?.submission);
+    assert.equal(unitControl.prepares.length,1);
+    assert.deepEqual(unitControl.submissions[0],unitControl.submissions[1]);
+    await page.locator('#factory-instances .unit-instance').waitFor({state:'visible'});
+    assert.match(await page.locator('#factory-instances').innerText(),/native-factory[\s\S]*Pending goal binding[\s\S]*Outcome acceptance pending/);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+    if(evidenceDir) await page.screenshot({path:path.join(evidenceDir,'factory-'+width+'.png'),fullPage:true});
+    await page.reload();
+    await page.waitForFunction(() => Boolean(state.overview));
+    if (await page.locator('#onboarding-dialog').isVisible()) await page.getByRole('button',{name:'Skip for now'}).click();
+    await page.evaluate(() => {state.projectId="project:fixture";state.ctrlId="ctrl";setView("factories");renderLabs();});
+    await page.locator('#factory-instances .unit-instance').waitFor({state:'visible'});
+    assert.match(await page.locator('#factory-instances').innerText(),/Software delivery/);
+    await page.evaluate(() => setView("labs"));
+    const labForm=page.locator('#lab-catalog .unit-create-form');
+    await labForm.locator('[name="objective"]').fill("Investigate the next uncertainty");
+    await labForm.locator('button[type="submit"]').click();
+    await page.waitForFunction(() => state.unitLaunch?.pending===false && !state.unitLaunch?.submission);
+    await page.locator('#lab-instances .unit-instance').waitFor({state:'visible'});
+    assert.equal(unitControl.instances.length,2);
+    if(evidenceDir) await page.screenshot({path:path.join(evidenceDir,'lab-'+width+'.png'),fullPage:true});
+    await page.close();
+  }
+  console.log('Work units: desktop/mobile creation, pending receipts, retained retry, reload and taxonomy PASS');
+}
+await assertWorkUnitCreation();
+if (process.env.SWARM_UI_FOCUS === "work-units") { await browser.close(); process.exit(0); }
+
 async function settleOnboardingImage(image) {
   await image.waitFor({ state: "visible" });
   await image.evaluate(async (node) => {
@@ -5025,7 +5108,7 @@ proofFeed.items.push({
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "40-message-unavailable-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.keyboard.press("Escape");
-    for (const view of ["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
+    for (const view of ["overview", "agents", "labs", "factories", "roles", "review", "assets", "diagnostics", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
     assert.equal(await page.getByRole("tab", { name: "Projects", exact: true }).count(), 0);
     for (const retired of ["dashboard", "hierarchy", "kanban"]) assert.equal(await page.locator('.nav-item[data-view="' + retired + '"]').count(), 0);
     assert.equal(await page.locator("#project-scope-filter").isVisible(), true);
@@ -5066,7 +5149,7 @@ proofFeed.items.push({
     await page.keyboard.press("Home");
     assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectScopeId), "all");
     await page.keyboard.press("Escape");
-    const scopedViews = ["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"];
+    const scopedViews = ["overview", "agents", "labs", "factories", "roles", "review", "assets", "diagnostics", "settings"];
     for (let index = 0; index < scopedViews.length; index += 1) {
       const view = scopedViews[index];
       const projectId = index % 2 ? "project:fixture" : "project:branch";

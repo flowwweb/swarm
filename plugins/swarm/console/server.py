@@ -58,6 +58,7 @@ from runtime.progress_events import (  # noqa: E402
     ProgressEventError,
     ProgressPulseEvent,
     build_role_manifest,
+    build_task_manifest,
     load_builtin_role_avatar_assets,
     load_builtin_role_manifests,
     resolve_role_avatar,
@@ -890,7 +891,7 @@ def _config_section(dotted_path: str) -> str:
         return "Interface"
     if root in {"portfolio", "boost", "turbo", "efficiency"}:
         return "Usage"
-    if root in {"proof", "monitoring", "logging"}:
+    if root in {"proof", "monitoring", "logging", "telemetry"}:
         return "Logs & diagnostics"
     if root == "feedback":
         return "Integrations & paths"
@@ -899,6 +900,7 @@ def _config_section(dotted_path: str) -> str:
 
 def _config_label_help(dotted_path: str) -> tuple[str, str]:
     labels = {
+        "telemetry.enabled": ("Share SWARM usage with Flowwweb", "Opt in to automatic usage and failure events, model and token counts, and estimated API costs. No conversation text, source code, paths or personal identifiers. Disable anytime; central events expire after 90 days."),
         "automation.mode": ("Auto mode", "Keep eligible SWARM lifecycle actions automatic or require manual confirmation."),
         "execution.fast_mode": ("Speed", "Request the canonical Fast service for newly resolved work."),
         "execution.usage_profile": ("Usage profile", "Select the canonical relative model and reasoning profile."),
@@ -10199,13 +10201,22 @@ class App:
                 authorization_verifier=SimpleNamespace(verify=lambda receipt, command, now: receipt == auth and command == envelope and now <= auth.expires_at_ms),
                 material_resolver=SimpleNamespace(resolve=lambda command: material),
                 root_verifier=SimpleNamespace(observe=observe, verify=lambda observation, command: observation.canonical_cwd == str(root) and observation.root_digest == command.root_digest))
+            unit = contract.get("task_manifest_draft", {}).get("work_unit") if contract else None
+            if unit and envelope.idempotency_key not in self.progress_ledger.replay()["connector_receipts"]:
+                try:
+                    self._auto_scope(envelope.ctrl_id, envelope.project_id)
+                    parent_goal = unit["parent_goal_id"]
+                    if parent_goal is not None and self.store.auto_status(envelope.ctrl_id, envelope.project_id).get("goal_id") != parent_goal:
+                        raise ConsoleError("parent goal lacks retained binding to the owning CTRL/project")
+                except ConsoleError:
+                    return not_dispatched("WORK_UNIT_PARENT_CUSTODY_CHANGED")
             try:
                 result = connector.execute(envelope, auth, self.progress_ledger, now_ms=int(time.time() * 1000),
                     observed_project_id=envelope.project_id, observed_root_digest=root_digest)
             except (ValueError, ProgressEventError) as exc:
                 snapshot = self.progress_ledger.replay()
                 commands = snapshot.get("connector_receipts", {})
-                if action is HQCommandAction.TASK and channel is None and envelope.idempotency_key not in commands and envelope.command_id not in snapshot.get("connector_command_ids", {}) and (
+                if (action is HQCommandAction.TASK or unit is not None) and channel is None and envelope.idempotency_key not in commands and envelope.command_id not in snapshot.get("connector_command_ids", {}) and (
                     int(time.time() * 1000) > envelope.expires_at_ms or snapshot["cursor"]["event_seq"] > envelope.expected_ledger_revision
                 ):
                     return not_dispatched("SUBMISSION_EXPIRED_OR_REVISION_STALE")
@@ -14468,14 +14479,20 @@ class App:
             raise ConsoleError(str(error)) from error
 
     def lab_catalog_projection(self) -> dict[str, Any]:
+        return self.unit_catalog_projection("LAB")
+
+    def unit_catalog_projection(self, kind: str) -> dict[str, Any]:
+        if kind not in {"LAB", "FACTORY"}:
+            raise ConsoleError("work unit kind must be LAB or FACTORY")
+        collection = "labs" if kind == "LAB" else "factories"
         path = SWARM_SKILL_ROOT / "labs" / "catalog.json"
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise ConsoleError("lab catalog is unavailable") from error
-        labs = payload.get("labs") if isinstance(payload, dict) else None
+        labs = payload.get(collection) if isinstance(payload, dict) else None
         contract = payload.get("manifest_contract") if isinstance(payload, dict) else None
-        if not isinstance(payload, dict) or set(payload) != {"schema_version", "manifest_contract", "labs"} or payload.get("schema_version") != 1 or not isinstance(labs, list) or not labs or not isinstance(contract, dict):
+        if not isinstance(payload, dict) or set(payload) != {"schema_version", "manifest_contract", "labs", "factories"} or payload.get("schema_version") != 1 or not isinstance(labs, list) or not labs or not isinstance(contract, dict):
             raise ConsoleError("lab catalog is invalid")
         role_ids = {item["id"] for item in self.builtin_role_manifests}
         lab_ids = {item.get("id") for item in labs if isinstance(item, dict)}
@@ -14497,7 +14514,68 @@ class App:
         expected_steps = [(0.25, "Started"), (0.5, "Review"), (0.75, "Accepted"), (1, "Committed")]
         if any(not isinstance(step, dict) or set(step) != {"value", "label"} for step in progress["steps"]) or [(step["value"], step["label"]) for step in progress["steps"]] != expected_steps:
             raise ConsoleError("lab progress steps are invalid")
-        return {"ok": True, "schema_version": 1, "manifest_contract": contract, "labs": labs, "read_only": True}
+        projection = self.progress_ledger.replay()
+        instances = []
+        for task_id, state in projection["task_manifests"].items():
+            manifest = state["versions"][state["active_version"]]
+            unit = manifest.get("work_unit")
+            operation = projection["task_creation_operations_by_task"].get(task_id)
+            binding = projection["task_creation_bindings"].get(operation)
+            if not unit or unit["kind"] != kind or not binding:
+                continue
+            observed = {block["block_id"]: block for block in projection["blocks"].values() if block["task_id"] == task_id}
+            blocks = [{**block, "lifecycle_state": observed.get(block["block_id"], {}).get("lifecycle_state", "UNKNOWN")} for block in manifest["blocks"]]
+            children = [item["task_id"] for item in projection["task_creation_bindings"].values() if item["parent_edge"]["parent_task_id"] == task_id]
+            instances.append({"outcome_acceptance": "UNKNOWN", "task_id": task_id, "name": manifest["task_name"], "project_id": manifest["project_id"], "ctrl_id": manifest["ctrl_id"], "coordinator_id": task_id, "role_scope": manifest["role_scope"], "work_unit": unit, "blocks": blocks, "child_task_ids": children})
+        return {"ok": True, "schema_version": 1, "unit_kind": kind, "manifest_contract": contract, collection: labs, "instances": instances, "read_only": True}
+
+    def prepare_work_unit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Prepare the existing task-creation envelope; dispatch owns confirmation."""
+        if not isinstance(payload, dict) or set(payload) != {"kind", "template_id", "name", "objective", "project_id", "ctrl_id", "parent_goal_id", "request_id"}:
+            raise ConsoleError("work unit preparation requires exact kind, template, objective and parent scope")
+        kind = payload["kind"]
+        catalog = self.unit_catalog_projection(kind)
+        collection = "labs" if kind == "LAB" else "factories"
+        template = next((item for item in catalog[collection] if item["id"] == payload["template_id"]), None)
+        if template is None and payload["template_id"] != "custom":
+            raise ConsoleError("unknown work unit template")
+        project_id = _auto_id(payload["project_id"], "project_id")
+        ctrl_id = _auto_id(payload["ctrl_id"], "ctrl_id")
+        self._auto_scope(ctrl_id, project_id)
+        identity = _auto_id(payload["request_id"], "request_id")
+        name = _safe_metadata_text(payload["name"], "unit name", maximum=160)
+        objective = _safe_metadata_text(payload["objective"], "unit objective", maximum=2048)
+        parent_goal = None if payload["parent_goal_id"] is None else _auto_id(payload["parent_goal_id"], "parent_goal_id")
+        if parent_goal is not None and self.store.auto_status(ctrl_id, project_id).get("goal_id") != parent_goal:
+            raise ConsoleError("parent goal lacks retained binding to the owning CTRL/project")
+        role = next(item for item in self.builtin_role_manifests if item["id"] == "manager")
+        stages = ["Frame the first bounded outcome", "Delegate the first work block", "Obtain independent review", "Integrate the accepted result"]
+        manifest = build_task_manifest(manifest_id="unit:" + identity, task_id="draft-only", task_name=name,
+            project_id=project_id, ctrl_id=ctrl_id, role_scope="LEAD_SINGLE",
+            work_unit={"kind": kind, "goal_id": None, "parent_goal_id": parent_goal, "parent_unit_task_id": None},
+            milestones=[{"milestone_id": "unit-cycle", "order": 0, "title": "First bounded cycle", "verification_policy": "source", "supersedes_milestone_id": None}],
+            blocks=[{"block_id": "unit-block-" + str(index), "milestone_id": "unit-cycle", "order": index, "title": title, "verification_policy": "source", "estimate_minutes": 15, "weight": None, "supersedes_block_id": None} for index, title in enumerate(stages)])
+        instruction = (f"Use SWARM. You are the LEAD coordinator of the {kind} work unit {name}. Its objective is: {objective}\n"
+            f"Owning CTRL: {ctrl_id}. Parent goal: {parent_goal or 'pending binding; reconcile with CTRL'}. "
+            "For goal persistence apply the LAB/FACTORY work-unit startup policy, while retaining LEAD coordination authority. Read goals.use_goals from the current configuration. Unless explicitly disabled, create or resume your own native goal and bind its real ID to this unit manifest before production. An explicit opt-out keeps goal binding pending and preserves bounded task contracts. "
+            "A Lab investigates uncertainty; a Factory builds a defined deliverable. Keep this taxonomy separate from structural roles. "
+            "Decompose the next useful outcome into bounded child tasks, with exact owners, custody, evidence, stopping conditions and independent review. "
+            "Do not assign the whole unit goal to one producer. Coordinate those tasks and return results through the owning CTRL.")
+        root = self._canonical_project_root(project_id)
+        now = int(time.time() * 1000)
+        contract = {"role_manifest": role, "task_manifest_draft": {key: value for key, value in manifest.items() if key not in {"task_id", "manifest_digest"}},
+            "parent_task_id": ctrl_id, "topology_manifest_receipt_id": identity + "-topology", "task_receipt_id": identity + "-task",
+            "milestone_receipts": [{"id": "unit-cycle", "receipt_id": identity + "-milestone"}],
+            "block_receipts": [{"id": block["block_id"], "receipt_id": identity + "-block-" + str(index)} for index, block in enumerate(manifest["blocks"])],
+            "explicit_empty_work_receipt_id": None, "independent_host_task": False}
+        envelope = HQCommandEnvelope(command_id=identity, idempotency_key=identity, action=HQCommandAction.MANUAL_AGENT,
+            project_id=project_id, root_digest=_auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))}), ctrl_id=ctrl_id,
+            target_intent=HQTargetIntent.NEW_THREAD, target_thread_id="", payload_digest=hashlib.sha256(instruction.encode()).hexdigest(),
+            expected_ledger_revision=self.progress_ledger.replay()["cursor"]["event_seq"], submitted_at_ms=now, expires_at_ms=now + 60000, task_creation=contract)
+        return {"ok": True, "status": "PREPARED", "kind": kind, "command_digest": envelope.digest, "endpoint": "/api/tasks/create", "submission": {"acknowledge": True, "instruction": instruction,
+            "envelope": {"command_id": identity, "idempotency_key": identity, "action": "MANUAL_AGENT", "project_id": project_id, "root_digest": envelope.root_digest,
+                "ctrl_id": ctrl_id, "target_intent": "NEW_THREAD", "target_thread_id": "", "payload_digest": envelope.payload_digest,
+                "expected_ledger_revision": envelope.expected_ledger_revision, "submitted_at_ms": now, "expires_at_ms": now + 60000, "task_creation": contract}}}
 
     def role_avatar_response(self, role_id: str, accept: str) -> dict[str, Any]:
         if not isinstance(role_id, str) or not re.fullmatch(r"[a-z0-9_]+", role_id):
@@ -16618,6 +16696,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/labs":
                 self._json(HTTPStatus.OK, self.server.app.lab_catalog_projection())
                 return
+            if path == "/api/factories":
+                self._json(HTTPStatus.OK, self.server.app.unit_catalog_projection("FACTORY"))
+                return
             role_avatar_match = re.fullmatch(r"/assets/role-avatars/([a-z0-9_]+)\.png", path)
             if role_avatar_match:
                 try:
@@ -16878,6 +16959,12 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 read = self.server.app.task_history_roster if path.endswith("-roster") else self.server.app.task_history
                 self._json(HTTPStatus.OK, read(self._payload()))
+                return
+            if path == "/api/work-units/prepare":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "unit preparation requires strict loopback authorization")
+                    return
+                self._json(HTTPStatus.OK, self.server.app.prepare_work_unit(self._payload()))
                 return
             if path in {"/api/tasks/create", "/api/tasks/message"}:
                 if not self._authorized_auto():

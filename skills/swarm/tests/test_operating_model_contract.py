@@ -12,22 +12,34 @@ def digest(value:str)->str: return hashlib.sha256(value.encode()).hexdigest()
 
 
 class OperatingModelTests(unittest.TestCase):
-    def test_direct_mode_is_exact(self):
+    def test_ctrl_never_produces_even_atomic_work(self):
         base=dict(outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,risk=1,measurable_minutes=20,direct_horizon_minutes=20)
-        self.assertEqual(ctrl_mode(**base),CtrlMode.DIRECT)
-        for change in ({"outcomes":2},{"mutable_surfaces":2},{"cross_lane_dependency":True},{"risk":2},{"measurable_minutes":21}):
-            self.assertEqual(ctrl_mode(**{**base,**change}),CtrlMode.DELEGATED)
-        for work_kind in (WorkKind.DESIGN,WorkKind.IMAGEGEN):
+        for work_kind in WorkKind:
             self.assertEqual(ctrl_mode(**base,work_kind=work_kind),CtrlMode.DELEGATED)
-        swarm=Swarm(); direct=Task("direct","CTRL","CTRL",1,{},risk=1,subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="atomic work is shorter than delegation",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("direct","v1","acceptance"),("contract",)))
-        swarm.start_ctrl_direct(Role.CTRL,direct,outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=10)
-        swarm.add_artifact(Role.CTRL,"direct",ArtifactIdentity("direct","v1","work"))
-        visual=Task("visual","CTRL","CTRL",1,{},risk=1,work_kind=WorkKind.IMAGEGEN,assigned_profession="DESIGNER",subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="atomic work is shorter than delegation",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("visual","v1","acceptance"),("contract",)))
-        with self.assertRaisesRegex(InvariantError,"CTRL_DIRECT predicate"):
-            swarm.start_ctrl_direct(Role.CTRL,visual,outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=10)
-        visual_atomic=Task("visual-atomic","visual-doer","CTRL",1,{},risk=1,work_kind=WorkKind.IMAGEGEN,assigned_profession="DESIGNER",subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="atomic work is shorter than delegation",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("visual-atomic","v1","acceptance"),("contract",)))
+        swarm=Swarm()
+        direct=Task("direct","CTRL","CTRL",1,{},lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("direct","v1","acceptance"),("contract",)))
+        with self.assertRaisesRegex(InvariantError,"CTRL_DIRECT is retired"):
+            swarm.start_ctrl_direct(Role.CTRL,direct,outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=1)
+        self.assertNotIn("direct",swarm.tasks)
+        swarm.tasks[direct.id]=direct
+        with self.assertRaises(InvariantError):
+            swarm.add_artifact(Role.CTRL,direct.id,ArtifactIdentity("direct","v1","work"))
+        with self.assertRaises(InvariantError):
+            swarm.complete(Role.CTRL,direct.id,True,True,1,actor_id="CTRL")
+        self.assertEqual(direct.artifacts,{})
+        visual_atomic=Task("visual-atomic","visual-doer","CTRL",1,{},work_kind=WorkKind.IMAGEGEN,assigned_profession="DESIGNER",subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="atomic work is shorter than delegation",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("visual-atomic","v1","acceptance"),("contract",)))
         with self.assertRaisesRegex(InvariantError,"CTRL atomic ownership"):
             swarm.start_atomic(Role.CTRL,visual_atomic)
+
+    def test_legacy_direct_artifact_cannot_escape_through_a_producer_role(self):
+        swarm=Swarm()
+        task=Task("legacy","doer","CTRL",1,{},ctrl_mode=CtrlMode.DIRECT,owning_lead_id="lead",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("legacy","v1","acceptance"),("contract",)))
+        swarm.tasks[task.id]=task
+        with self.assertRaisesRegex(InvariantError,"CTRL_DIRECT is retired"):
+            swarm.add_artifact(Role.DOER,task.id,ArtifactIdentity("legacy","v1","work"))
+        with self.assertRaisesRegex(InvariantError,"CTRL_DIRECT is retired"):
+            swarm.run_gate(Role.LEAD,task.id,"contract",("python","-V"),cwd=".",actor_id="lead")
+        self.assertEqual(task.artifacts,{})
 
     def lead_binding(self)->WatchdogBinding:
         return WatchdogBinding(Role.LEAD,"lead",((WatchdogRouteRole.LEAD,"lead"),(WatchdogRouteRole.CTRL,"CTRL")),((WatchdogRouteRole.CTRL,"CTRL"),(WatchdogRouteRole.HUMAN,"HUMAN")))

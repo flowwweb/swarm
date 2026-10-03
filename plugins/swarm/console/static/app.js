@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageRequestGeneration: 0, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", usageSaverTunnel: null, projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", projectArtifactPage: 0, runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, supportTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, messageConnector: null, messageAttachments: [], messagePendingAction: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", roleDetailOpen: false, roleDetailTriggerId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetPage: 0, assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null, labs: null, labsStatus: "idle", labsError: "" };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageRequestGeneration: 0, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", usageSaverTunnel: null, projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", projectArtifactPage: 0, runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, supportTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, messageConnector: null, messageAttachments: [], messagePendingAction: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", roleDetailOpen: false, roleDetailTriggerId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetPage: 0, assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null, factories: null, factoriesStatus: "idle", factoriesError: "", unitLaunch: null, labs: null, labsStatus: "idle", labsError: "" };
 const THEME_STORAGE_KEY = "swarm.theme.v1";
 const THEME_OPTIONS = Object.freeze({ midnight: "Midnight", black: "Black", graphite: "Graphite", pearl: "Pearl" });
 
@@ -278,7 +278,7 @@ function onboardingConfigurationMarkup() {
   const mode = onboardingConfigDraft("automation.mode", automation.mode || "standard");
   const fast = onboardingConfigDraft("execution.fast_mode", execution.fast_mode === true);
   const life = onboardingConfigDraft("lifecycle.task_lifetime_hours", lifecycle.task_lifetime_hours);
-  return '<section class="settings-essentials onboarding-config-essentials"><header class="settings-essentials-head"><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3><p>Execution-first defaults, shared with Settings.</p></div></header><div class="settings-toggle-grid">' + settingsSwitch("automation.mode", mode, "Auto mode", "SWARM keeps eligible work moving until it needs you.", { trueValue: "standard", falseValue: "manual", editable: configEditable("automation.mode") && !state.onboardingConfigPending.has("automation.mode"), binding }) + '</div><div class="settings-run-controls">' +
+  return '<section class="settings-essentials onboarding-config-essentials"><header class="settings-essentials-head"><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3><p>Execution-first defaults, shared with Settings.</p></div></header><div class="settings-toggle-grid">' + settingsSwitch("automation.mode", mode, "Auto mode", "SWARM keeps eligible work moving until it needs you.", { trueValue: "standard", falseValue: "manual", editable: configEditable("automation.mode") && !state.onboardingConfigPending.has("automation.mode"), binding }) + settingsSwitch("telemetry.enabled", onboardingConfigDraft("telemetry.enabled", settings.telemetry?.enabled === true), "Share SWARM usage with Flowwweb", "Send usage and failure events, models, tokens and estimated API costs. No conversation text, source code, paths or personal identifiers. Optional; disable anytime. Events expire after 90 days.", { editable: configEditable("telemetry.enabled") && !state.onboardingConfigPending.has("telemetry.enabled"), binding }) + '</div><div class="settings-run-controls">' +
     settingsSpeedMarkup({ value: fast, editable: configEditable("execution.fast_mode") && !state.onboardingConfigPending.has("execution.fast_mode"), binding, name: "onboarding-speed" }) + settingsTaskLifeMarkup({ value: life, editable: Number.isInteger(lifecycle.task_lifetime_hours) && configEditable("lifecycle.task_lifetime_hours") && !state.onboardingConfigPending.has("lifecycle.task_lifetime_hours"), binding, id: "onboarding-task-life" }) + '</div></section>' +
     '<button class="onboarding-advanced-link" id="onboarding-advanced-settings" data-onboarding-control="advanced-settings-link" type="button">Advanced settings</button>' +
     '<div class="onboarding-config-save ' + (failures.length ? 'is-error' : '') + '" id="onboarding-config-status" data-onboarding-control="config-status" role="status" tabindex="-1"><span>' + escapeHTML(status) + '</span>' + (failures.length ? '<button class="quiet-button" type="button" data-onboarding-control="retry-config">Retry</button>' : '') + '</div>';
@@ -821,7 +821,7 @@ function syncMobileDrawer() {
   setMobileDrawer(false);
 }
 
-const TOP_LEVEL_VIEWS = ["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"];
+const TOP_LEVEL_VIEWS = ["overview", "agents", "labs", "factories", "roles", "review", "assets", "diagnostics", "settings"];
 
 function routeView() {
   const view = location.hash.slice(1);
@@ -857,7 +857,7 @@ function composeDocumentTitle() {
     const item = assetItems().find((candidate) => assetIdentity(candidate) === state.selectedAssetIdentity);
     title = titleSegment(assetLabel(item)) + " — Asset";
   } else {
-    const labels = { overview: "Overview", agents: "Agents", labs: "Labs", roles: "Roles", review: "Review", assets: "Assets", diagnostics: "Diagnostics", settings: "Settings" };
+    const labels = { overview: "Overview", agents: "Agents", labs: "Labs", factories: "Factories", roles: "Roles", review: "Review", assets: "Assets", diagnostics: "Diagnostics", settings: "Settings" };
     title = labels[state.view] || "";
     const project = state.projectId !== "all" ? projectGroups().find((item) => item.id === state.projectId) : null;
     if (project) title = titleSegment(project.label) + " — " + title;
@@ -883,7 +883,8 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
   const titles = {
     overview: ["Overview", "Portfolio progress and project scope."],
     agents: ["Agents", "Active ownership and current work."],
-    labs: ["Labs", "Preconfigured teams for outcome-driven work."],
+    labs: ["Labs", "Investigate uncertainty through bounded experiments."],
+    factories: ["Factories", "Build defined deliverables through bounded tasks."],
     roles: ["Roles", "Profession manifests and role defaults."],
     review: ["Review", "Proof, decisions, and handoff acknowledgements."],
     assets: ["Assets", "Approved project and role assets."],
@@ -912,7 +913,7 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
   $("#view-subtitle").hidden = true;
   if (selectedView === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
   if (selectedView === 'settings' && state.token) refreshAutoStatus().then(renderSettings);
-  if (selectedView === 'labs' && state.labsStatus === 'idle') refreshLabs();
+  if (['labs','factories'].includes(selectedView) && state[selectedView + 'Status'] === 'idle') refreshLabs();
   if (selectedView === 'diagnostics' && state.token && state.diagnosticsHistoryStatus === "idle") refreshDiagnostics().then(renderDiagnostics);
   if (syncRoute) writeRoute(historyMode);
   renderMessageComposer();
@@ -1160,6 +1161,7 @@ async function selectProjectScope(projectId, trigger = null, historyMode = "push
   renderAllViews();
   await refreshOverview(false);
   requestAnimationFrame(() => {
+    if (state.projectId !== selectedId || (document.activeElement !== document.body && document.activeElement !== trigger)) return;
     if (trigger?.id === "project-scope-filter") $("#project-scope-filter")?.focus({ preventScroll: true });
     else if (trigger) $('[data-project-id="' + CSS.escape(state.projectId) + '"]')?.focus({ preventScroll: true });
   });
@@ -5940,8 +5942,9 @@ function renderSettings() {
     '<footer class="settings-save-bar settings-wide' + (state.settingsSaveError ? ' is-error' : '') + '" aria-live="polite"' + (!pending && !state.settingsSaving && !state.settingsSaveError ? ' hidden' : '') + '><p><strong>' + escapeHTML(saveStatus) + '</strong><span>' + escapeHTML(pending ? "Review and save these server-backed changes." : "Essentials reflect the latest acknowledged configuration.") + '</span></p><div><button class="quiet-button" data-setting-action="discard-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + '>Discard</button><button class="primary-action" id="settings-save" data-setting-action="save-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + (state.settingsSaving ? ' aria-busy="true"' : '') + '>Save changes</button></div></footer>';
 }
 
-function labCatalog() {
-  return state.labs?.ok === true && Array.isArray(state.labs.labs) ? state.labs.labs : [];
+function labCatalog(kind = "lab") {
+  const key = kind === "factory" ? "factories" : "labs";
+  return state[key]?.ok === true && Array.isArray(state[key][key]) ? state[key][key] : [];
 }
 
 function labRoleStack(roleIds) {
@@ -5951,65 +5954,112 @@ function labRoleStack(roleIds) {
   }).join("") + '</span>';
 }
 
-function selectedLab() {
-  const labs = [...labCatalog(), customLabTemplate()];
-  const id = $("#view-labs")?.dataset.selectedLabId || labs[0]?.id;
+function selectedLab(kind = "lab") {
+  const labs = [...labCatalog(kind), customLabTemplate(kind)];
+  const id = $(kind === "factory" ? "#view-factories" : "#view-labs")?.dataset.selectedLabId || labs[0]?.id;
   return labs.find((lab) => lab.id === id) || labs[0] || null;
 }
 
-function labManifestMarkup(lab) {
-  const contract = state.labs.manifest_contract;
+function labManifestMarkup(lab, kind = "lab") {
+  const contract = state[kind === "factory" ? "factories" : "labs"].manifest_contract;
+  const draft = state.unitDrafts?.[kind + ":" + lab.id] || {name:lab.name,objective:""};
+  const uncertain = state.unitLaunch?.submission && state.unitLaunch.kind === kind && state.unitLaunch.template === lab.id;
+  const disabled = !state.ctrlId || state.projectId === "all" || state.unitLaunch?.pending || (state.unitLaunch?.submission && !uncertain);
   const steps = contract.progress.steps.map((step) => '<li><i style="--lab-progress:' + escapeHTML(step.value * 100) + '%"></i><strong>' + escapeHTML(String(step.value)) + '</strong><span>' + escapeHTML(step.label) + '</span></li>').join("");
-  return '<div class="lab-manifest"><div class="lab-manifest-outcome"><span>Owns</span><strong>' + escapeHTML(lab.outcome) + '</strong></div><ol class="lab-guide">' + lab.guide.map((step) => '<li>' + escapeHTML(step) + '</li>').join("") + '</ol><div class="lab-progress-contract"><span>Block progress</span><ol>' + steps + '</ol></div><p>' + escapeHTML(contract.delegation) + '</p></div>';
+  return '<div class="lab-manifest"><div class="lab-manifest-outcome"><span>Owns</span><strong>' + escapeHTML(lab.outcome) + '</strong></div><ol class="lab-guide">' + lab.guide.map((step) => '<li>' + escapeHTML(step) + '</li>').join("") + '</ol><div class="lab-progress-contract"><span>Block progress</span><ol>' + steps + '</ol></div><p>' + escapeHTML(contract.delegation) + '</p><form class="unit-create-form" data-unit-kind="' + kind + '" data-unit-template="' + escapeHTML(lab.id) + '"><label>Name<input name="name" maxlength="160" value="' + escapeHTML(draft.name) + '" required></label><label>' + (kind === "factory" ? 'Deliverable' : 'Question to investigate') + '<textarea name="objective" maxlength="2048" required placeholder="' + escapeHTML(lab.outcome) + '">' + escapeHTML(draft.objective) + '</textarea></label><p>' + (state.ctrlId && state.projectId !== "all" ? 'Goals are enabled by default; your explicit opt-out is respected.' : 'Select a project and owning CTRL to start.') + '</p><button class="primary-action" type="submit"' + (disabled ? ' disabled' : '') + '>' + (uncertain ? 'Check launch' : 'Start ' + kind) + '</button></form></div>';
 }
 
-function customLabTemplate() {
-  const contract = state.labs.manifest_contract;
+function customLabTemplate(kind = "lab") {
+  const contract = state[kind === "factory" ? "factories" : "labs"].manifest_contract;
   return {
     id: "custom",
-    name: "Custom Lab",
+    name: kind === "factory" ? "Custom Factory" : "Custom Lab",
     icon: "plus",
-    summary: "Name any focused build area.",
+    summary: kind === "factory" ? "Define what to build." : "Name a question to investigate.",
     outcome: contract.custom,
     suggested_roles: [],
     guide: ["Name the area and intended outcome.", "Choose the smallest useful operating loop.", "Track evidence through normal task blocks."],
   };
 }
 
-function renderLabs() {
-  const catalog = $("#lab-catalog"), status = $("#lab-status");
+function renderUnitCatalog(kind) {
+  const key = kind === "factory" ? "factories" : "labs";
+  const label = kind === "factory" ? "Factory" : "Lab";
+  const catalog = $("#" + kind + "-catalog"), status = $("#" + kind + "-status");
   if (!catalog || !status) return;
-  const labs = labCatalog();
+  const labs = labCatalog(kind);
   if (!labs.length) {
-    status.textContent = state.labsStatus === "loading" ? "Loading labs" : (state.labsError || "Labs unavailable");
-    catalog.innerHTML = state.labsStatus === "loading" ? '<div class="loading-skeleton lab-loading" aria-hidden="true"><i></i><i></i><i></i></div>' : '<div class="empty-inline"><strong>Labs unavailable</strong><button class="quiet-button" type="button" data-lab-retry>Retry</button></div>';
+    status.textContent = state[key + "Status"] === "loading" ? "Loading " + key : (state[key + "Error"] || label + " catalog unavailable");
+    catalog.innerHTML = state[key + "Status"] === "loading" ? '<div class="loading-skeleton lab-loading" aria-hidden="true"><i></i><i></i><i></i></div>' : '<div class="empty-inline"><strong>' + label + ' catalog unavailable</strong><button class="quiet-button" type="button" data-lab-retry>Retry</button></div>';
     return;
   }
-  status.textContent = labs.length + " Lab manifests ready";
-  const active = selectedLab();
-  catalog.innerHTML = [...labs, customLabTemplate()].map((lab) => {
+  status.textContent = state.unitLaunch?.kind === kind ? state.unitLaunch.message : labs.length + " " + label + " manifests ready";
+  const active = selectedLab(kind);
+  catalog.innerHTML = [...labs, customLabTemplate(kind)].map((lab) => {
     const selected = lab.id === active?.id;
     return '<article class="lab-card' + (selected ? ' is-selected' : '') + (lab.id === "custom" ? ' lab-new-card' : '') + '" role="listitem">' +
       '<button class="lab-card-select" type="button" data-lab-id="' + lab.id + '" aria-expanded="' + String(selected) + '"><span class="lab-mark" aria-hidden="true"><svg class="lucide"><use href="#lucide-' + escapeHTML(lab.icon) + '"></use></svg></span><span class="lab-card-copy"><strong>' + escapeHTML(lab.name) + '</strong><small>' + escapeHTML(lab.summary) + '</small></span>' + labRoleStack(lab.suggested_roles) + '<svg class="lucide lab-chevron" aria-hidden="true"><use href="#lucide-chevron-down"></use></svg></button>' +
-      (selected ? labManifestMarkup(lab) : '') +
+      (selected ? labManifestMarkup(lab, kind) : '') +
       '</article>';
   }).join("");
+  const instances = (state[key].instances || []).filter(unit => state.projectId === "all" || unit.project_id === state.projectId);
+  $("#" + kind + "-instances").innerHTML = instances.map(unit => '<article class="panel unit-instance"><h3>' + escapeHTML(unit.name) + '</h3><p>' + label + ' · Coordinator ' + escapeHTML(unit.coordinator_id) + '</p><p>Goal: ' + escapeHTML(unit.work_unit.goal_id || "Pending goal binding") + ' · Parent goal: ' + escapeHTML(unit.work_unit.parent_goal_id || "Pending parent binding") + '</p><p>' + unit.child_task_ids.length + ' child tasks · Outcome acceptance pending</p><p>First bounded coordination cycle</p><ol>' + unit.blocks.map(block => '<li>' + escapeHTML(block.title || block.block_id) + ' · ' + escapeHTML(block.lifecycle_state || "Pending") + '</li>').join("") + '</ol></article>').join("");
 }
 
-async function refreshLabs() {
-  const hasLastGood = labCatalog().length > 0;
-  state.labsStatus = hasLastGood ? "refreshing" : "loading";
+function renderLabs() { renderUnitCatalog("lab"); renderUnitCatalog("factory"); }
+
+async function refreshUnitCatalog(kind) {
+  const key = kind === "factory" ? "factories" : "labs";
+  const hasLastGood = labCatalog(kind).length > 0;
+  state[key + "Status"] = hasLastGood ? "refreshing" : "loading";
   renderLabs();
   try {
-    const result = await api('/api/labs');
-    if (result?.ok !== true || !Array.isArray(result.labs)) throw new Error("Lab catalog response was invalid.");
-    state.labs = result;
-    state.labsStatus = "current";
-    state.labsError = "";
+    const result = await api('/api/' + key);
+    if (result?.ok !== true || !Array.isArray(result[key])) throw new Error("Unit catalog response was invalid.");
+    state[key] = result;
+    state[key + "Status"] = "current";
+    state[key + "Error"] = "";
   } catch (error) {
-    state.labsStatus = hasLastGood ? "stale" : "unavailable";
-    state.labsError = error.message || "Labs unavailable";
+    state[key + "Status"] = hasLastGood ? "stale" : "unavailable";
+    state[key + "Error"] = error.message || "Unit catalog unavailable";
   }
+  renderLabs();
+}
+
+async function refreshLabs() { await Promise.all([refreshUnitCatalog("lab"), refreshUnitCatalog("factory")]); }
+
+async function startWorkUnit(event) {
+  event.preventDefault();
+  if (state.unitLaunch?.pending) return;
+  const form = event.target, kind = form.dataset.unitKind, template = form.dataset.unitTemplate;
+  const data = new FormData(form), scope = {project:state.projectId,ctrl:state.ctrlId};
+  if (!scope.ctrl || scope.project === "all") return;
+  const retained = state.unitLaunch?.submission ? state.unitLaunch : null;
+  if (retained && (retained.kind !== kind || retained.template !== template || retained.scope.project !== scope.project || retained.scope.ctrl !== scope.ctrl)) return;
+  state.unitLaunch = retained || {kind,template,scope,pending:false,message:"",submission:null};
+  state.unitLaunch.pending = true;
+  state.unitLaunch.message = retained ? "Checking coordinator launch…" : "Starting " + kind + " coordinator…";
+  renderLabs();
+  try {
+    if (!retained) {
+      const auto = state.auto;
+      const parentGoal = auto?.ctrl_id === scope.ctrl && auto?.project_id === scope.project ? auto.goal_id || null : null;
+      const prepared = await api('/api/work-units/prepare', {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kind:kind.toUpperCase(),template_id:template,name:String(data.get("name")).trim(),objective:String(data.get("objective")).trim(),project_id:scope.project,ctrl_id:scope.ctrl,parent_goal_id:parentGoal,request_id:messageRequestId()})});
+      if (prepared?.ok !== true || prepared.status !== "PREPARED" || prepared.endpoint !== "/api/tasks/create" || prepared.submission?.envelope?.project_id !== scope.project || prepared.submission?.envelope?.ctrl_id !== scope.ctrl || scope.project !== state.projectId || scope.ctrl !== state.ctrlId) throw new Error("Unit scope changed before launch. Nothing was started.");
+      state.unitLaunch.submission = prepared.submission;
+      state.unitLaunch.commandDigest = prepared.command_digest;
+    }
+    const result = await api('/api/tasks/create', {method:"POST",timeoutMs:15000,headers:{"Content-Type":"application/json"},body:JSON.stringify(state.unitLaunch.submission)});
+    if (result?.definitive_non_dispatch === true && result.command_digest === state.unitLaunch.commandDigest) {
+      state.unitLaunch.submission = null;
+      throw new Error("Coordinator was not started. Refresh the project and owning CTRL before trying again.");
+    }
+    if (result?.ok !== true || !["RESULT","REPLAY"].includes(result.status) || result.command_digest !== state.unitLaunch.commandDigest || !result.thread_id || result.work_completed !== false) throw new Error("Coordinator launch is unconfirmed. Check launch to reconcile this same request.");
+    state.unitLaunch.submission = null;
+    state.unitLaunch.message = "Coordinator started. Goal binding and child work are pending.";
+    await refreshLabs();
+  } catch (error) { state.unitLaunch.message = error.message || "Coordinator launch is unconfirmed. Check launch to reconcile this same request."; }
+  state.unitLaunch.pending = false;
   renderLabs();
 }
 
@@ -6668,13 +6718,23 @@ $("#ask-anything-form").addEventListener("submit", (event) => {
   renderMessageComposer();
   openMessageComposer($("#ask-anything"));
 });
-$("#lab-catalog").addEventListener("click", (event) => {
-  if (event.target.closest("[data-lab-retry]")) { refreshLabs(); return; }
-  const trigger = event.target.closest("[data-lab-id]");
-  if (!trigger) return;
-  $("#view-labs").dataset.selectedLabId = trigger.dataset.labId;
-  renderLabs();
-});
+for (const kind of ["lab", "factory"]) {
+  const catalog = $("#" + kind + "-catalog");
+  catalog.addEventListener("submit", startWorkUnit);
+  catalog.addEventListener("input", event => {
+    const form = event.target.closest(".unit-create-form");
+    if (!form) return;
+    state.unitDrafts ||= {};
+    state.unitDrafts[kind + ":" + form.dataset.unitTemplate] = {name:form.elements.name.value,objective:form.elements.objective.value};
+  });
+  catalog.addEventListener("click", event => {
+    if (event.target.closest("[data-lab-retry]")) { refreshLabs(); return; }
+    const trigger = event.target.closest("[data-lab-id]");
+    if (!trigger) return;
+    $(kind === "factory" ? "#view-factories" : "#view-labs").dataset.selectedLabId = trigger.dataset.labId;
+    renderLabs();
+  });
+}
 document.addEventListener("keydown", (event) => {
   if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
     event.preventDefault();

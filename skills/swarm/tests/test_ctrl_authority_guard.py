@@ -20,7 +20,8 @@ class CtrlAuthorityGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.swarm=Swarm()
         ctrl=Task("ctrl-a","CTRL","CTRL",1,{},risk=1,subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="direct control record",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty())
-        self.swarm.start_ctrl_direct(Role.CTRL,ctrl,outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=1)
+        # A retained coordination record is not a direct production assignment.
+        self.swarm.tasks[ctrl.id]=ctrl
 
     def test_ctrl_cannot_extract_host_mint_authority_from_swarm(self) -> None:
         self.assertFalse(hasattr(Swarm,"with_host_authority"))

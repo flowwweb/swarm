@@ -227,7 +227,10 @@ def _device_status(telemetry_path: Path = DEFAULT_TELEMETRY) -> dict[str, Any]:
     except OSError:
         status = "TELEMETRY_UNREADABLE"
     manifest = json.loads((REPO_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
-    return {"host": socket.gethostname(), "plugin_version": manifest["version"],
+    if str(SWARM_SKILL_ROOT / "scripts") not in sys.path:
+        sys.path.insert(0, str(SWARM_SKILL_ROOT / "scripts"))
+    from swarm_telemetry import status as product_status
+    return {"product_telemetry": product_status(), "host": socket.gethostname(), "plugin_version": manifest["version"],
             "activation_status": status, "activation_receipts": receipts[-50:],
             "claim_limit": "Local hook output only. Does not prove host context delivery, skill read, workflow compliance or another device. Reads at most the last 64 KiB."}
 

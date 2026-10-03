@@ -57,6 +57,7 @@ def read_session(path, after=None, before=None):
                                   "standard_cost": Decimal(0), "pricing_complete": True})
     previous = {k: 0 for k in FIELDS}
     meta, context, issues = {}, {}, []
+    fork_parent = None
     started = finished = None
     closed = False
     selected = 0
@@ -75,7 +76,16 @@ def read_session(path, after=None, before=None):
             payload = record["payload"]
             if record.get("type") == "session_meta":
                 if meta and meta.get("id") != payload.get("id"):
+                    if fork_parent is not None and payload.get("id") == fork_parent and previous["total_tokens"] == 0:
+                        continue  # Native fork header includes its parent's metadata, before child usage.
                     issues.append("conflicting session identities")
+                    continue
+                if not meta:
+                    source = payload.get("source")
+                    if isinstance(source, dict):
+                        subagent = source.get("subagent")
+                        spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+                        fork_parent = spawn.get("parent_thread_id") if isinstance(spawn, dict) else None
                 meta = {k: payload.get(k) for k in ("id", "cwd", "source", "model_provider")}
             if record.get("type") == "turn_context":
                 context = {"model": payload.get("model"),

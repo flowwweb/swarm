@@ -32,6 +32,35 @@ class TrackingTests(unittest.TestCase):
                 "payload": {"type": "token_count", "info": {
                     "total_token_usage": total or counts(), "last_token_usage": last or counts()}}}
 
+    def test_native_fork_header_preserves_child_identity_and_cannot_double_count(self):
+        path = self.session([self.event()])
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        records[0]["payload"].update(source={"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}})
+        records.insert(1, {"type":"session_meta", "payload":{"id":"parent"}})
+        path.write_text("\n".join(json.dumps(record) for record in records)+"\n",encoding="utf-8")
+        result = read_session(path)
+        self.assertEqual(result["thread_id"], "one")
+        self.assertEqual(result["accounting_status"], "SNAPSHOT")
+        self.assertEqual(result["tokens"]["total_tokens"], 120)
+        records.append({"type":"session_meta", "payload":{"id":"unrelated"}})
+        path.write_text("\n".join(json.dumps(record) for record in records)+"\n",encoding="utf-8")
+        self.assertEqual(read_session(path)["accounting_status"], "UNVERIFIED")
+
+    def test_fork_metadata_does_not_hide_conflicts_after_out_of_window_usage(self):
+        path=self.session([self.event(), {"type":"session_meta","payload":{"id":"parent"}}])
+        records=[json.loads(line) for line in path.read_text().splitlines()]
+        records[0]["payload"]["source"]={"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}
+        path.write_text("\n".join(json.dumps(record) for record in records)+"\n",encoding="utf-8")
+        self.assertIn("conflicting session identities",read_session(path,after="2026-10-01T02:00:00Z")["issues"])
+        records[0]["payload"]["source"]={"subagent":None}
+        path.write_text("\n".join(json.dumps(record) for record in records[:3])+"\n",encoding="utf-8")
+        self.assertEqual(read_session(path)["thread_id"],"one")
+
+    def test_unknown_missing_identity_cannot_be_mistaken_for_fork_parent(self):
+        result=read_session(self.session([{"type":"session_meta","payload":{"id":None}},self.event()]))
+        self.assertEqual(result["thread_id"],"one")
+        self.assertIn("conflicting session identities",result["issues"])
+
     def test_cache_and_reasoning_price(self):
         self.assertEqual(standard_cost(counts(), "gpt-6.1-sol"), Decimal("0.000248"))
 

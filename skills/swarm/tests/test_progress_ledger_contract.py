@@ -1124,6 +1124,37 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertIn("producer", role_ids)
         self.assertNotIn("content_creator", role_ids)
 
+    def test_lab_and_factory_taxonomy_reuses_task_manifest_identity_and_restart(self):
+        from skills.swarm.runtime.progress_events import validate_task_manifest_draft
+        builtins=self.role_manifests()
+        for kind in ("LAB","FACTORY"):
+            identity=f"unit-{kind.lower()}"
+            unit={"kind":kind,"goal_id":None,"parent_goal_id":"goal-project","parent_unit_task_id":None}
+            manifest=build_task_manifest(manifest_id=f"manifest-{identity}",task_id=identity,project_id="project-alpha",ctrl_id="ctrl-alpha",task_name=f"{kind} outcome",role_scope="LEAD_SINGLE",work_unit=unit)
+            draft={key:value for key,value in manifest.items() if key not in {"task_id","manifest_digest"}}
+            self.assertEqual(validate_task_manifest_draft(draft)["work_unit"],unit)
+            self.ledger.append(identity_manifest_event(manifest,event_id=f"create-{identity}",dedupe_key=f"create-{identity}",observed_at_ms=1,provenance="host-unit-binding"))
+            bound={**unit,"goal_id":f"goal-{identity}"}
+            revision=build_task_manifest(**{**manifest,"work_unit":bound,"manifest_version":"2","supersedes_digest":manifest["manifest_digest"]})
+            self.ledger.append(identity_manifest_event(revision,event_id=f"bind-{identity}",dedupe_key=f"bind-{identity}",observed_at_ms=2,provenance="host-goal-binding"))
+            before=self.ledger.replay()
+            for index,hostile_unit in enumerate((None,{**bound,"kind":"FACTORY" if kind=="LAB" else "LAB"},{**bound,"parent_unit_task_id":"other-unit"},{**bound,"goal_id":None},{**bound,"parent_goal_id":"other-goal"})):
+                fields={**revision,"manifest_version":"3","supersedes_digest":revision["manifest_digest"]}
+                if hostile_unit is None: fields.pop("work_unit")
+                else: fields["work_unit"]=hostile_unit
+                hostile_revision=build_task_manifest(**fields)
+                with self.assertRaises(ProgressEventError):
+                    self.ledger.append(identity_manifest_event(hostile_revision,event_id=f"hostile-{identity}-{index}",dedupe_key=f"hostile-{identity}-{index}",observed_at_ms=3,provenance="hostile-unit-revision"))
+                self.assertEqual(self.ledger.replay(),before)
+            for hostile in ({"role_scope":"DOER_SINGLE"},{"work_unit":{**bound,"kind":"CTRL"}},{"work_unit":{**bound,"parent_unit_task_id":identity}}):
+                with self.assertRaises(ProgressEventError): build_task_manifest(**{**revision,**hostile})
+        projected=ProgressLedger(self.root).project_identity_manifests("project-alpha","ctrl-alpha",builtins)
+        units={item["manifest"]["task_id"]:item["manifest"] for item in projected["tasks"]}
+        self.assertEqual(set(units),{"unit-lab","unit-factory"})
+        self.assertEqual(units["unit-factory"]["work_unit"]["goal_id"],"goal-unit-factory")
+        self.assertEqual(units["unit-lab"]["role_scope"],"LEAD_SINGLE")
+        self.assertNotIn("coordinator_id",units["unit-lab"]["work_unit"])
+
     def test_agent_task_manifests_are_versioned_joined_and_restart_stable(self) -> None:
         builtins = self.role_manifests()
         roles = {role["id"]: role for role in builtins}
@@ -2560,7 +2591,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         swarm = Swarm(topology={"lead-gate"}, workers={"owner-gate": Worker("owner-gate", "lead-gate", 1)})
         dispatch_artifact = ArtifactIdentity("dispatch", "role-gate", "source")
         dispatch_contract = DelegationContract("task-denied", "Return one bounded result.", "owner-gate", ("skills/swarm/runtime",), dispatch_artifact, ("skills/swarm/runtime/core.py",), (ProofClass.SOURCE,), 100)
-        denied = Task("task-denied", "owner-gate", "creator", 1, {}, subagent_receipt="host:thread:task-denied", user_custody_required=True, delegation_contract=dispatch_contract)
+        denied = Task("task-denied", "owner-gate", "creator", 1, {}, goal_id="goal-role-gate", subagent_receipt="host:thread:task-denied", user_custody_required=True, delegation_contract=dispatch_contract)
         before = (dict(swarm.tasks), set(swarm.workers["owner-gate"].task_ids))
         with self.assertRaisesRegex(InvariantError, "role gate denied"):
             swarm.assign(Role.LEAD, denied)

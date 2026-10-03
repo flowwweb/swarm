@@ -233,8 +233,9 @@ selected worker's actual LEAD. `CODE` requires at least one named gate. Only
 non-artifact `NON_CODE` work permits an empty contract; `OTHER`, `CODE`, and
 artifact-producing lanes reject it, including a later switch after registration. The
 bound LEAD owns lane integration, incident consultation, gate execution/recording,
-and lane completion. CTRL may complete only direct accepted work and cannot
-close a LEAD-owned lane. REVIEW independently verifies the exact artifact and receipts;
+and lane completion. A direct atomic CTRL-to-DOER assignment lets only that exact
+DOER execute its declared gates and complete its bounded task after the same
+independent acceptance; it never transfers production back to CTRL. CTRL coordinates only and cannot close a production lane. REVIEW independently verifies the exact artifact and receipts;
 it never converts source-only approval into acceptance. CTRL surfaces the verdict
 and refuses portfolio acceptance when the acceptance receipt is absent; it does
 not rerun or impersonate the lane owner. CTRL alone composes accepted lanes into

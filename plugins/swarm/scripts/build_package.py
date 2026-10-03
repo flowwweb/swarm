@@ -65,6 +65,7 @@ DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
         ".github",
         "console/node_modules",
         "console/tests",
+        "telemetry",
         "plugins",
         "skills/swarm/evals",
         "skills/swarm/tests",

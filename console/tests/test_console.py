@@ -682,6 +682,91 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(len(sent), calls)
         self.assertEqual(app.progress_ledger.project_task_creation_bindings("project:alpha")["bindings"], binding["bindings"])
 
+    def test_work_unit_creation_persists_native_coordinators_and_pending_goals(self) -> None:
+        from contextlib import contextmanager
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        sent = []
+        for kind, template in (("LAB", "research"), ("FACTORY", "software")):
+            request = dict(kind=kind, template_id=template, name=kind + " outcome", objective="Resolve one bounded outcome",
+                project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="create-" + kind.lower())
+            with mock.patch.object(app, "_auto_scope"):
+                prepared = app.prepare_work_unit(request)
+            self.assertEqual(prepared["status"], "PREPARED")
+            self.assertEqual(app.unit_catalog_projection(kind)["instances"], [])
+            draft = prepared["submission"]["envelope"]["task_creation"]["task_manifest_draft"]
+            self.assertEqual(draft["role_scope"], "LEAD_SINGLE")
+            self.assertEqual(draft["work_unit"], dict(kind=kind, goal_id=None, parent_goal_id=None, parent_unit_task_id=None))
+            self.assertIn("Unless explicitly disabled", prepared["submission"]["instruction"])
+            self.assertEqual(len(draft["blocks"]), 4)
+            thread_id = "native-" + kind.lower()
+            @contextmanager
+            def session(cwd, *, retain_turn=False, approval_project_id=""):
+                self.assertTrue(retain_turn)
+                responses = [{"thread": {"id": thread_id, "cwd": str(cwd)}}, {"turn": {"id": "turn-" + thread_id}}]
+                def send(message):
+                    sent.append(message)
+                def receive(predicate):
+                    return {"id": sent[-1]["id"], "result": responses.pop(0)}
+                yield send, receive
+            app.auto_bridge.command_session = session
+            with mock.patch.object(app, "_auto_scope"):
+                result = app.create_bound_task(prepared["submission"])
+            self.assertEqual((result["status"], result["thread_id"], result["command_digest"]), ("RESULT", thread_id, prepared["command_digest"]))
+            self.assertFalse(result["work_completed"])
+            unit = app.unit_catalog_projection(kind)["instances"][0]
+            self.assertEqual(unit["coordinator_id"], thread_id)
+            self.assertEqual(unit["work_unit"]["kind"], kind)
+            self.assertIsNone(unit["work_unit"]["goal_id"])
+            self.assertEqual(unit["outcome_acceptance"], "UNKNOWN")
+            self.assertEqual(len(unit["blocks"]), 4)
+            before = app.progress_ledger._state.path.read_bytes()
+            restarted = console.App(self.codex_home, self.config)
+            restarted.auto_bridge.command_session = session
+            self.assertEqual(restarted.unit_catalog_projection(kind)["instances"], [unit])
+            self.assertEqual(restarted.create_bound_task(prepared["submission"])["status"], "REPLAY")
+            self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), before)
+        self.assertEqual(len(sent), 4)
+
+    def test_work_unit_submission_rechecks_custody_before_native_dispatch(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        request = dict(kind="FACTORY", template_id="software", name="Factory", objective="One deliverable",
+            project_id="project:alpha", ctrl_id="root", parent_goal_id="goal-root", request_id="unit-stale")
+        with mock.patch.object(app, "_auto_scope"), mock.patch.object(app.store, "auto_status", return_value={"goal_id":"goal-root"}):
+            prepared = app.prepare_work_unit(request)
+        app.auto_bridge.command_session = mock.Mock(side_effect=AssertionError("stale custody must never call native host"))
+        for scope_failure in (False, True):
+            with mock.patch.object(app, "_auto_scope", side_effect=console.ConsoleError("changed CTRL") if scope_failure else None), \
+                 mock.patch.object(app.store, "auto_status", return_value={"goal_id":"different-goal"}):
+                result = app.create_bound_task(prepared["submission"])
+            self.assertTrue(result["definitive_non_dispatch"])
+            self.assertEqual(result["reason"], "WORK_UNIT_PARENT_CUSTODY_CHANGED")
+            self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
+        expired = copy.deepcopy(prepared["submission"])
+        expired["envelope"].update(submitted_at_ms=int(time.time()*1000)-120000, expires_at_ms=int(time.time()*1000)-60000)
+        with mock.patch.object(app, "_auto_scope"), mock.patch.object(app.store, "auto_status", return_value={"goal_id":"goal-root"}):
+            result = app.create_bound_task(expired)
+        self.assertTrue(result["definitive_non_dispatch"])
+        self.assertEqual(result["reason"], "SUBMISSION_EXPIRED_OR_REVISION_STALE")
+        app.auto_bridge.command_session.assert_not_called()
+
+    def test_work_unit_preparation_rejects_stale_ctrl_and_foreign_goal(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        request = dict(kind="FACTORY", template_id="software", name="Factory", objective="Bounded deliverable",
+            project_id="project:alpha", ctrl_id="missing", parent_goal_id=None, request_id="unit-denied")
+        with self.assertRaisesRegex(console.ConsoleError, "current host-confirmed"):
+            app.prepare_work_unit(request)
+        request.update(ctrl_id="root", parent_goal_id="foreign-goal")
+        with mock.patch.object(app, "_auto_scope"), self.assertRaisesRegex(console.ConsoleError, "parent goal lacks retained binding"):
+            app.prepare_work_unit(request)
+        self.assertEqual(app.unit_catalog_projection("FACTORY")["instances"], [])
+        self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
+
     def test_existing_task_message_http_retains_replay_and_never_reuses_old_turn(self) -> None:
         from contextlib import contextmanager
         with closing(sqlite3.connect(self.database)) as connection:
@@ -7495,7 +7580,7 @@ class SwarmConsoleTests(unittest.TestCase):
             "schema_version": 1, "record_type": "REQUEST_LIFECYCLE",
             "event_id": f"lifecycle-{sequence}", "dedupe_key": f"lifecycle-dedupe-{sequence}",
             "request_id": request_id, "stage_id": stage_id, "parent_event_id": None,
-            "envelope_digest": "1" * 64, "lifecycle_state": state,
+            "command_digest": "1" * 64, "lifecycle_state": state,
             "record": {
                 "id": request_id, "goal_id": "goal-auto", "task_id": "task",
                 "next_due_event": "provider or user release",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 import sys
 import tempfile
@@ -8,13 +9,20 @@ import unittest
 
 from skills.swarm.runtime import (
     AcceptanceContract,
+    ArtifactFileEvidence,
     ArtifactIdentity,
+    ArtifactParityReceipt,
     CtrlMode,
+    DelegatedEvidence,
+    DelegatedReceiptVerdict,
+    DelegatedReturnReceipt,
+    DelegationContract,
     IncidentLedger,
     InvariantError,
     LaneMaterialization,
     LaneKind,
     ProfessionAssignment,
+    ProofClass,
     ProofState,
     ReviewEvidence,
     ReviewScope,
@@ -182,12 +190,21 @@ class TopologyMaterializationTests(unittest.TestCase):
             swarm.add_worker(Role.LEAD, Worker("builder", "lead", 1))
             task = Task(
                 "adapter", "builder", "author", 1, {}, subagent_receipt="host:thread:adapter",
-                ctrl_mode=CtrlMode.DIRECT, lane_kind=LaneKind.CODE, owning_lead_id="lead",
+                ctrl_mode=CtrlMode.DELEGATED, lane_kind=LaneKind.CODE, owning_lead_id="lead",
                 acceptance_contract=AcceptanceContract(artifact, ("freeze-gate",), observation_root=root),
+                goal_id="goal-adapter-release",
+                delegation_contract=DelegationContract("adapter", "Return the exact frozen adapter candidate.", "builder", ("artifact.txt",), artifact, ("artifact.txt",), (ProofClass.SOURCE,), 2),
             )
             swarm.assign(Role.LEAD, task)
             swarm.consult_incidents(Role.LEAD, "adapter", IncidentLedger(root), artifact="codex-adapter", scope="topology", actor_id="lead")
             swarm.run_gate(Role.LEAD, "adapter", "freeze-gate", (sys.executable, "-c", "pass"), cwd=root, actor_id="lead")
+            content = path.read_bytes()
+            digest = sha256(content).hexdigest()
+            swarm.record_delegated_return(Role.DOER, task.id, DelegatedReturnReceipt(
+                "adapter-return", task.id, "builder", DelegatedReceiptVerdict.ACCEPT, artifact, "Exact frozen adapter candidate.",
+                (DelegatedEvidence("adapter-source", ProofClass.SOURCE, artifact.key(), digest, "Source parity for the topology freeze contract."),),
+                ArtifactParityReceipt.from_files(artifact, (ArtifactFileEvidence("artifact.txt", len(content), digest),)),
+            ), actor_id="builder")
             review = ReviewEvidence(
                 ReviewStrategy.LIGHT, "review-owner", True, artifact,
                 receipt=(("acceptance", "review:adapter"),), scope=ReviewScope.ACCEPTANCE,
@@ -266,11 +283,14 @@ class TopologyMaterializationTests(unittest.TestCase):
             task.acceptance_review_receipt = review
             task.reviewer = review.reviewer
             original_owner = task.owner
+            original_delegation = task.delegation_contract
             task.owner = "replacement-builder"
+            task.delegation_contract = replace(original_delegation, owner_id=task.owner)
             self.assertEqual(swarm.proof_state("adapter"), ProofState.ACCEPTANCE_REVIEW)
             with self.assertRaisesRegex(InvariantError, "runtime-issued exact-artifact independent acceptance"):
                 swarm.issue_topology_artifact_freeze("adapter", "review", plan.plan_digest)
             task.owner = original_owner
+            task.delegation_contract = original_delegation
             original_contract = task.acceptance_contract
             task.acceptance_contract = AcceptanceContract(artifact, ("changed-plan",), observation_root=root)
             self.assertNotEqual(swarm.proof_state("adapter"), ProofState.ACCEPTED)

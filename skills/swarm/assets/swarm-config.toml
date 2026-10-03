@@ -310,7 +310,7 @@ coordinator_min_children = 2
 # LEAD, DOER, REVIEW, and consequential planning work; it is never a quota,
 # trigger, or hard cutoff.
 preferred_lane_width = 3
-# Maximum locally measurable window for CTRL_DIRECT atomic work.
+# Legacy compatibility value. Does not authorize CTRL production work.
 ctrl_direct_horizon_minutes = 20
 
 [subagents]
@@ -378,3 +378,7 @@ prompt_on_close = false
 # SWARM never submits feedback without a direct user instruction.
 # Do not store tokens, credentials, or private routing data here.
 destination = ""
+
+# Opt in to bounded product telemetry sent to Flowwweb. No content or personal identifiers.
+[telemetry]
+enabled = false

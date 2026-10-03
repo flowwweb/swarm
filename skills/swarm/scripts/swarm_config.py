@@ -213,6 +213,7 @@ DEFAULTS: dict[str, Any] = {
         "task_lifetime_hours": 4,
     },
     "hygiene": {"no_review_archive_delay": 0, "low_review_retention": 7, "high_review_retention": 30, "stale_task_archive_delay": 1, "completed_task_retention": 30, "pinned_item_policy": "manual"},
+    "telemetry": {"enabled": False},
     "feedback": {
         "enabled": True,
         "include_diagnostics": True,
@@ -723,6 +724,10 @@ def validate(raw: dict[str, Any]) -> None:
         _bounded_int(hygiene, key, 0, 3650, "hygiene")
     if "pinned_item_policy" in hygiene and hygiene["pinned_item_policy"] not in {"manual", "project_close"}:
         raise ConfigError("hygiene.pinned_item_policy must be manual or project_close")
+
+    telemetry = _expect_table(raw, "telemetry")
+    _expect_keys(telemetry, set(DEFAULTS["telemetry"]), "telemetry")
+    _boolean(telemetry, "enabled", "telemetry")
 
     feedback = _expect_table(raw, "feedback")
     _expect_keys(feedback, set(DEFAULTS["feedback"]), "feedback")

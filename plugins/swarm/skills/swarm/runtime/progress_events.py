@@ -19,7 +19,7 @@ from .agent_colors import (
     BUILT_IN_ROLE_ACCENTS as ROLE_ACCENTS,
     project_agent_color_registry,
 )
-from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, CustodyMutation, HostCustodyReceipt, InvariantError, OperationClass, Role, RoleGateDecision, RetryOutcome, RetryTopologyAction, RetryTopologyLedger, Task, _authority_verify, _custody_message, role_gate
+from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, CustodyMutation, HostCustodyReceipt, InvariantError, OperationClass, Role, RoleGateDecision, RetryOutcome, RetryTopologyAction, RetryTopologyLedger, Task, _authority_verify, _custody_message, role_gate, validate_work_unit
 from .private_state import LockedPrivateState
 
 
@@ -131,7 +131,7 @@ BLOCK_DEFINITION_FIELDS = frozenset({
     "estimate_minutes", "weight", "supersedes_block_id",
 })
 TASK_MANIFEST_FIELDS = MANIFEST_ENVELOPE_FIELDS | frozenset({
-    "task_id", "task_name", "role_scope", "policy", "milestones", "blocks",
+    "task_id", "task_name", "role_scope", "policy", "milestones", "blocks", "work_unit",
 })
 MANIFEST_FORBIDDEN_FIELDS = frozenset({
     "status", "state", "progress", "percent", "health", "royal_line",
@@ -767,8 +767,9 @@ def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
         _exact_fields(record, REQUEST_RECORD_FIELDS, "request lifecycle record")
         if record.get("id") != payload["request_id"]:
             raise ProgressEventError("request lifecycle record identity does not match its event")
-        for key in ("id", "goal_id", "task_id", "accepted_owner", "outcome_kind", "next_due_event"):
+        for key in ("id", "task_id", "accepted_owner", "outcome_kind", "next_due_event"):
             _safe_id(record.get(key), f"request record {key}")
+        _optional_id(record.get("goal_id"), "request record goal_id")
         _optional_id(record.get("successor_id"), "request record successor_id")
         outcome_digest = record.get("outcome_digest")
         if not isinstance(outcome_digest, str) or len(outcome_digest) != 64 or any(character not in "0123456789abcdef" for character in outcome_digest):
@@ -1553,6 +1554,11 @@ def validate_task_manifest(payload: Any) -> dict[str, Any]:
     }
     if normalized["role_scope"] not in {"CTRL_BOUNDED", "LEAD_SINGLE", "DOER_SINGLE"}:
         raise ProgressEventError("task role_scope is unsupported")
+    if "work_unit" in payload:
+        try: normalized["work_unit"]=validate_work_unit(payload["work_unit"])
+        except InvariantError as error: raise ProgressEventError(str(error)) from error
+        if normalized["role_scope"]=="DOER_SINGLE": raise ProgressEventError("work units require a coordinating CTRL or LEAD, not a producer DOER")
+        if normalized["work_unit"]["parent_unit_task_id"]==normalized["task_id"]: raise ProgressEventError("work unit cannot parent itself")
     expected = _canonical_manifest_digest(normalized)
     if payload.get("manifest_digest") != expected:
         raise ProgressEventError("task manifest digest does not match canonical content")
@@ -1574,6 +1580,9 @@ def build_task_manifest(**fields: Any) -> dict[str, Any]:
     })
     payload.setdefault("milestones", [])
     payload.setdefault("blocks", [])
+    if "work_unit" in payload:
+        try: payload["work_unit"]=validate_work_unit(payload["work_unit"])
+        except InvariantError as error: raise ProgressEventError(str(error)) from error
     payload["manifest_digest"] = _canonical_manifest_digest(payload)
     return validate_task_manifest(payload)
 
@@ -1591,6 +1600,12 @@ def validate_task_manifest_draft(payload: Any) -> dict[str, Any]:
 
 
 def _validate_task_manifest_revision(previous: Mapping[str, Any] | None, current: Mapping[str, Any]) -> None:
+    if previous is not None and "work_unit" in previous:
+        prior_unit=previous["work_unit"]; unit=current.get("work_unit")
+        if unit is None or any(unit[name]!=prior_unit[name] for name in ("kind","parent_unit_task_id")):
+            raise ProgressEventError("work unit kind and parent identity cannot be changed or removed")
+        if any(prior_unit[name] is not None and unit[name]!=prior_unit[name] for name in ("goal_id","parent_goal_id")):
+            raise ProgressEventError("bound work unit goal identities cannot be reset or reassigned")
     prior_milestones = set() if previous is None else {item["milestone_id"] for item in previous["milestones"]}
     prior_blocks = set() if previous is None else {item["block_id"] for item in previous["blocks"]}
     milestone_links = [item["supersedes_milestone_id"] for item in current["milestones"] if item["supersedes_milestone_id"] is not None]

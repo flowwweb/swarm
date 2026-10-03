@@ -1,13 +1,15 @@
 # Install SWARM on another device
 
-SWARM 0.4.10+codex.20261002 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
+SWARM 0.4.11+codex.20261002 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
 
-Use the same release ref on each device. Until this release is merged to main, use `codex/swarm-device-release-20261002`:
+Install the current public release from the default branch on each device:
 
 ```text
-codex plugin marketplace add flowwweb/swarm --ref codex/swarm-device-release-20261002
+codex plugin marketplace add flowwweb/swarm
 codex plugin add swarm@flowwweb
 ```
+
+For pre-release testing only, explicitly add `--ref codex/swarm-device-release-20261002`. That branch stays pinned until its registration is changed.
 
 For an existing Flowwweb marketplace, refresh its configured ref, then reinstall:
 
@@ -19,6 +21,13 @@ codex plugin add swarm@flowwweb
 An existing marketplace pinned to another ref keeps that ref. Check `codex plugin marketplace list`; update its registration to the intended release ref before refreshing. Start a new Codex chat after installing. An already-running chat keeps its loaded instructions.
 
 The release contains no device-specific absolute paths, credentials, global SWARM config, or private benchmark session reports. Each device uses its own Codex login and `~/.agents/swarm/config.toml`. Installing the plugin does not transfer local chats, worktrees, services, project briefs or credentials.
+
+Version 0.4.11 adds opt-in [product telemetry](product-telemetry.md) to the Flowwweb
+beacon at `https://telemetry.flowwweb.com/api/swarm/telemetry`. Enable **Share SWARM
+usage with Flowwweb** in onboarding or Settings on each installation. Consent
+defaults to off; native hook trust remains required. Delivery runs automatically
+after consent, including bounded offline retries. Installation alone does not
+prove hook execution, agent compliance, or telemetry from another device.
 
 The Python HQ and measurement commands require Python 3.11 or later. Codex owns native task tools and model availability. Platform code paths have local fixture coverage; installation and execution on a second physical device must be verified there.
 
@@ -38,7 +47,7 @@ Official behavior: [skill activation](https://developers.openai.com/codex/skills
 
 `swarm_status` now includes a `device` projection: host name, running package version and the last 50 activation receipts within the last 64 KiB of the existing telemetry stream. Each receipt binds the emitted startup pointer to the hook event, hashed session identity, package version and skill SHA-256. Prompts, responses and raw session IDs are excluded. A telemetry write failure reports a fixed diagnostic on stderr while preserving the startup instructions.
 
-`OBSERVED_HOOK_OUTPUT` means the hook emitted its context. Host delivery, reading the skill and following the workflow still need task evidence. `NO_ACTIVATION_RECEIPTS` does not mean a task ignored SWARM: an older package, an untrusted hook or an inactive hook may produce no record. The projection is local to the connected device; it does not collect other devices. An advertised connector tool returning `Unknown tool` is a connector registration failure, not proof of absent telemetry or failed project work.
+`OBSERVED_HOOK_OUTPUT` means the hook emitted its context. Host delivery, reading the skill and following the workflow still need task evidence. `NO_ACTIVATION_RECEIPTS` does not mean a task ignored SWARM: an older package, an untrusted hook or an inactive hook may produce no record. Activation receipts are local to the connected device. The separate `device.product_telemetry` projection reports consent, beacon, pending count and delivery acknowledgement for central product telemetry. Flowwweb maintainers read consenting installations centrally through `python telemetry/manage.py summary --days 7` with authenticated Cloudflare access. An advertised connector tool returning `Unknown tool` is a connector registration failure, not proof of absent telemetry or failed project work.
 
 ## Check the installation
 
@@ -70,7 +79,7 @@ Replace the paths and timestamp with the exact run roster and start boundary. Su
 
 Price is a conditional Standard-tier API-equivalent estimate using the linked official model rates, not subscription billing. Per-request long-context pricing is applied only when request counts reconcile with cumulative deltas. Unknown models, incomplete records, resets, or nonzero cache-write accounting that has not been reconciled retain unknown prices. Unknown service tier, regional premiums and external tool charges remain explicit limitations.
 
-Read-only snapshots do not prove final closure or participant completeness. Keep common external judging separate from build costs. No background collector, additional database or scheduler is installed.
+Read-only benchmark snapshots do not prove final closure or participant completeness. Keep common external judging separate from build costs. The benchmark reporting command installs no collector, database or scheduler. Separately, consented product telemetry uses background hooks, a bounded local outbox and the Flowwweb beacon; it does not replace exact benchmark roster accounting.
 
 ## Release scope
 
