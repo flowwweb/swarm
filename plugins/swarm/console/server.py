@@ -8702,7 +8702,7 @@ class App:
             resolved = target.resolve(strict=True)
             if not resolved.is_relative_to(root):
                 raise ConsoleError("project view source resolves outside the canonical project root")
-            relative = resolved.relative_to(root)
+            relative = target.relative_to(root)
             current = root
             for part in relative.parts:
                 current = current / part
@@ -8710,7 +8710,7 @@ class App:
                 attributes = getattr(metadata, "st_file_attributes", 0)
                 if current.is_symlink() or attributes & getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
                     raise ConsoleError("project view source cannot traverse a reparse point")
-            raw = self._read_project_view_handle(root, resolved)
+            raw = self._read_project_view_handle(root, target)
         except ConsoleError:
             raise
         except OSError as exc:
@@ -8722,7 +8722,71 @@ class App:
     @staticmethod
     def _read_project_view_handle(root: Path, path: Path) -> bytes:
         if os.name != "nt":
-            raise ConsoleError("secure project view source reads are unavailable on this host")
+            if (
+                os.name != "posix" or not all(hasattr(os, flag) for flag in ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK"))
+                or os.open not in os.supports_dir_fd or os.stat not in os.supports_dir_fd
+                or os.stat not in os.supports_follow_symlinks
+            ):
+                raise ConsoleError("secure project view source reads are unavailable on this host")
+            descriptors: list[int] = []
+            directories: list[tuple[Path, Any]] = []
+            try:
+                parts = path.relative_to(root).parts
+                if not root.is_absolute() or not parts or any(part in {".", ".."} for part in parts):
+                    raise ConsoleError("project view source resolves outside the canonical project root")
+                current = root
+                before = os.stat(root, follow_symlinks=False)
+                directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                descriptors.append(directory)
+                opened = os.fstat(directory)
+                if not stat_module.S_ISDIR(opened.st_mode) or not os.path.samestat(before, opened):
+                    raise ConsoleError("project view source identity changed while it was retained")
+                directories.append((current, opened))
+                for part in parts[:-1]:
+                    before = os.stat(part, dir_fd=directory, follow_symlinks=False)
+                    directory = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    descriptors.append(directory)
+                    opened = os.fstat(directory)
+                    if not stat_module.S_ISDIR(opened.st_mode) or not os.path.samestat(before, opened):
+                        raise ConsoleError("project view source identity changed while it was retained")
+                    current = current / part
+                    directories.append((current, opened))
+                before = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+                descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                descriptors.append(descriptor)
+                opened = os.fstat(descriptor)
+                if not stat_module.S_ISREG(opened.st_mode) or not os.path.samestat(before, opened):
+                    raise ConsoleError("project view source cannot be a directory or symlink or change identity")
+                size = opened.st_size
+                if size <= 0 or size > PROJECT_VIEW_MAX_BYTES:
+                    raise ConsoleError("project view source is unavailable or exceeds the delivery guard")
+                chunks = []
+                remaining = size
+                while remaining:
+                    chunk = os.read(descriptor, min(remaining, 64 * 1024))
+                    if not chunk:
+                        raise ConsoleError("project view source changed while it was retained")
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                retained = os.fstat(descriptor)
+                current_file = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+                if (
+                    os.read(descriptor, 1) or not os.path.samestat(opened, current_file)
+                    or not stat_module.S_ISREG(current_file.st_mode)
+                    or (retained.st_size, retained.st_mtime_ns, retained.st_ctime_ns)
+                    != (size, opened.st_mtime_ns, opened.st_ctime_ns)
+                ):
+                    raise ConsoleError("project view source changed while it was retained")
+                for retained_path, retained_directory in directories:
+                    current_directory = os.stat(retained_path, follow_symlinks=False)
+                    if not stat_module.S_ISDIR(current_directory.st_mode) or not os.path.samestat(retained_directory, current_directory):
+                        raise ConsoleError("project view source identity changed while it was retained")
+                return b"".join(chunks)
+            except (OSError, ValueError) as exc:
+                raise ConsoleError("project view source is unavailable") from exc
+            finally:
+                for descriptor in reversed(descriptors):
+                    os.close(descriptor)
         import ctypes
         import msvcrt
         from ctypes import wintypes

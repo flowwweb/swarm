@@ -4883,6 +4883,7 @@ proofFeed.items.push({
     await profileTrigger.click();
     await profilePage.locator("#view-title").click();
     assert.equal(await profilePage.locator("#profile-dialog").evaluate((element) => element.matches(":popover-open")), false);
+    await profilePage.waitForFunction(() => document.querySelector("#profile").getAttribute("aria-expanded") === "false");
     assert.equal(await profileTrigger.getAttribute("aria-expanded"), "false");
     assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET", "GET", "GET", "GET"]);
     assert.equal(profileRuntime.runtimeErrors.length, 4);

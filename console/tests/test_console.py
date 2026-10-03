@@ -1293,7 +1293,10 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertNotIn(removed, index)
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name) / "fixtures"
+        self.root.mkdir()
+        self.alpha_root = Path(self.temp.name) / "alpha"
+        self.alpha_root.mkdir()
         self.codex_home = self.root / "codex"
         self.codex_home.mkdir()
         self.config = self.root / "swarm" / "config.toml"
@@ -1329,14 +1332,14 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         self.connection.execute(
             "INSERT INTO project_roots VALUES (?,?,?)",
-            ("project:alpha", 0, "C:/work/alpha"),
+            ("project:alpha", 0, str(self.alpha_root)),
         )
         now = 2_000_000_000_000
         rows = [
-            ("root", "🐙CTRL - Ship console", "C:/work/alpha", now, now, "gpt-5.6-sol", "high", 100),
-            ("lead", "🧭LEAD - Console", "C:/work/alpha", now, now, "gpt-5.6-terra", "medium", 200),
-            ("task", "🔨DEV - Local API", "C:/work/alpha", now, now, "gpt-5.6-luna", "xhigh", 300),
-            ("review", "🔍REVIEW - Console proof", "C:/work/alpha", now, now, "gpt-5.6-sol", "high", 150),
+            ("root", "🐙CTRL - Ship console", str(self.alpha_root), now, now, "gpt-5.6-sol", "high", 100),
+            ("lead", "🧭LEAD - Console", str(self.alpha_root), now, now, "gpt-5.6-terra", "medium", 200),
+            ("task", "🔨DEV - Local API", str(self.alpha_root), now, now, "gpt-5.6-luna", "xhigh", 300),
+            ("review", "🔍REVIEW - Console proof", str(self.alpha_root), now, now, "gpt-5.6-sol", "high", 150),
             ("unsafe", "Please do this\nwith secret prompt text", "C:/private/path", now, now, "gpt", "low", 999),
         ]
         for thread_id, title, cwd, created, updated, model, effort, tokens in rows:
@@ -1464,12 +1467,12 @@ class SwarmConsoleTests(unittest.TestCase):
                 "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [
                     (
-                        "other-ctrl", "🐙CTRL - Other", "C:/work/alpha", now // 1000,
+                        "other-ctrl", "🐙CTRL - Other", str(self.alpha_root), now // 1000,
                         now // 1000, now, now, "gpt-5.6-sol", "high", 1, 0, "", "main",
                         "", "", "ctrl", 0,
                     ),
                     (
-                        "other-task", "🔨DEV - Other", "C:/work/alpha", now // 1000,
+                        "other-task", "🔨DEV - Other", str(self.alpha_root), now // 1000,
                         now // 1000, now, now, "gpt-5.6-luna", "medium", 1, 0, "", "main",
                         "", "", "", 0,
                     ),
@@ -1886,7 +1889,7 @@ class SwarmConsoleTests(unittest.TestCase):
             for task_id in task_ids:
                 connection.execute(
                     "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (task_id, task_id.replace("-", " ").title(), "C:/work/alpha", now // 1000, now // 1000,
+                    (task_id, task_id.replace("-", " ").title(), str(self.alpha_root), now // 1000, now // 1000,
                      now, now, "gpt-5.6-luna", "medium", 1, 0, "", "main", "", "", "", 0),
                 )
                 connection.execute("INSERT INTO thread_spawn_edges VALUES (?,?,?)", ("root", task_id, "open"))
@@ -2914,7 +2917,7 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.execute(
                 "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    "bound-agent", "private host title", "C:/work/alpha", 2_000_000_000,
+                    "bound-agent", "private host title", str(self.alpha_root), 2_000_000_000,
                     2_000_000_000, 2_000_000_000_000, 2_000_000_000_001,
                     "gpt-5.6-terra", "high", 0, 0, "", "main", "", "", "", 0,
                 ),
@@ -3082,9 +3085,9 @@ class SwarmConsoleTests(unittest.TestCase):
         connection.executemany(
             "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                ("child-ctrl", "🐙CTRL - Nested recovery", "C:/work/alpha", now // 1000, now, now, now,
+                ("child-ctrl", "🐙CTRL - Nested recovery", str(self.alpha_root), now // 1000, now, now, now,
                  "gpt-5.6-sol", "high", 40, 0, "", "main", "", "", "", 0),
-                ("child-doer", "🔨DEV - Nested repair", "C:/work/alpha", now // 1000, now, now, now,
+                ("child-doer", "🔨DEV - Nested repair", str(self.alpha_root), now // 1000, now, now, now,
                  "gpt-5.6-luna", "high", 20, 0, "", "main", "", "", "", 0),
             ],
         )
@@ -3112,7 +3115,7 @@ class SwarmConsoleTests(unittest.TestCase):
         raw_title = "<codex_delegation>\nprivate task instructions\n</codex_delegation>"
         connection.execute(
             "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            ("generic-child", raw_title, "C:/work/alpha", now // 1000, now // 1000, now, now,
+            ("generic-child", raw_title, str(self.alpha_root), now // 1000, now // 1000, now, now,
              "gpt-5.6-terra", "high", 25, 0, "", "main", "subagent", "Lovelace", "", 0, "/root/generic_child"),
         )
         connection.execute("INSERT INTO thread_spawn_edges VALUES (?,?,?)", ("root", "generic-child", "open"))
@@ -5593,7 +5596,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(saved["active_ctrl"], False)
         self.assertEqual(saved["ordering"]["position"], 1)
         self.assertNotIn("task", {project["id"] for project in navigation["projects"]})
-        self.assertNotIn("C:/work/alpha", json.dumps(navigation["projects"]))
+        self.assertNotIn(str(self.alpha_root), json.dumps(navigation["projects"]))
 
     def test_project_roster_enumerates_saved_projects_and_keeps_current_work_separate(self) -> None:
         self._confirm_root_ctrl()
@@ -5615,7 +5618,7 @@ class SwarmConsoleTests(unittest.TestCase):
         alpha = next(project for project in roster["projects"] if project["id"] == "project:alpha")
         inactive = next(project for project in roster["projects"] if project["id"] == "project:inactive")
         self.assertEqual(alpha["display_name"], "alpha")
-        self.assertEqual(alpha["root"], "C:/work/alpha")
+        self.assertEqual(alpha["root"], str(self.alpha_root))
         self.assertEqual(alpha["root_status"], "KNOWN")
         self.assertEqual(alpha["status"], "active")
         self.assertEqual(inactive["status"], "inactive")
@@ -6217,6 +6220,76 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(retained.pop("effective_component_status"), {"custom": "STALE_LAST_ACCEPTED", "native_work": "WITHHELD"})
         self.assertEqual(retained, {key: value for key, value in accepted.items() if key != "effective_component_status"})
 
+    @unittest.skipUnless(os.name == "posix", "native POSIX descriptor contract")
+    def test_project_view_posix_handles_reject_aliases_nonregular_and_unbounded_sources(self) -> None:
+        root = self.alpha_root
+        folder = root / "ui"
+        folder.mkdir()
+        source = folder / "source.json"
+        source.write_bytes(b"{}")
+        app = console.App(self.codex_home, self.config)
+        digest = "sha256:" + hashlib.sha256(b"{}").hexdigest()
+        with mock.patch.object(Path, "read_bytes", side_effect=AssertionError("pathname reopen")):
+            self.assertEqual(app._default_project_view_resolver("project:alpha", "project://alpha/ui/source.json", digest), b"{}")
+        (folder / "alias.json").symlink_to(source)
+        (root / "alias").symlink_to(folder, target_is_directory=True)
+        outside = self.root / "outside.json"
+        outside.write_bytes(b"{}")
+        (folder / "outside.json").symlink_to(outside)
+        for ref in ("ui/alias.json", "alias/source.json", "ui/outside.json"):
+            with self.subTest(ref=ref), self.assertRaises(console.ConsoleError):
+                app._default_project_view_resolver("project:alpha", "project://alpha/" + ref, digest)
+            with self.assertRaises(console.ConsoleError):
+                app._read_project_view_handle(root, root / ref)
+        fifo = folder / "pipe"
+        os.mkfifo(fifo)
+        for rejected in (folder, fifo, outside):
+            with self.subTest(source=rejected), self.assertRaises(console.ConsoleError):
+                app._read_project_view_handle(root, rejected)
+        for content in (b"", b"x" * (console.PROJECT_VIEW_MAX_BYTES + 1)):
+            source.write_bytes(content)
+            with self.subTest(size=len(content)), self.assertRaisesRegex(console.ConsoleError, "exceeds the delivery guard"):
+                app._read_project_view_handle(root, source)
+        with mock.patch.object(console.os, "supports_dir_fd", set()), self.assertRaisesRegex(console.ConsoleError, "unavailable on this host"):
+            app._read_project_view_handle(root, source)
+
+    @unittest.skipUnless(os.name == "posix", "native POSIX descriptor contract")
+    def test_project_view_posix_handles_reject_source_and_root_swaps_during_read(self) -> None:
+        read = os.read
+        for mutation in ("replace", "overwrite", "truncate", "grow", "root_swap", "directory_swap"):
+            root = self.root / mutation
+            folder = root / "ui"
+            folder.mkdir(parents=True)
+            source = folder / "source.json"
+            source.write_bytes(b"{}")
+            changed = False
+            def race(descriptor, amount):
+                nonlocal changed
+                data = read(descriptor, amount)
+                if not changed:
+                    changed = True
+                    if mutation == "replace":
+                        replacement = folder / "replacement.json"
+                        replacement.write_bytes(b"[]")
+                        replacement.replace(source)
+                    elif mutation == "overwrite":
+                        source.write_bytes(b"[]")
+                        # Guarantee the metadata change even on coarse timestamp filesystems.
+                        info = source.stat()
+                        os.utime(source, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+                    elif mutation == "truncate":
+                        source.write_bytes(b"")
+                    elif mutation == "grow":
+                        source.write_bytes(b"{}x")
+                    else:
+                        displaced = root if mutation == "root_swap" else folder
+                        displaced.rename(displaced.with_name(displaced.name + "-retired"))
+                        displaced.mkdir()
+                return data
+            with self.subTest(mutation=mutation), mock.patch.object(console.os, "read", side_effect=race), self.assertRaises(console.ConsoleError):
+                console.App._read_project_view_handle(root, source)
+            self.assertTrue(changed)
+
     def test_default_project_view_resolver_is_root_bound_and_withholds_incompatible_pilots(self) -> None:
         alpha_root = self.root / "projects" / "alpha-local"
         beta_root = self.root / "projects" / "beta-local"
@@ -6225,7 +6298,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self._add_host_project("project:beta", "beta", str(beta_root))
         with closing(sqlite3.connect(self.database)) as connection:
             connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:alpha'", (str(alpha_root),))
-            connection.execute("UPDATE threads SET cwd=? WHERE cwd='C:/work/alpha'", (str(alpha_root),))
+            connection.execute("UPDATE threads SET cwd=? WHERE cwd=?", (str(alpha_root), str(self.alpha_root)))
             connection.commit()
         app = console.App(self.codex_home, self.config, self.root / "console" / "default-project-view.sqlite3")
         with mock.patch.object(app.store, "proof_feed", return_value=[]):
@@ -6347,7 +6420,7 @@ class SwarmConsoleTests(unittest.TestCase):
         bundle = self._write_local_project_view_bundle("project:alpha", root)
         with closing(sqlite3.connect(self.database)) as connection:
             connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:alpha'", (str(root),))
-            connection.execute("UPDATE threads SET cwd=? WHERE cwd='C:/work/alpha'", (str(root),))
+            connection.execute("UPDATE threads SET cwd=? WHERE cwd=?", (str(root), str(self.alpha_root)))
             connection.commit()
         app = console.App(self.codex_home, self.config, self.root / "console" / "project-agent-read.sqlite3")
         base = {
@@ -6478,7 +6551,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self._add_host_project("project:beta", "beta", str(beta_root))
         with closing(sqlite3.connect(self.database)) as connection:
             connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:alpha'", (str(alpha_root),))
-            connection.execute("UPDATE threads SET cwd=? WHERE cwd='C:/work/alpha'", (str(alpha_root),))
+            connection.execute("UPDATE threads SET cwd=? WHERE cwd=?", (str(alpha_root), str(self.alpha_root)))
             connection.commit()
         sources = {**alpha_sources, **beta_sources}
         calls: list[tuple[str, str, str]] = []
@@ -8466,7 +8539,7 @@ class SwarmConsoleTests(unittest.TestCase):
         current_bytes = self.config.read_bytes()
         for invalid_text, message in (
             (current["text"] + "\n[unknown]\nvalue = true\n", "unknown setting"),
-            (current["text"].replace("[portfolio]\r\n", "[portfolio]\r\ntitle_prefix = \"legacy\"\r\n", 1), "deprecated config setting"),
+            (current["text"].replace("[portfolio]", "[portfolio]\ntitle_prefix = \"legacy\"", 1), "deprecated config setting"),
             (current["text"].replace('mode = "BALANCED"', 'mode = "FAST"', 1), "deprecated config value"),
             ("[execution\n", "config TOML is invalid"),
         ):
@@ -8782,8 +8855,8 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_config_editor_opaque_private_round_trip_preserves_source_bytes(self) -> None:
         private_bytes = self.config.read_bytes().replace(
-            b'destination = ""\r\n',
-            b'  destination\t=\t"https://private.example/a#token"  # retain this\r\n',
+            b'destination = ""',
+            b'  destination\t=\t"https://private.example/a#token"  # retain this',
             1,
         )
         self.config.write_bytes(private_bytes)
@@ -8824,7 +8897,7 @@ class SwarmConsoleTests(unittest.TestCase):
         initial = app.config_projection({"type": "project", "project_id": "project:alpha"})
         self.assertEqual(initial["text"], "")
         self.assertEqual(initial["overridden_paths"], [])
-        self.assertEqual(initial["project"]["root"], "C:/work/alpha")
+        self.assertEqual(initial["project"]["root"], str(self.alpha_root))
         self.assertIn("inherits global values", initial["inheritance"]["warning"])
         global_before = self.config.read_bytes()
         overlay_text = "[execution]\nfast_mode = true\n"
