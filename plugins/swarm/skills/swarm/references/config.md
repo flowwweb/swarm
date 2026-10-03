@@ -81,6 +81,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
 | `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
+| `execution.jev_model_selection` | Ask configured Jev to choose among distinct host-eligible model/reasoning pairs; explicit selections and zero/one-option tasks bypass it | boolean; default false |
 | `automation.mode` | Evidence-gated checkpoint, Git, review, release, and host lifecycle requests; `manual` keeps those actions explicit | `standard` or `manual`; default `standard` |
 | `logging.task_event_limit` | Bounded recent task-transition metadata retained in memory; never prompts, responses, artifact bodies, or credentials | 8-256; default 64 |
 | `proof.policy_version` | Deterministic proof-planner policy | trimmed identifier; default lean-v1 |
@@ -142,10 +143,10 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `monitoring.default_review_horizon_minutes` | Default event-driven goal review horizon | 1-60; default 30 |
 | `monitoring.max_review_horizon_minutes` | Hard ceiling for a locally selected review horizon | 1-60; default 60 |
 | `monitoring.small_task_review_horizon_minutes` | Preferred small-task horizon | 1-20; default 15 |
-| `coordination.ctrl_direct_horizon_minutes` | Maximum measurable CTRL_DIRECT window | 1-60; default 20 |
+| `coordination.ctrl_direct_horizon_minutes` | Legacy compatibility setting; grants no CTRL production | 1-60; default 20 |
 | `recovery.max_attempts` | Legacy owner recovery budget; WATCHDOG never consumes it | exactly 1; non-disableable |
 | `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
-| `lifecycle.pin_created_tasks` | Retained compatibility signal only; it never authorizes automatic pinning. New tasks remain `pinned: false` with `placement: placement_unverified`; only the host may consume an exact explicit-user pin request, and any claimed placement requires a disclosed host-owned placement receipt | boolean; default true |
+| `lifecycle.pin_created_tasks` | Explicit opt-in to pin a newly created or adopted top-level CTRL through the host; fresh pinned membership and order must be verified before predecessor archive. Other roles and existing user pins stay untouched | boolean; default false |
 | `lifecycle.task_lifetime_hours` | Single writable task-continuity horizon. Expiry makes a handoff due at a safe immutable checkpoint; it does not transfer custody or authorize a successor CTRL | integer 1-720; default 4 |
 | `feedback.enabled` | Make the on-demand SWARM feedback workflow available | boolean; default true |
 | `feedback.include_diagnostics` | Include the privacy-safe SWARM diagnostic snapshot | boolean; default true |
@@ -287,7 +288,7 @@ The assigning CTRL or LEAD routes by capability before model preference: the
 Codex-host model must be available, its workload must fit, and every required
 tool must be exposed by the host and declared for that model. An unlisted model
 is unverified. The packaged catalog keeps `gpt-5.3-codex-spark` on simple
-shell-only work and declares computer use for the GPT-5.6 models, including
+shell-only work and declares computer use for the GPT-6 models, including
 Luna. Read [model-providers.md](model-providers.md) for the Codex host
 boundary; SWARM does not configure or claim execution on another agent host.
 
@@ -386,7 +387,7 @@ off a dedicated REVIEW task never turns off QC.
 
 The role emoji system is active by default. Set `role_icons.enabled = false`
 only to remove emojis from all SWARM task titles; direct user instruction still
-wins for the requested task. CTRL uses `role_icons.ctrl`, default `🐙`.
+wins for the requested task. CTRL chooses the emoji best suited to the project; `role_icons.ctrl` (default `🐙`) is the fallback when no project match is clear. Explicit user emoji choices always win. CTRL titles contain only that emoji, one space and the project name, or the project name when icons are disabled.
 Hierarchy roles use their matching `role_icons` setting. Contextual tasks use `roles.<ROLE>.icon` when present;
 otherwise select automatically from `role_icons.doer_choices` by conventional
 literal meaning. Prefer a familiar object or action understandable without a
@@ -418,18 +419,15 @@ handoff would add no value. Do not prebuild a three-by-three tree. `portfolio.ma
 packaged defaults, eight is the exceptional internal-subagent ceiling while
 three is the normal shape.
 
-## CTRL direct-work economics and role skills
+## Delegation economics and role skills
 
-The direct-work horizon is an economics clause, not a producer-role override.
-One low-risk atomic `GENERAL` outcome may remain with CTRL when measured
-coordination overhead is greater than the work. `DESIGN`, `IMAGEGEN`, mockups,
-and image edits require a visible Designer or Artist lane, selected by typed
-product-experience versus expressive-art ownership, even when they are small; never make a
-visual task direct merely to avoid startup cost.
-Small bounded `GENERAL` work may use a subagent under CTRL or a LEAD when its
-measured economics favor that route. Medium and large work opens a visible
-Codex task; its LEAD/DOER lanes may then use their own subagents. Visual work
-always remains a visible assigned visual-profession task.
+CTRL coordinates only. The retained direct-work horizon setting is legacy
+compatibility data and never permits production. Small bounded `GENERAL` work
+uses a separate producer; measured economics select the smallest eligible
+LEAD/DOER or permitted bounded subagent route. Medium and large work opens a
+visible Codex task. Visual work retains a visible Designer or Artist lane,
+selected by product-experience versus expressive-art ownership. If a required
+owner cannot be reached, retain the exact blocker instead of producing in CTRL.
 
 Any agent may request a skill for its assigned role. Bind the exact skill
 source and version/digest, the reason it improves the lane, the destination
@@ -454,7 +452,7 @@ See [monitoring.md](monitoring.md) for batching, stale-state, timing, and Boost
 
 Users can say "give feedback on SWARM" or "report a SWARM bug" at any time. SWARM
 returns a compact portable report and, when enabled, a privacy-safe diagnostic
-snapshot. It never gathers telemetry or sends feedback automatically. A
+snapshot. It never sends feedback automatically. Optional product telemetry sends bounded metadata to Flowwweb only after the user enables `telemetry.enabled`; it excludes prompts, responses, code, paths and personal identifiers. A
 configured destination is contacted only after a direct instruction to submit
 the visible packet. Do not store tokens, credentials, or private routing data
 in `feedback.destination`. Set `feedback.prompt_on_close = true` to allow one optional

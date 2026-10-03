@@ -16,6 +16,7 @@ view derived from an evidence-backed design constitution.
 
 ## Rules
 
+- Aim for the smallest change that creates the largest impact for the user.
 - Make the real task obvious before adding explanation or decoration.
 - Give every screen one clear primary decision; progressively disclose detail.
 - Show system status, accepted input, change, consequence, and next action.

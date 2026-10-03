@@ -37,8 +37,10 @@ credentials, provider settings, project content, prompts, and task messages.
 
 Before sharing, remove secrets, tokens, private repository or customer data,
 personal identifiers, full local paths, and unrelated logs. Include only the
-smallest evidence needed to reproduce the issue. Never collect telemetry or
-submit feedback automatically.
+smallest evidence needed to reproduce the issue. Never submit feedback
+automatically. Optional product telemetry sends bounded metadata to Flowwweb
+automatically only after the user enables `telemetry.enabled`; it excludes
+prompts, responses, code, paths and personal identifiers.
 
 ## Route
 

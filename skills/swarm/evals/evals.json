@@ -785,7 +785,9 @@
       "id": 62,
       "prompt": "On Windows, the read-only config loader is denied by the tool permission boundary. The attached fixture includes a current receipt for one already-authorized runtime and shows existing owners doing safe work. Recover without elevation or provider assumptions.",
       "expected_output": "SWARM retries the same read-only script and arguments once with the receipt-backed non-elevated runtime, distinguishes tooling permission from provider authentication, and pauses only new scheduling or config-dependent actions if the fallback fails while safe already-owned work continues.",
-      "files": ["evals/fixtures/windows-loader-permission.json"],
+      "files": [
+        "evals/fixtures/windows-loader-permission.json"
+      ],
       "assertions": [
         "The fallback runtime is used only because the current-host receipt identifies it as authorized",
         "Exactly one same-purpose non-elevated fallback keeps the script, arguments, and config boundary unchanged",
@@ -799,7 +801,9 @@
       "id": 63,
       "prompt": "A DOER reports the immediate non-overlapping bottleneck in the attached fixture to its LEAD. Decide whether an eligible requester should hire ASSIST and define its stop condition.",
       "expected_output": "The eligible requester hires one temporary ASSIST for the inspectable bottleneck; it returns one handoff and exits without authority beyond that assignment.",
-      "files": ["evals/fixtures/assist-bottleneck.json"],
+      "files": [
+        "evals/fixtures/assist-bottleneck.json"
+      ],
       "assertions": [
         "ASSIST is temporary wildcard capacity rather than a hierarchy authority layer",
         "CTRL, ARCHITECT, LEAD, or DOER may hire ASSIST for a bounded assignment",
@@ -811,7 +815,9 @@
       "id": 64,
       "prompt": "Shape the attached portfolio fixture without creating an automatic tree or optional finite-role goals.",
       "expected_output": "SWARM gives the repeated checkout domain a LEAD with its artifact DOERs, keeps the independent launch-copy DOER directly under CTRL, maintains required CTRL and LEAD goals, and creates no optional finite-role goal.",
-      "files": ["evals/fixtures/hierarchy-routing.json"],
+      "files": [
+        "evals/fixtures/hierarchy-routing.json"
+      ],
       "assertions": [
         "CTRL to LEAD to DOER is normal for repeated domain decisions and integration",
         "A small independent artifact may remain a direct CTRL DOER",
@@ -859,7 +865,7 @@
         "Substantive implementation, asset generation, and task-level proof have explicit non-CTRL work owners",
         "CTRL retains outcome lock, shaping, priority, collision and ownership control, composed portfolio acceptance, and shared release-surface leases",
         "A deployable LEAD owns provider/deploy control, rollback receipt, and production proof for its lane",
-        "CTRL delegates edits, including a tiny integration or collision seam, unless CTRL_DIRECT is explicitly justified",
+        "CTRL delegates every edit, including a tiny integration or collision seam; CTRL_DIRECT is retired",
         "The one-line seam has a bounded DOER, TASK, or ASSIST owner",
         "The hierarchy remains fast by delegating a bounded worthwhile seam without creating another authority layer"
       ]
@@ -1173,10 +1179,10 @@
     {
       "id": 90,
       "prompt": "Use SWARM for a one-file copy typo, a medium landing-page implementation, and three mockups for the selected direction. Keep the small-work clause, let bounded control work use subagents when appropriate, have visual work use an efficient Designer skill, and do not let CTRL start producing the mockups.",
-      "expected_output": "Keep the one-file copy typo with CTRL as a low-risk atomic GENERAL direct task when measured coordination overhead exceeds the work. Route the medium implementation to a visible Codex task with a LEAD and DOERs so it can have its own subagents. Route mockup and image-generation work as CTRL_DELEGATED to a visible DESIGNER lane even if the visual slice is small; the DESIGNER owns the candidates and visual proof, and CTRL surfaces the complete decision set, waits for selection, and then delegates implementation. Small bounded GENERAL control work may use a subagent when its measured economics justify it. Any agent may request a task-local approved skill with exact source/version or digest, purpose, scope, and host audit/rollback receipt; the skill does not grant authority. If the Designer lane cannot be materialized, preserve the exact blocker or an explicitly degraded unverified route rather than generating the mockups in a subagent.",
+      "expected_output": "Delegate the one-file copy typo to the smallest separate producer; CTRL coordinates even when measured coordination overhead exceeds the work. Route the medium implementation to a visible Codex task with a LEAD and DOERs so it can have its own subagents. Route mockup and image-generation work as CTRL_DELEGATED to a visible DESIGNER lane even if the visual slice is small; the DESIGNER owns the candidates and visual proof, and CTRL surfaces the complete decision set, waits for selection, and then delegates implementation. Small bounded GENERAL control work may use a subagent when its measured economics justify it. Any agent may request a task-local approved skill with exact source/version or digest, purpose, scope, and host audit/rollback receipt; the skill does not grant authority. If the Designer lane cannot be materialized, preserve the exact blocker or an explicitly degraded unverified route rather than generating the mockups in a subagent.",
       "files": [],
       "assertions": [
-        "The small-work clause still permits a low-risk atomic GENERAL CTRL_DIRECT outcome",
+        "CTRL_DIRECT is retired; the small-work clause routes even a low-risk atomic GENERAL outcome to a separate producer",
         "Small bounded GENERAL CTRL work may use a subagent when its economics justify it",
         "Medium and large CTRL-owned work opens a visible Codex task rather than using a root-level subagent",
         "Mockup and image-generation work cannot enter CTRL_DIRECT merely because it is small",
@@ -1203,6 +1209,60 @@
         "Subagents stay inside an accountable lane and cannot replace durable ownership or acceptance",
         "goals.use_goals=false disables root-task persistence without disabling intake or graph selection",
         "LEAD and persistent SPECIALIST ownership goals are not disabled by the root persistence option"
+      ]
+    },
+    {
+      "id": 92,
+      "prompt": "Review a chair editor against the approved chair target. Source tests and selection interactions pass. Only a flattering front crop was reviewed; the rear is visibly unfinished and the chair floats above its contact shadow. The mobile landscape capture omits browser chrome and safe areas. Performance is described as smooth without measurements. The team wants a clearly marked WIP checkpoint and visual approval. Decide each verdict and the smallest next proof.",
+      "expected_output": "Retain the evidenced source-test and functional results, but return CORRECT for visual approval. Compare the approved target with actual-build full-screen and individual-asset evidence at matching state, camera and viewport; inspect rotations, front/back, materials, contact and shadows. Name the rear/contact defects with before evidence, verify their fixes with matching after evidence, and measure relevant interactions/performance against the agreed budget. Require mobile landscape evidence including real browser chrome and safe areas; keep physical-device proof UNVERIFIED when not exercised. A clearly marked WIP checkpoint may proceed with proportionate safety/integrity checks and recorded defects; it is not visual approval or release acceptance. Reuse the existing owners and review flow.",
+      "files": [],
+      "assertions": [
+        "Passing code and interaction checks do not approve known visual defects",
+        "Actual build and approved target are compared at matching state and viewport",
+        "Both composed full-screen and individual assets are inspected including front/back, rotation, material, contact and shadow",
+        "Mobile landscape includes browser chrome and safe areas without promoting emulation into device proof",
+        "Performance requires a measured scenario and agreed budget",
+        "Corrections carry matching before/after evidence before a fixed-preview claim",
+        "WIP checkpointing remains separate from visual and release approval",
+        "Existing roles and proof manifest are reused without another controller"
+      ]
+    },
+    {
+      "id": 93,
+      "prompt": "Review an exact-build chair editor after the requested visual fixes. Exact-build source tests pass. The approved target and actual-build screenshots match state, camera and viewport. Full-screen and individual asset captures cover rotations, front/back, materials, contact and shadows. Mobile landscape evidence includes real browser chrome and safe areas on the named phone. Requested interactions and measured frame/load performance meet the agreed budget. Matching before/after evidence confirms each defect fixed. No deployed release proof was captured. Decide the exact scope of acceptance.",
+      "expected_output": "Report the evidenced source-test, functional, visual and physical-device results separately, accepting only the exact build, phone, states, interactions and measurements actually observed. The matched target/build and before/after evidence close the named visual defects. Keep deployment/release proof UNVERIFIED because it was not exercised; these verdicts do not grant publishing authority. Reuse the existing independent review rather than creating additional controllers or repeating unaffected proof.",
+      "files": [],
+      "assertions": [
+        "Acceptance binds the exact approved target, build, states and measured environment",
+        "Separate verdicts close only their exercised proof classes",
+        "Full-screen, asset, mobile-landscape and measured interaction evidence are inspected",
+        "Matching after evidence verifies the named corrections",
+        "Unexercised deployment/release proof remains UNVERIFIED",
+        "Review does not create publishing authority or duplicate controllers"
+      ]
+    },
+    {
+      "id": 94,
+      "prompt": "An unreleased project has a coherent marked WIP checkpoint, proportionate safety/integrity proof and existing independent review. Main deployment triggers are verified not to publish live; branch protection permits reviewed integration. An inactive unmerged worktree has a reachable WIP commit on a retained named branch, owner handoff and complete file-count/byte-count/hash verified archive of all unique untracked and ignored artifacts. No writer, process or handle remains. Decide checkpoint, integration and retirement without waiting for final feature visual QA.",
+      "expected_output": "Permit the marked WIP checkpoint and reviewed development-main consolidation through existing Git gates, retaining defects and unverified release proof. Full release QA remains due before publish. The existing STORAGE LEAD may retire the exact inactive worktree through supported Git after custody and recovery verification; final feature acceptance is not required for this archived WIP branch. Retain the branch/commit and complete archive manifest in the existing proof packet. Create no controller, scheduler or store.",
+      "files": [],
+      "assertions": [
+        "Marked WIP uses proportionate safety/integrity proof while release QA remains due",
+        "Main integration depends on verified no-live-deploy triggers and branch protection",
+        "Inactive unmerged retirement can use a retained reachable WIP commit plus complete verified archive",
+        "Existing owner and Git cleanup preserve unique untracked and ignored data without duplicate tracking"
+      ]
+    },
+    {
+      "id": 95,
+      "prompt": "A project is not live yet, but main auto-deploy behavior is unknown. Its worktree has a WIP commit and clean Git status; an ignored unique asset has no archive and the owner still has a running writer. Disk pressure is below 10GB. Can we push main and remove this worktree now?",
+      "expected_output": "Keep the marked WIP checkpoint on its named branch; do not push main until actual live deployment triggers and normal branch protection are verified. Do not retire the active worktree or lose the ignored unique asset. A commit and clean Git status are insufficient. Route emergency pressure to the existing STORAGE LEAD for other safe recoverable candidates, preserving this writer and unique data. Require owner handoff/quiescence and complete verified recovery before supported Git retirement. Do not bypass permissions or change deployment settings.",
+      "files": [],
+      "assertions": [
+        "Unreleased status does not prove main cannot publish live",
+        "WIP commit and clean status do not preserve ignored unique assets",
+        "Active writer prevents retirement despite emergency pressure",
+        "Existing cleanup owner receives custody-safe candidates without lock or permission bypass"
       ]
     }
   ]

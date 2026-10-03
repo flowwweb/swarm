@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactJustification, ArtifactParityReceipt, ArtifactProvenance, ContextPackage, CorrectionDecision, CtrlSurfaceKind, DedupDecision, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, LaneKind, ProofClass, ReviewEvidence, ReviewScope, ReviewStrategy, ReviewValue, Role, SubagentException, Swarm, Task as RuntimeTask, TaskState, TopologyFacts, VersionedReference, VisualReviewContract, Worker, WorkerState, WorkKind, choose_depth, correction_decision, initial_tier
 
 def Task(*args, **kwargs):
+ kwargs.setdefault("goal_id",f"goal-{args[0]}")
  kwargs.setdefault("subagent_receipt",f"host:thread:{args[0]}")
  kwargs.setdefault("lane_kind",LaneKind.OTHER); kwargs.setdefault("owning_lead_id","L")
  kwargs.setdefault("acceptance_contract",AcceptanceContract(ArtifactIdentity(f"task-{args[0]}","v1","acceptance"),()))

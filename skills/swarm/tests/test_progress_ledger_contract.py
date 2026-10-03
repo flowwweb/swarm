@@ -34,6 +34,7 @@ from skills.swarm.runtime.progress_events import (
     role_manifest_reference,
     role_material_event,
     task_creation_binding_event,
+    task_handoff_activity_binding,
     task_handoff_host_binding,
     validate_progress_material_event,
     validate_agent_manifest,
@@ -53,6 +54,154 @@ class ProgressLedgerContractTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_host_thread_continuation_is_durable_bounded_and_immutable(self) -> None:
+        prepared = {
+            "schema_version": 1, "record_type": "TASK_HANDOFF",
+            "event_id": "continuation-prepared", "dedupe_key": "continuation-prepared-dedupe",
+            "handoff_id": "continuation-1", "parent_event_id": None,
+            "event_kind": "CONTINUATION_PREPARED", "handoff_type": "HOST_THREAD_CONTINUATION",
+            "goal_id": "goal-1", "task_id": "task-1", "old_owner": "lead-1", "new_owner": "lead-1",
+            "checkpoint_digest": "a" * 64, "scope_version": 1, "lease_version": 1,
+            "receipt_id": "continuation-receipt", "host_issued_at_ms": None, "observed_at_ms": 1,
+            "expected_observation": None, "source_thread_id": "thread-old",
+            "destination_thread_id": "thread-new", "continuation_capsule_digest": "b" * 64,
+            "continuation_capsule_bytes": 4096, "publish_receipt_id": None,
+        }
+        self.assertEqual(self.ledger.append_task_handoff(prepared)["status"], "appended")
+        self.assertEqual(Ledger(self.root).append_task_handoff(prepared)["status"], "unchanged")
+        for change, message in (
+            ({"continuation_capsule_bytes": 16 * 1024 + 1}, "bounded content-free"),
+            ({"capsule_content": "forbidden"}, "unsupported field"),
+        ):
+            with self.subTest(change=change), self.assertRaisesRegex(ProgressEventError, message):
+                self.ledger.append_task_handoff({**prepared, **change})
+        published = {
+            **prepared, "event_id": "continuation-published", "dedupe_key": "continuation-published-dedupe",
+            "parent_event_id": prepared["event_id"], "event_kind": "CONTINUATION_PUBLISHED",
+            "publish_receipt_id": "usr-publish-0001", "host_issued_at_ms": 2, "observed_at_ms": 2,
+        }
+        conflict = {**published, "event_id": "continuation-conflict", "dedupe_key": "continuation-conflict-dedupe", "continuation_capsule_digest": "c" * 64, "publish_receipt_id": "usr-publish-conflict"}
+        conflict_receipt = self.sign_host_receipt(HostCustodyReceipt("usr-publish-conflict", CustodyMutation.STATE, "task-1", task_handoff_activity_binding(conflict), 2))
+        self.ledger.retain_host_custody_receipt(conflict_receipt)
+        with self.assertRaisesRegex(ProgressEventError, "capsule or host-thread binding conflicts"):
+            self.ledger.append_task_handoff(conflict, custody_receipt=conflict_receipt)
+        publish_receipt = self.sign_host_receipt(HostCustodyReceipt("usr-publish-0001", CustodyMutation.STATE, "task-1", task_handoff_activity_binding(published), 2))
+        self.ledger.retain_host_custody_receipt(publish_receipt)
+        self.assertEqual(self.ledger.append_task_handoff(published, custody_receipt=publish_receipt)["status"], "appended")
+        retained = Ledger(self.root).project_task_handoffs()["records"][0]
+        self.assertEqual((retained["event_kind"], retained["continuation_capsule_digest"]), ("CONTINUATION_PUBLISHED", "b" * 64))
+
+    def test_owner_sleep_restart_wake_requires_capacity_activity_and_no_unresolved_delivery(self) -> None:
+        sleeping = {
+            "schema_version": 1, "record_type": "TASK_HANDOFF",
+            "event_id": "owner-sleeping", "dedupe_key": "owner-sleeping-dedupe",
+            "handoff_id": "owner-lifecycle-1", "parent_event_id": None,
+            "event_kind": "OWNER_SLEEPING", "handoff_type": "OWNER_LIFECYCLE",
+            "goal_id": "goal-owner", "task_id": "task-owner", "old_owner": "lead-owner", "new_owner": "lead-owner",
+            "checkpoint_digest": "d" * 64, "scope_version": 1, "lease_version": 7,
+            "receipt_id": "owner-sleep-receipt", "host_issued_at_ms": None, "observed_at_ms": 1,
+            "expected_observation": None, "structural_role": "LEAD", "persistent": True,
+            "host_thread_id": "thread-owner", "capacity_reservation_id": None, "host_activity_receipt_id": None,
+        }
+        self.ledger.append_task_handoff(sleeping)
+        connector = {
+            "schema_version": 1, "record_type": "CONNECTOR", "command_id": "steer-command",
+            "idempotency_key": "steer-key", "command_digest": "e" * 64, "project_id": "project-owner",
+            "root_digest": "f" * 64, "action": "REPAIR", "task_creation_identity": None,
+        }
+        Ledger(self.root).append_connector_receipt({**connector, "receipt_id": "steer-command-receipt", "receipt_index": 0, "status": "COMMAND", "thread_id": None, "turn_id": None, "observed_root_digest": None, "observed_at_ms": 2})
+        Ledger(self.root).append_connector_receipt({**connector, "receipt_id": "steer-ack", "receipt_index": 1, "status": "ACKNOWLEDGED", "thread_id": "thread-owner", "turn_id": None, "observed_root_digest": "f" * 64, "observed_at_ms": 3})
+        Ledger(self.root).append_connector_receipt({**connector, "receipt_id": "steer-unresolved", "receipt_index": 2, "status": "DISPATCHED_UNRESOLVED", "thread_id": "thread-owner", "turn_id": "turn-owner", "observed_root_digest": "f" * 64, "observed_at_ms": 4})
+        waking = {
+            **sleeping, "event_id": "owner-waking", "dedupe_key": "owner-waking-dedupe",
+            "parent_event_id": sleeping["event_id"], "event_kind": "OWNER_WAKING",
+            "capacity_reservation_id": "capacity-1", "observed_at_ms": 5,
+        }
+        with self.assertRaisesRegex(ProgressEventError, "unresolved host delivery"):
+            Ledger(self.root).append_task_handoff(waking)
+        Ledger(self.root).append_connector_receipt({**connector, "receipt_id": "steer-not-delivered", "receipt_index": 3, "status": "RECONCILED_NOT_DELIVERED", "thread_id": "thread-owner", "turn_id": "turn-owner", "observed_root_digest": "f" * 64, "observed_at_ms": 6})
+        with self.assertRaisesRegex(ProgressEventError, "host-thread binding conflicts"):
+            Ledger(self.root).append_task_handoff({**waking, "host_thread_id": "other-thread"})
+        self.assertEqual(Ledger(self.root).append_task_handoff(waking)["status"], "appended")
+        active = {
+            **waking, "event_id": "owner-active", "dedupe_key": "owner-active-dedupe",
+            "parent_event_id": waking["event_id"], "event_kind": "OWNER_ACTIVE",
+            "host_activity_receipt_id": "usr-activity-0001", "observed_at_ms": 7,
+        }
+        with self.assertRaisesRegex(ProgressEventError, "exact host activity proof"):
+            Ledger(self.root).append_task_handoff({**active, "host_activity_receipt_id": None})
+        activity_receipt = self.sign_host_receipt(HostCustodyReceipt("usr-activity-0001", CustodyMutation.STATE, "task-owner", task_handoff_activity_binding(active), 7))
+        self.ledger.retain_host_custody_receipt(activity_receipt)
+        self.assertEqual(self.ledger.append_task_handoff(active, custody_receipt=activity_receipt)["status"], "appended")
+        continuation = {
+            "schema_version": 1, "record_type": "TASK_HANDOFF",
+            "event_id": "owner-continuation-prepared", "dedupe_key": "owner-continuation-prepared-dedupe",
+            "handoff_id": "owner-continuation", "parent_event_id": None,
+            "event_kind": "CONTINUATION_PREPARED", "handoff_type": "HOST_THREAD_CONTINUATION",
+            "goal_id": "goal-owner", "task_id": "task-owner", "old_owner": "lead-owner", "new_owner": "lead-owner",
+            "checkpoint_digest": "d" * 64, "scope_version": 1, "lease_version": 7,
+            "receipt_id": "owner-continuation-receipt", "host_issued_at_ms": None, "observed_at_ms": 8,
+            "expected_observation": None, "source_thread_id": "thread-owner",
+            "destination_thread_id": "thread-owner-next", "continuation_capsule_digest": "9" * 64,
+            "continuation_capsule_bytes": 1024, "publish_receipt_id": None,
+        }
+        self.assertEqual(Ledger(self.root).append_task_handoff(continuation)["status"], "appended")
+        published_continuation = {
+            **continuation, "event_id": "owner-continuation-published", "dedupe_key": "owner-continuation-published-dedupe",
+            "parent_event_id": continuation["event_id"], "event_kind": "CONTINUATION_PUBLISHED",
+            "publish_receipt_id": "usr-publish-owner", "host_issued_at_ms": 9, "observed_at_ms": 9,
+        }
+        continuation_receipt = self.sign_host_receipt(HostCustodyReceipt("usr-publish-owner", CustodyMutation.STATE, "task-owner", task_handoff_activity_binding(published_continuation), 9))
+        self.ledger.retain_host_custody_receipt(continuation_receipt)
+        self.assertEqual(self.ledger.append_task_handoff(published_continuation, custody_receipt=continuation_receipt)["status"], "appended")
+        sleeping_2 = {
+            **sleeping, "event_id": "owner-sleeping-2", "dedupe_key": "owner-sleeping-2-dedupe",
+            "handoff_id": "owner-lifecycle-2", "observed_at_ms": 10,
+        }
+        self.assertEqual(Ledger(self.root).append_task_handoff(sleeping_2)["status"], "appended")
+        with self.assertRaisesRegex(ProgressEventError, "open handoff"):
+            Ledger(self.root).append_task_handoff({**sleeping_2, "event_id": "owner-sleeping-3", "dedupe_key": "owner-sleeping-3-dedupe", "handoff_id": "owner-lifecycle-3"})
+        waking_2 = {
+            **sleeping_2, "event_id": "owner-waking-2", "dedupe_key": "owner-waking-2-dedupe",
+            "parent_event_id": sleeping_2["event_id"], "event_kind": "OWNER_WAKING",
+            "capacity_reservation_id": "capacity-2", "observed_at_ms": 11,
+        }
+        Ledger(self.root).append_task_handoff(waking_2)
+        active_2 = {
+            **waking_2, "event_id": "owner-active-2", "dedupe_key": "owner-active-2-dedupe",
+            "parent_event_id": waking_2["event_id"], "event_kind": "OWNER_ACTIVE",
+            "host_activity_receipt_id": "usr-activity-0002", "observed_at_ms": 12,
+        }
+        activity_receipt_2 = self.sign_host_receipt(HostCustodyReceipt("usr-activity-0002", CustodyMutation.STATE, "task-owner", task_handoff_activity_binding(active_2), 12))
+        self.ledger.retain_host_custody_receipt(activity_receipt_2)
+        self.assertEqual(self.ledger.append_task_handoff(active_2, custody_receipt=activity_receipt_2)["status"], "appended")
+        custody = {
+            "schema_version": 1, "record_type": "TASK_HANDOFF", "event_id": "owner-custody-due",
+            "dedupe_key": "owner-custody-due-dedupe", "handoff_id": "owner-custody", "parent_event_id": None,
+            "event_kind": "HANDOFF_DUE", "goal_id": "goal-owner", "task_id": "task-owner",
+            "old_owner": "lead-owner", "new_owner": None, "checkpoint_digest": None,
+            "scope_version": 1, "lease_version": 7, "receipt_id": "7" * 64,
+            "host_issued_at_ms": 13, "observed_at_ms": 13, "expected_observation": None,
+        }
+        custody_receipt = self.sign_host_receipt(HostCustodyReceipt("usr-custody-0001", CustodyMutation.STATE, "task-owner", task_handoff_host_binding(custody), 13))
+        self.ledger.retain_host_custody_receipt(custody_receipt)
+        self.assertEqual(self.ledger.append_task_handoff(custody, custody_receipt=custody_receipt)["status"], "appended")
+
+    def test_legacy_connector_without_payload_digest_can_settle_without_identity_rebind(self) -> None:
+        legacy = {
+            "schema_version": 1, "record_type": "CONNECTOR", "receipt_id": "legacy-command",
+            "command_id": "legacy-command-id", "receipt_index": 0, "idempotency_key": "legacy-key",
+            "command_digest": "1" * 64, "project_id": "legacy-project", "root_digest": "2" * 64,
+            "action": "REPAIR", "status": "COMMAND", "thread_id": None, "turn_id": None,
+            "observed_root_digest": None, "observed_at_ms": 1, "task_creation_identity": None,
+        }
+        self.ledger.append_connector_receipt(legacy)
+        current = {**legacy, "payload_digest": "3" * 64}
+        self.ledger.append_connector_receipt({**current, "receipt_id": "legacy-ack", "receipt_index": 1, "status": "ACKNOWLEDGED", "thread_id": "legacy-thread", "observed_root_digest": "2" * 64, "observed_at_ms": 2})
+        self.ledger.append_connector_receipt({**current, "receipt_id": "legacy-result", "receipt_index": 2, "status": "RESULT", "thread_id": "legacy-thread", "turn_id": "legacy-turn", "observed_root_digest": "2" * 64, "observed_at_ms": 3})
+        receipts = Ledger(self.root).replay()["connector_receipts"]["legacy-key"]["receipts"]
+        self.assertEqual(([item["status"] for item in receipts], receipts[0].get("payload_digest"), receipts[-1]["payload_digest"]), (["COMMAND", "ACKNOWLEDGED", "RESULT"], None, "3" * 64))
 
     @staticmethod
     def role_manifests() -> tuple[dict, ...]:
@@ -974,6 +1123,37 @@ class ProgressLedgerContractTests(unittest.TestCase):
         role_ids = {role["id"] for role in projection["roles"]}
         self.assertIn("producer", role_ids)
         self.assertNotIn("content_creator", role_ids)
+
+    def test_lab_and_factory_taxonomy_reuses_task_manifest_identity_and_restart(self):
+        from skills.swarm.runtime.progress_events import validate_task_manifest_draft
+        builtins=self.role_manifests()
+        for kind in ("LAB","FACTORY"):
+            identity=f"unit-{kind.lower()}"
+            unit={"kind":kind,"goal_id":None,"parent_goal_id":"goal-project","parent_unit_task_id":None}
+            manifest=build_task_manifest(manifest_id=f"manifest-{identity}",task_id=identity,project_id="project-alpha",ctrl_id="ctrl-alpha",task_name=f"{kind} outcome",role_scope="LEAD_SINGLE",work_unit=unit)
+            draft={key:value for key,value in manifest.items() if key not in {"task_id","manifest_digest"}}
+            self.assertEqual(validate_task_manifest_draft(draft)["work_unit"],unit)
+            self.ledger.append(identity_manifest_event(manifest,event_id=f"create-{identity}",dedupe_key=f"create-{identity}",observed_at_ms=1,provenance="host-unit-binding"))
+            bound={**unit,"goal_id":f"goal-{identity}"}
+            revision=build_task_manifest(**{**manifest,"work_unit":bound,"manifest_version":"2","supersedes_digest":manifest["manifest_digest"]})
+            self.ledger.append(identity_manifest_event(revision,event_id=f"bind-{identity}",dedupe_key=f"bind-{identity}",observed_at_ms=2,provenance="host-goal-binding"))
+            before=self.ledger.replay()
+            for index,hostile_unit in enumerate((None,{**bound,"kind":"FACTORY" if kind=="LAB" else "LAB"},{**bound,"parent_unit_task_id":"other-unit"},{**bound,"goal_id":None},{**bound,"parent_goal_id":"other-goal"})):
+                fields={**revision,"manifest_version":"3","supersedes_digest":revision["manifest_digest"]}
+                if hostile_unit is None: fields.pop("work_unit")
+                else: fields["work_unit"]=hostile_unit
+                hostile_revision=build_task_manifest(**fields)
+                with self.assertRaises(ProgressEventError):
+                    self.ledger.append(identity_manifest_event(hostile_revision,event_id=f"hostile-{identity}-{index}",dedupe_key=f"hostile-{identity}-{index}",observed_at_ms=3,provenance="hostile-unit-revision"))
+                self.assertEqual(self.ledger.replay(),before)
+            for hostile in ({"role_scope":"DOER_SINGLE"},{"work_unit":{**bound,"kind":"CTRL"}},{"work_unit":{**bound,"parent_unit_task_id":identity}}):
+                with self.assertRaises(ProgressEventError): build_task_manifest(**{**revision,**hostile})
+        projected=ProgressLedger(self.root).project_identity_manifests("project-alpha","ctrl-alpha",builtins)
+        units={item["manifest"]["task_id"]:item["manifest"] for item in projected["tasks"]}
+        self.assertEqual(set(units),{"unit-lab","unit-factory"})
+        self.assertEqual(units["unit-factory"]["work_unit"]["goal_id"],"goal-unit-factory")
+        self.assertEqual(units["unit-lab"]["role_scope"],"LEAD_SINGLE")
+        self.assertNotIn("coordinator_id",units["unit-lab"]["work_unit"])
 
     def test_agent_task_manifests_are_versioned_joined_and_restart_stable(self) -> None:
         builtins = self.role_manifests()
@@ -2411,7 +2591,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         swarm = Swarm(topology={"lead-gate"}, workers={"owner-gate": Worker("owner-gate", "lead-gate", 1)})
         dispatch_artifact = ArtifactIdentity("dispatch", "role-gate", "source")
         dispatch_contract = DelegationContract("task-denied", "Return one bounded result.", "owner-gate", ("skills/swarm/runtime",), dispatch_artifact, ("skills/swarm/runtime/core.py",), (ProofClass.SOURCE,), 100)
-        denied = Task("task-denied", "owner-gate", "creator", 1, {}, subagent_receipt="host:thread:task-denied", user_custody_required=True, delegation_contract=dispatch_contract)
+        denied = Task("task-denied", "owner-gate", "creator", 1, {}, goal_id="goal-role-gate", subagent_receipt="host:thread:task-denied", user_custody_required=True, delegation_contract=dispatch_contract)
         before = (dict(swarm.tasks), set(swarm.workers["owner-gate"].task_ids))
         with self.assertRaisesRegex(InvariantError, "role gate denied"):
             swarm.assign(Role.LEAD, denied)

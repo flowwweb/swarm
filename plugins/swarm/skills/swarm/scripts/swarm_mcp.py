@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -56,9 +57,10 @@ class MCPError(Exception):
 
 
 class SwarmProjection:
-    def __init__(self) -> None:
+    def __init__(self, telemetry_path: Path = DEFAULT_TELEMETRY) -> None:
         self.codex_home = DEFAULT_CODEX_HOME.expanduser().resolve()
         self.config_path = DEFAULT_CONFIG.expanduser().resolve()
+        self.telemetry_path = telemetry_path
         self._app: Any | None = None
 
     def _load_app(self) -> Any:
@@ -81,7 +83,8 @@ class SwarmProjection:
             project_id = arguments.get("project_id")
             if project_id is not None and (not isinstance(project_id, str) or not project_id.strip()):
                 raise MCPError("project_id must be non-empty text")
-            return _compact_overview(app.overview(project_id.strip() if project_id else None))
+            return {**_compact_overview(app.overview(project_id.strip() if project_id else None)),
+                    "device": _device_status(self.telemetry_path)}
         if name == "swarm_projects":
             return _compact_roster(app.project_roster())
         if name == "swarm_usage":
@@ -201,25 +204,60 @@ def _compact_roster(roster: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _telemetry(path: Path, *, tool: str, started: float, ok: bool, result_bytes: int, error: str = "") -> None:
+def _device_status(telemetry_path: Path = DEFAULT_TELEMETRY) -> dict[str, Any]:
+    """Bounded activation observations from the existing metadata stream."""
+    receipts = []
+    status = "NO_ACTIVATION_RECEIPTS"
+    try:
+        with telemetry_path.open("rb") as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell() - 65536))
+            lines = stream.read(65536).decode("utf-8", errors="replace").splitlines()
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("tool") == "workflow_activation":
+                receipts.append(_pick(record, ("timestamp", "host", "hook_event", "session_hash", "plugin_version", "skill_sha256", "success")))
+        if receipts:
+            status = "OBSERVED_HOOK_OUTPUT"
+    except FileNotFoundError:
+        pass
+    except OSError:
+        status = "TELEMETRY_UNREADABLE"
+    manifest = json.loads((REPO_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
+    if str(SWARM_SKILL_ROOT / "scripts") not in sys.path:
+        sys.path.insert(0, str(SWARM_SKILL_ROOT / "scripts"))
+    from swarm_telemetry import status as product_status
+    return {"product_telemetry": product_status(), "host": socket.gethostname(), "plugin_version": manifest["version"],
+            "activation_status": status, "activation_receipts": receipts[-50:],
+            "claim_limit": "Local hook output only. Does not prove host context delivery, skill read, workflow compliance or another device. Reads at most the last 64 KiB."}
+
+
+def _telemetry(path: Path, *, tool: str, started: float, ok: bool, result_bytes: int, error: str = "", activation: dict[str, Any] | None = None) -> bool:
     """Append bounded metadata only; prompts, responses, credentials stay out."""
     record = {
         "timestamp": int(time.time() * 1000),
         "session_hash": hashlib.sha256(os.environ.get("SWARM_MCP_SESSION_HASH", "unknown").encode()).hexdigest()[:16],
-        "tool": tool if tool in {item["name"] for item in TOOLS} | {"probe_read_file", "probe_write_file", "probe_delete_file"} else "unknown",
-        "category": "read",
+        "tool": tool if tool in {item["name"] for item in TOOLS} | {"probe_read_file", "probe_write_file", "probe_delete_file", "workflow_activation"} else "unknown",
+        "category": "activation" if tool == "workflow_activation" else "read",
+        "host": socket.gethostname(),
         "duration_ms": round((time.perf_counter() - started) * 1000, 2),
         "success": ok,
         "result_bytes": result_bytes,
     }
+    if activation is not None and tool == "workflow_activation":
+        record.update(_pick(activation, ("hook_event", "session_hash", "plugin_version", "skill_sha256")))
     if error:
         record["error"] = "invalid_arguments" if error == "invalid_arguments" else "projection_failed"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+        return True
     except OSError:
-        pass
+        return False
 
 
 def _response(request_id: Any, result: Any) -> dict[str, Any]:
@@ -261,7 +299,7 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
         sys.stdin.reconfigure(encoding="utf-8")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    projection = SwarmProjection()
+    projection = SwarmProjection(telemetry_path)
     probe_tools = (
         {"name": "probe_read_file", "description": "Read one scratch probe file.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": False}},
         {"name": "probe_write_file", "description": "Write one scratch probe file.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "content": {"type": "string"}}, "required": ["content"], "additionalProperties": False}},

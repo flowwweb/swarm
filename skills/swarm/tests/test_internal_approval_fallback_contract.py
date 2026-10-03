@@ -30,6 +30,7 @@ class InternalApprovalFallbackContractTests(unittest.TestCase):
                 "creator",
                 1,
                 {},
+                goal_id="goal-owner",
                 subagent_exception=SubagentException.HOST_GATE,
                 subagent_exception_reason="read-only helper required host approval",
                 delegation_contract=DelegationContract(

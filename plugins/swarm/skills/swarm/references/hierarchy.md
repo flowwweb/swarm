@@ -65,12 +65,16 @@ accepted behavior that remains preserved. `ADDITIVE` extends that behavior;
 unaffected topology, dirty custody, proof boundaries, accepted artifacts, and
 unrelated lanes. A local correction never implies the opposite blanket rule.
 
+Goals default on for every CTRL, Lab and factory through the same configured
+goal owner. Keep the large outcome in that parent goal. Production assignments
+carry one concrete bounded block, artifact, scope, dependencies, acceptance and
+stop condition; split major requests before assigning a producer.
+
 ## One root, the shallowest useful shape
 
-CTRL is the sole root and final composed authority. Use `CTRL_DIRECT` only for
-one low-risk atomic outcome on one mutable surface with no cross-lane dependency
-and measurable completion inside the direct-work horizon. Otherwise CTRL leads
-the project through accountable LEADs. Each LEAD owns one durable boundary and
+CTRL is the sole root and final composed authority. It is the switchboard operator.
+`CTRL_DIRECT` is retired. CTRL turns requests into bounded tasks and routes every
+production task, including small edits, to an accountable LEAD or DOER. Each LEAD owns one durable boundary and
 may produce directly, recruit a DOER for a bounded artifact, or recruit a nested
 LEAD for a durable subordinate boundary. Each DOER owns one bounded artifact.
 Every role may use non-recursive leaf subagents for sidecar inspection, review,
@@ -78,23 +82,17 @@ or analysis inside its own accountable boundary.
 
 ### CTRL is an operator, not a producer
 
-The direct-work clause remains intentional: small, low-risk, atomic `GENERAL`
-work may stay with CTRL when measured task overhead costs more than the
-delegation. It is not permission for CTRL to become the producer. `DESIGN`,
-`IMAGEGEN`, mockup generation, image editing, and taste-led visual work are
-always routed as `CTRL_DELEGATED`. Product experience, interaction, UI mockups,
-and design-system work bind a visible Designer lane; expressive illustration,
-concept art, visual assets, motion, 3D, photography, sound, and other media
-craft bind a visible Artist lane. They do not qualify for `CTRL_DIRECT` merely
-because they touch one surface or finish quickly. If the required visual lane
-is unavailable, preserve the blocker rather than falling back to CTRL.
+CTRL owns user conversation, intake, task contracts, routing, dependencies,
+coordination state, and result relay. It may inspect that state read-only and
+maintain the project brief. Production, fixes, test execution, code review,
+assets, deployment and lane integration stay with assigned owners. Small tasks
+use the smallest fitting separate producer. `DESIGN`, `IMAGEGEN`, mockups,
+image edits and visual craft retain a visible Designer or Artist lane.
 
-CTRL may route, inspect read-only state, resolve user decisions, surface
-candidate galleries, integrate accepted handoffs, and perform the narrow
-general small-work exception. If CTRL has started producing a mockup, image,
-visual direction, or other delegated artifact, stop at the next safe boundary,
-record the routing error, and transfer the exact surface to the Designer,
-Artist, or accountable LEAD; do not finish it in CTRL.
+A busy or unavailable owner triggers reuse, reassignment, or an exact blocker,
+never CTRL production. If CTRL has started producing a delegated artifact, stop
+at the next safe boundary, preserve its exact state, and transfer the surface
+to the eligible owner. Loading SWARM preserves assigned LEAD/DOER roles.
 
 Any agent may request a skill that improves its role. Skill installation is a
 bounded host action: the request binds the requester, exact skill source and
@@ -249,7 +247,7 @@ CTRL owns the durable accepted-request inventory and human route; a LEAD owns ea
 
 | Function | Owns | Does not own |
 | --- | --- | --- |
-| CTRL | Intake, objective ledger, topology, authorized user-visible task materialization, shared-surface coordination, final composed acceptance, human route, narrow general atomic work | Another CTRL without exact user authorization, LEAD/DOER/Designer/Artist implementation or artifact production, or independent REVIEW |
+| CTRL | Intake, objective ledger, topology, authorized user-visible task materialization, shared-surface coordination, final composed acceptance, human route | Another CTRL without exact user authorization, LEAD/DOER/Designer/Artist implementation or artifact production, or independent REVIEW |
 | LEAD | One lane, decomposition, integration, incident consultation, exact-artifact gates, correction loop, lane completion, authorized deploy and rollback | Other lanes or final portfolio acceptance |
 | DOER | One bounded workstream and its artifact handoff | Self-acceptance or topology |
 | TASK / SUBTASK | One bounded artifact or execution unit | Parent ownership or acceptance |
@@ -258,9 +256,10 @@ CTRL owns the durable accepted-request inventory and human route; a LEAD owns ea
 | ADVISOR / EXPERT | One focused answer with evidence | Artifact ownership or authority |
 | REVIEW | Independent verdict on the frozen plan or frozen completed artifact | Implementation, self-correction, deploy, or final composed acceptance |
 
-CTRL may complete direct work only through its declared direct-work contract,
-and only when the work kind is `GENERAL`.
+CTRL relays and composes accepted results; it does not complete production lanes.
 LEAD alone completes a LEAD-owned lane after independent exact-artifact review.
+An atomic CTRL-to-DOER task is completed by its exact DOER after the same
+independent acceptance; CTRL never becomes the producer or lane reviewer.
 CTRL composes accepted lanes; it cannot impersonate LEAD or REVIEW.
 
 ## Specialists, advisors, and temporary help
@@ -381,7 +380,7 @@ coordination can exchange immutable handoffs but cannot mutate another owner's
 surface or bypass REVIEW.
 
 Host display names follow [SKILL.md Step 0](../SKILL.md#start): the root's
-`🐙 <objective>` means the project name, subject to the latest explicit user
+CTRL titles use the emoji best suited to the project, one space and the project name. No routine suffix is added for duplicate mains. `🐙 <objective>` is the SWARM example, subject to the latest explicit user
 title or exception. Structural roles remain internal; generated topology titles
 do not override host display names. A separate review task uses a fitting assurance profession
 and enters a ready wave only after the runtime issues a fresh

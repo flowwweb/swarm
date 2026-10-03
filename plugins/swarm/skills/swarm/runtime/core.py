@@ -60,7 +60,7 @@ def resolve_profession_id(value: str) -> str:
     return resolved
 
 class PinDisposition(StrEnum):
-    DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"; PLACEMENT_UNVERIFIED="PLACEMENT_UNVERIFIED"
+    DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"; HOST_PIN_REQUIRED="HOST_PIN_REQUIRED"
 
 @dataclass(frozen=True)
 class PinPolicyDecision:
@@ -70,14 +70,14 @@ class PinPolicyDecision:
 
     @property
     def requests_pin(self) -> bool:
-        return False
+        return self.disposition is PinDisposition.HOST_PIN_REQUIRED
 
 
 def pin_policy(
     role: Role | str,
     *,
     top_level: bool,
-    pin_created_tasks: bool = True,
+    pin_created_tasks: bool = False,
     explicit_user_pin: bool = False,
     concrete_review_handoff: bool = False,
     user_pinned: bool = False,
@@ -95,7 +95,7 @@ def pin_policy(
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user task or folder custody is authoritative")
     role_name = role.value if isinstance(role, Role) else str(role).upper()
     if role_name == Role.CTRL.value and top_level and pin_created_tasks:
-        return PinPolicyDecision(PinDisposition.PLACEMENT_UNVERIFIED, "top-level CTRL created; SWARM never pins without host user action", False)
+        return PinPolicyDecision(PinDisposition.HOST_PIN_REQUIRED, "configured top-level CTRL requires host pin and fresh placement readback", False)
     return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "SWARM runtime never authorizes pinning", False)
 
 
@@ -201,6 +201,18 @@ class DelegationBlockerKind(StrEnum): IN_SCOPE_WORK="IN_SCOPE_WORK"; DEPENDENCY=
 class VisualSubstrateState(StrEnum): REAL="REAL"; MISSING="MISSING"; BLANK="BLANK"; FALLBACK="FALLBACK"; PLACEHOLDER="PLACEHOLDER"; FAILED="FAILED"
 
 class InvariantError(ValueError): pass
+
+class WorkUnitKind(StrEnum): LAB="LAB"; FACTORY="FACTORY"
+
+def validate_work_unit(value:object) -> dict:
+    """Immutable unit taxonomy; task identity/lifecycle remain owned by the Ledger."""
+    fields={"kind","goal_id","parent_goal_id","parent_unit_task_id"}
+    if not isinstance(value,dict) or set(value)!=fields: raise InvariantError("work unit requires kind, goal_id, parent_goal_id and parent_unit_task_id")
+    try: kind=WorkUnitKind(value["kind"])
+    except (ValueError,TypeError): raise InvariantError("work unit kind must be LAB or FACTORY") from None
+    for name in fields-{"kind"}:
+        if value[name] is not None: _safe_token(value[name])
+    return {"kind":kind.value,**{name:value[name] for name in ("goal_id","parent_goal_id","parent_unit_task_id")}}
 
 @dataclass(frozen=True)
 class ProfessionAssignment:
@@ -487,10 +499,11 @@ class RequestTransition:
 _REQUEST_EDGES=frozenset({(RequestState.OPEN,CtrlFeedEventKind.RESULT,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.HANDOFF,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.BLOCKER,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.DECISION,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.BLOCKER,RequestState.BLOCKED),(RequestState.BLOCKED,CtrlFeedEventKind.BLOCKER,RequestState.BLOCKED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.DECISION,RequestState.CANCELLED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.CANCELLED),(RequestState.OPEN,CtrlFeedEventKind.DECISION,RequestState.SUPERSEDED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.SUPERSEDED),(RequestState.OPEN,CtrlFeedEventKind.ACCEPTANCE,RequestState.COMPLETED)})
 @dataclass(frozen=True)
 class RequestRecord:
-    id:str; goal_id:str; task_id:str; accepted_owner:str; outcome_identity:RequestOutcomeIdentity; accepting_route:tuple[str,...]; accepted_at:int; next_due_event:str; next_due_at:int; evidence_receipts:tuple[str,...]=field(repr=False); transitions:tuple[RequestTransition,...]=field(repr=False); successor_id:str=""; state:RequestState=field(init=False)
+    id:str; goal_id:str|None; task_id:str; accepted_owner:str; outcome_identity:RequestOutcomeIdentity; accepting_route:tuple[str,...]; accepted_at:int; next_due_event:str; next_due_at:int; evidence_receipts:tuple[str,...]=field(repr=False); transitions:tuple[RequestTransition,...]=field(repr=False); successor_id:str=""; state:RequestState=field(init=False)
     def __post_init__(self):
         object.__setattr__(self,"state",self.transitions[-1].state if self.transitions else None)
-        _safe_token(self.id,prefix="req-"); _safe_token(self.goal_id); _safe_token(self.task_id); _safe_token(self.accepted_owner)
+        _safe_token(self.id,prefix="req-"); _safe_token(self.task_id); _safe_token(self.accepted_owner)
+        if self.goal_id is not None: _safe_token(self.goal_id)
         if not self.accepting_route or any(_safe_token(v) != v for v in self.accepting_route) or not isinstance(self.state,RequestState) or not isinstance(self.accepted_at,int) or self.accepted_at<0: raise InvariantError("request requires a typed state and accepting route")
         RequestDue(self.next_due_event,self.next_due_at)
         for receipt in self.evidence_receipts: _safe_receipt(receipt)
@@ -581,8 +594,8 @@ def audit_ctrl_feed(messages:tuple[CtrlFeedMessage,...]) -> CtrlFeedAudit:
 def ctrl_mode(*, outcomes:int, mutable_surfaces:int, cross_lane_dependency:bool, risk:int, measurable_minutes:int, direct_horizon_minutes:int, work_kind:WorkKind=WorkKind.GENERAL) -> CtrlMode:
     if min(outcomes,mutable_surfaces,risk,measurable_minutes,direct_horizon_minutes)<0: raise InvariantError("CTRL mode inputs must be nonnegative")
     if not isinstance(work_kind,WorkKind): raise InvariantError("CTRL mode requires a typed work kind")
-    direct=work_kind is WorkKind.GENERAL and outcomes==1 and mutable_surfaces==1 and not cross_lane_dependency and risk<=1 and 0<measurable_minutes<=direct_horizon_minutes
-    return CtrlMode.DIRECT if direct else CtrlMode.DELEGATED
+    # Retain the old inputs for stored callers; economics never grant CTRL production.
+    return CtrlMode.DELEGATED
 
 @dataclass(frozen=True)
 class VersionedReference:
@@ -671,21 +684,47 @@ def _runtime_environment_fingerprint(environment:dict[str,str]|None=None) -> str
     return _sha256_text(json.dumps(facts,separators=(",",":"),ensure_ascii=True))
 
 def _run_bounded_process(command:tuple[str,...], *, cwd:Path, timeout:int, environment:dict[str,str]) -> int:
-    """Run one gate in its own process group so timeout cleans up descendants."""
+    """Run one gate in a process group or Windows job so timeout cleans up descendants."""
     windows=os.name=="nt"
-    process=subprocess.Popen(command,cwd=str(cwd),env=environment,shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=not windows,creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0) if windows else 0)
+    job=None
+    if windows:
+        import ctypes
+        from ctypes import wintypes
+        kernel=ctypes.WinDLL("kernel32",use_last_error=True)
+        kernel.CreateJobObjectW.argtypes=(ctypes.c_void_p,wintypes.LPCWSTR)
+        kernel.CreateJobObjectW.restype=wintypes.HANDLE
+        kernel.AssignProcessToJobObject.argtypes=(wintypes.HANDLE,wintypes.HANDLE)
+        kernel.AssignProcessToJobObject.restype=wintypes.BOOL
+        kernel.TerminateJobObject.argtypes=(wintypes.HANDLE,wintypes.UINT)
+        kernel.TerminateJobObject.restype=wintypes.BOOL
+        kernel.CloseHandle.argtypes=(wintypes.HANDLE,)
+        job=kernel.CreateJobObjectW(None,None)
+        if not job: raise OSError(ctypes.get_last_error(),"could not create process job")
     try:
-        process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if windows:
-            subprocess.run(("taskkill","/PID",str(process.pid),"/T","/F"),shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
-        else:
-            try: os.killpg(process.pid,signal.SIGKILL)
-            except ProcessLookupError: pass
-        if process.poll() is None: process.kill()
-        process.communicate()
-        raise
-    return int(process.returncode)
+        process=subprocess.Popen(command,cwd=str(cwd),env=environment,shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=not windows,creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0) if windows else 0)
+        if windows and not kernel.AssignProcessToJobObject(job,int(process._handle)):
+            error=ctypes.get_last_error()
+            process.kill(); process.communicate()
+            raise OSError(error,"could not assign process job")
+        try:
+            process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if windows:
+                if not kernel.TerminateJobObject(job,1):
+                    cleanup=subprocess.run(("taskkill","/PID",str(process.pid),"/T","/F"),shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
+                    if cleanup.returncode:
+                        if process.poll() is None: process.kill()
+                        process.communicate()
+                        raise OSError("process tree termination failed")
+            else:
+                try: os.killpg(process.pid,signal.SIGKILL)
+                except ProcessLookupError: pass
+            if process.poll() is None: process.kill()
+            process.communicate()
+            raise
+        return int(process.returncode)
+    finally:
+        if job: kernel.CloseHandle(job)
 
 @dataclass(frozen=True)
 class ChangedSurface:
@@ -1240,12 +1279,13 @@ _GRAPH_AGENT_TYPES=frozenset({"CTRL","LEAD","DOER"})
 @dataclass(frozen=True)
 class TaskIntake:
     """The mandatory user-intent and efficiency answers captured before routing."""
-    goal:str; efficiency_strategy:str; domain:str="general"; questions_asked:tuple[str,...]=INTAKE_QUESTIONS
+    goal:str; efficiency_strategy:str; domain:str="general"; questions_asked:tuple[str,...]=INTAKE_QUESTIONS; work_size:WorkSize=WorkSize.SMALL
     def __post_init__(self):
         if not isinstance(self.goal,str) or not self.goal.strip() or not isinstance(self.efficiency_strategy,str) or not self.efficiency_strategy.strip():
             raise InvariantError("task intake requires a goal and an efficiency strategy")
         if not isinstance(self.domain,str) or not self.domain.strip() or any(character in self.domain for character in "\r\n\t"):
             raise InvariantError("task intake requires a single-line domain")
+        if not isinstance(self.work_size,WorkSize): raise InvariantError("intake work size must be typed")
         if self.questions_asked!=INTAKE_QUESTIONS:
             raise InvariantError("task intake must ask the goal and efficiency questions before routing")
         object.__setattr__(self,"domain",self.domain.strip().casefold())
@@ -1326,6 +1366,12 @@ def select_graph(intake:TaskIntake, *, profile:GraphProfile|None=None)->GraphSel
             GraphNodeSpec("release","OPERATOR","DOER","Package, publish, and verify the accepted release surface.",("playtest_qa",)),
         )
         rationale="Use the game-studio production graph: contract and plan first, independent design/engineering/art/audio lanes in parallel, then playtest/QA and release gates."
+    elif intake.work_size is WorkSize.LARGE:
+        nodes=(
+            GraphNodeSpec("ctrl","CTRL","CTRL","Hold the parent goal, coordinate dependencies, and relay accepted blocks."),
+            GraphNodeSpec("decomposition_lead","MANAGER","LEAD","Split the parent outcome into bounded artifact blocks, scope, dependencies and acceptance before production.",("ctrl",)),
+        )
+        rationale="A large general goal needs decomposition; materialize only ready bounded producer blocks after their contracts are defined."
     else:
         nodes=(
             GraphNodeSpec("ctrl","CTRL","CTRL","Capture the objective, goal policy, graph, and final acceptance."),
@@ -1334,10 +1380,10 @@ def select_graph(intake:TaskIntake, *, profile:GraphProfile|None=None)->GraphSel
         rationale="Use the shallowest general graph that satisfies the objective; expand to a visible LEAD lane only when ownership, dependency, resumption, or acceptance evidence requires it."
     return GraphSelection(selected,intake.goal,intake.efficiency_strategy,nodes,rationale)
 
-def prepare_task_intake(*, goal:str, efficiency_strategy:str, domain:str="general", use_goals:bool=True, goal_id:str="", profile:GraphProfile|None=None)->IntakePlan:
+def prepare_task_intake(*, goal:str, efficiency_strategy:str, domain:str="general", use_goals:bool=True, goal_id:str="", profile:GraphProfile|None=None, work_size:WorkSize=WorkSize.SMALL)->IntakePlan:
     """Capture mandatory intake, select the evidence-backed graph, and apply goal policy."""
     if not isinstance(use_goals,bool): raise InvariantError("use_goals must be a boolean")
-    intake=TaskIntake(goal,efficiency_strategy,domain)
+    intake=TaskIntake(goal,efficiency_strategy,domain,work_size=work_size)
     graph=select_graph(intake,profile=profile)
     if not isinstance(goal_id,str): raise InvariantError("goal_id must be a string")
     return IntakePlan(intake,graph,use_goals,"create_or_continue" if use_goals else "disabled",goal_id.strip())
@@ -1800,6 +1846,7 @@ class Task:
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
     completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list); ctrl_feed_drift_count:int=0; superseded_ctrl_feed_ids:list[str]=field(default_factory=list); last_ctrl_feed_correction_id:str=""
 
+    routing_facts:WorkRoutingFacts|None=None; work_unit:dict|None=None
     ctrl_mode:CtrlMode=CtrlMode.DELEGATED; work_kind:WorkKind=WorkKind.GENERAL; visual_ownership:VisualOwnership=VisualOwnership.PRODUCT_EXPERIENCE; assigned_profession:str=""; profession_assignment:ProfessionAssignment|None=None; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_profession_assignments:dict[str,ProfessionAssignment]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
     lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; delegation_contract:DelegationContract|None=None; delegated_return_receipts:list[DelegatedReturnReceipt]=field(default_factory=list); delegation_reorientations:int=0; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list); user_custody_required:bool=False; user_renamed:bool=False; user_pinned:bool=False; user_state_changed:bool=False; current_lease_version:int=1
 
@@ -1811,7 +1858,9 @@ def role_gate(actor:Role, task:Task, operation:OperationClass, *, actor_id:str, 
     identity=actor_id.strip() if isinstance(actor_id,str) else ""
     if actor is Role.CTRL and identity!=Role.CTRL.value: return RoleGateDecision.DENY
     if actor is Role.LEAD and (not task.owning_lead_id or identity!=task.owning_lead_id): return RoleGateDecision.DENY
-    if actor is Role.DOER and (not task.owning_lead_id or identity!=task.owner): return RoleGateDecision.DENY
+    atomic=task.ctrl_mode is CtrlMode.DELEGATED and task.topology_receipt==("CTRL","DOER","atomic:isolated") and task.owner.strip().upper()!=Role.CTRL.value
+    if actor is Role.DOER and (not task.owning_lead_id and not atomic or identity!=task.owner): return RoleGateDecision.DENY
+    if task.ctrl_mode is CtrlMode.DIRECT and actor is not Role.CTRL and operation is not OperationClass.INSPECT: return RoleGateDecision.DENY
     if actor is Role.REVIEW and (not identity or identity in {task.creator,task.owner,task.owning_lead_id}): return RoleGateDecision.DENY
     allowed={
         Role.CTRL:{OperationClass.INSPECT,OperationClass.COORDINATE},
@@ -1820,6 +1869,7 @@ def role_gate(actor:Role, task:Task, operation:OperationClass, *, actor_id:str, 
         Role.REVIEW:{OperationClass.INSPECT,OperationClass.REVIEW,OperationClass.ACCEPT},
     }
     decision=RoleGateDecision.DELEGATE if actor is Role.CTRL and operation not in allowed[Role.CTRL] else RoleGateDecision.ALLOW if operation in allowed.get(actor,{OperationClass.INSPECT}) else RoleGateDecision.DENY
+    if task.work_unit is not None and actor in {Role.CTRL,Role.LEAD} and operation not in {OperationClass.INSPECT,OperationClass.COORDINATE}: return RoleGateDecision.DELEGATE
     supplied=task.profession_assignment.profession_id if task.profession_assignment is not None else task.assigned_profession
     try: profession=resolve_profession_id(supplied) if supplied.strip() else ""
     except (AttributeError,ValueError): return RoleGateDecision.DENY
@@ -2032,9 +2082,9 @@ class Swarm:
         from .automation import archive_request_decision
         return archive_request_decision(self.automation_mode, checkpoint, facts, now_ms=now_ms)
 
-    def plan_task_intake(self, *, goal:str, efficiency_strategy:str, domain:str="general", goal_id:str="", profile:GraphProfile|None=None)->IntakePlan:
+    def plan_task_intake(self, *, goal:str, efficiency_strategy:str, domain:str="general", goal_id:str="", profile:GraphProfile|None=None, work_size:WorkSize=WorkSize.SMALL)->IntakePlan:
         """Return the typed intake and graph plan under this runtime's goal policy."""
-        return prepare_task_intake(goal=goal,efficiency_strategy=efficiency_strategy,domain=domain,use_goals=self.use_goals,goal_id=goal_id,profile=profile)
+        return prepare_task_intake(goal=goal,efficiency_strategy=efficiency_strategy,domain=domain,use_goals=self.use_goals,goal_id=goal_id,profile=profile,work_size=work_size)
 
     def plan_proof(self, inputs:ProofInputs) -> ProofPlan:
         reach=inputs.dependency_reach if self.proof_impacted_selection else replace(inputs.dependency_reach,known=False)
@@ -2268,10 +2318,15 @@ class Swarm:
             try: state,digest,_=self._request_store()._mutate_validated(recover,expected=(state["sequence"],digest))
             except RequestStoreError as error: raise InvariantError(str(error)) from error
         return state,digest,self._validate_request_state(state,projection)
+    def _request_owner(self, task:Task) -> str:
+        self._validate_task_acceptance(task)
+        if task.owning_lead_id:
+            if task.owning_lead_id not in self.topology: raise InvariantError("request requires its live owning LEAD")
+            return task.owning_lead_id
+        self._require_lane_actor(task,Role.DOER,task.owner)
+        return task.owner
     def _request_route(self, task:Task) -> tuple[str,...]:
-        if task.ctrl_mode is CtrlMode.DIRECT: return ("INDEPENDENT_REVIEW","CTRL")
-        if not task.owning_lead_id: raise InvariantError("request requires a bound owning LEAD")
-        return (task.owning_lead_id,"INDEPENDENT_REVIEW","CTRL")
+        return (self._request_owner(task),"INDEPENDENT_REVIEW","CTRL")
     def _request_outcome_identity(self, task:Task, request_id:str) -> RequestOutcomeIdentity:
         contract=task.acceptance_contract
         if contract is not None and contract.artifact is not None:
@@ -2279,15 +2334,17 @@ class Swarm:
         if task.lane_kind is not LaneKind.NON_CODE or contract is None or not contract.explicitly_empty: raise InvariantError("non-artifact request requires explicit NON_CODE empty contract")
         return RequestOutcomeIdentity(RequestOutcomeKind.NON_ARTIFACT,sha256(f"non-code:{task.id}:{request_id}".encode()).hexdigest())
     def _request_contract_digest(self, task:Task, request_id:str) -> str:
-        owner=Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id
-        for value in (task.id,task.goal_id,owner): _safe_token(value)
+        owner=self._request_owner(task)
+        for value in (task.id,owner): _safe_token(value)
+        if task.goal_id!="" or self.use_goals or task.work_unit is None: _safe_token(task.goal_id)
         outcome=self._request_outcome_identity(task,request_id)
         return sha256(json.dumps((task.id,task.goal_id,owner,self._request_route(task),outcome.kind.value,outcome.digest),separators=(",",":")).encode()).hexdigest()
     def _request_matches_live(self, state:dict, record:RequestRecord) -> bool:
         task=self.tasks.get(record.task_id); stage=next((raw for raw in state["stages"].values() if raw["request_id"]==record.id and raw["state"]=="ACCEPTED"),None)
         if task is None or stage is None: return False
-        owner=Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id
-        if not (task.goal_id==record.goal_id and record.accepted_owner==owner==stage["owner"] and (owner=="CTRL" or owner in self.topology) and record.accepting_route==self._request_route(task) and record.outcome_identity==self._request_outcome_identity(task,record.id) and stage["task_id"]==task.id and stage["contract_digest"]==self._request_contract_digest(task,record.id)): return False
+        try: owner=self._request_owner(task); contract_digest=self._request_contract_digest(task,record.id)
+        except InvariantError: return False
+        if not ((task.goal_id or None)==record.goal_id and record.accepted_owner==owner==stage["owner"] and record.accepting_route==self._request_route(task) and record.outcome_identity==self._request_outcome_identity(task,record.id) and stage["task_id"]==task.id and stage["contract_digest"]==contract_digest): return False
         if record.state in {RequestState.OPEN,RequestState.BLOCKED}: return task.state in {TaskState.REQUEST_PENDING,TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW,TaskState.COMPLETE}
         transition=record.transitions[-1]
         try: event,_=self._published_request_event(record.id,transition.cursor.event_receipt,{transition.kind},transition.cursor)
@@ -2322,10 +2379,10 @@ class Swarm:
         except RequestStoreError as error: raise InvariantError(str(error)) from error
         return None if record is None else RequestView(final_state["sequence"],final,record)
     def stage_request_task(self, actor:Role, task:Task) -> RequestStage:
-        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task)
-        existing=self.tasks.get(task.id); task=existing or task; self._require_subagent_contract(task); self._validate_task_acceptance(task)
-        owner=Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id
-        if not owner or owner!="CTRL" and owner not in self.topology or existing is not None and existing.state not in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW}: raise InvariantError("request staging requires a live task and accountable owner")
+        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._require_task_intake(task,producer=False)
+        existing=self.tasks.get(task.id); task=existing or task; self._require_subagent_contract(task); self._validate_task_acceptance(task); self._require_task_intake(task,producer=False)
+        owner=self._request_owner(task)
+        if existing is not None and existing.state not in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW}: raise InvariantError("request staging requires a live task and accountable owner")
         state,digest,_=self._request_snapshot(); existing_stage=next(((identity,raw) for identity,raw in state["stages"].items() if raw["task_id"]==task.id and raw["state"]=="PROVISIONAL"),None)
         if existing_stage is None:
             request_id=f"req-{state['sequence']+1:012d}"; stage_id=f"stg-{state['sequence']+1:012d}"; contract=self._request_contract_digest(task,request_id); stage=RequestStage(stage_id,task.id,owner,contract,request_id=request_id,history=(("PROVISIONAL",contract),))
@@ -2351,12 +2408,12 @@ class Swarm:
         self._role(actor,{Role.CTRL}); state,digest,_=self._request_snapshot(); stage=state["stages"].get(stage_id)
         if not stage or stage["state"] not in {"PROVISIONAL","ACCEPTED"}: raise InvariantError("request stage is not current")
         task=self.tasks.get(stage["task_id"]); event,cursor=self._published_request_event(stage["request_id"],decision_event_receipt,{CtrlFeedEventKind.DECISION})
-        if task is None or task.state is not TaskState.REQUEST_PENDING or stage["contract_digest"]!=self._request_contract_digest(task,stage["request_id"]) or stage["owner"]!=(Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id) or event.task_id!=task.id or not any(value.startswith("usr-") for value in event.proof_receipts): raise InvariantError("request registration requires its current staged contract, owner, route, and user decision")
+        if task is None or task.state is not TaskState.REQUEST_PENDING or stage["contract_digest"]!=self._request_contract_digest(task,stage["request_id"]) or stage["owner"]!=self._request_owner(task) or event.task_id!=task.id or not any(value.startswith("usr-") for value in event.proof_receipts): raise InvariantError("request registration requires its current staged contract, owner, route, and user decision")
         retained=next((item for item in self._request_snapshot()[2] if item.id==stage["request_id"]),None)
         if stage["state"]=="ACCEPTED":
             if retained is None or retained.transitions[0].cursor!=cursor: raise InvariantError("accepted request replay conflicts with retained Ledger identity")
             return RequestView(state["sequence"],digest,retained)
-        record=RequestRecord(stage["request_id"],task.goal_id,task.id,stage["owner"],self._request_outcome_identity(task,stage["request_id"]),self._request_route(task),accepted_at,due.event,due.at,event.proof_receipts,(RequestTransition(RequestState.OPEN,event.kind,cursor),))
+        record=RequestRecord(stage["request_id"],task.goal_id or None,task.id,stage["owner"],self._request_outcome_identity(task,stage["request_id"]),self._request_route(task),accepted_at,due.event,due.at,event.proof_receipts,(RequestTransition(RequestState.OPEN,event.kind,cursor),))
         return self._append_request_lifecycle(state,digest,record.id,"ACKNOWLEDGED",event.receipt,record,accept_stage=True)
     def rollback_request_stage(self, actor:Role, stage_id:str, blocker_event_receipt:str) -> RequestStage:
         self._role(actor,{Role.CTRL}); state,digest,_=self._request_snapshot(); raw=state["stages"].get(stage_id)
@@ -2370,17 +2427,18 @@ class Swarm:
             task.state=TaskState.ACTIVE if active else TaskState.BACKLOG
             if active and task.owner in self.workers: self.workers[task.owner].task_ids.add(task.id)
         return RequestStage(stage_id,task.id,raw["owner"],raw["contract_digest"],RequestStageState.ROLLED_BACK,raw["request_id"],history)
-    def activate_accepted_task(self, actor:Role, task_id:str, request_id:str) -> None:
-        self._role(actor,{Role.LEAD,Role.CTRL})
+    def activate_accepted_task(self, actor:Role, task_id:str, request_id:str, *, actor_id:str="") -> None:
+        self._role(actor,{Role.LEAD,Role.DOER})
         state,_,records=self._request_snapshot(); record=next((item for item in records if item.id==request_id),None); task=self.tasks.get(task_id); stage=next((self._raw_to_stage(identity,raw) for identity,raw in state["stages"].items() if raw["request_id"]==request_id),None)
         if record is None or stage is None or stage.state is not RequestStageState.ACCEPTED or record.task_id!=task_id or record.state is not RequestState.OPEN or task is None or task.state is not TaskState.REQUEST_PENDING or record.outcome_identity!=self._request_outcome_identity(task,request_id) or record.accepting_route!=self._request_route(task): raise InvariantError("accepted request activation requires matching stage, task, owner, route, and outcome")
         if actor is Role.LEAD and task.owning_lead_id!=record.accepted_owner: raise InvariantError("only accepted owning LEAD may activate request")
-        if actor is Role.CTRL and task.ctrl_mode is not CtrlMode.DIRECT: raise InvariantError("CTRL activation requires CTRL_DIRECT")
+        if actor is Role.DOER: self._require_lane_actor(task,actor,actor_id)
         current=next(item for item in self._request_ledger().project_request_lifecycles()["records"] if item["request_id"]==request_id)
         if current["lifecycle_state"]!="ADMITTED": self._append_request_lifecycle(state,self._request_store().read()[1],request_id,"ADMITTED",f"activate:{task_id}",record)
-        if task.ctrl_mode is CtrlMode.DIRECT: task.state=TaskState.ACTIVE; return
+        if task.work_unit is not None: task.state=TaskState.ACTIVE; return
         worker=self.workers.get(task.owner)
-        if worker is None or worker.lead!=task.owning_lead_id or worker.state is WorkerState.RETIRED: raise InvariantError("accepted request has no matching live worker")
+        parent=task.owning_lead_id or Role.CTRL.value
+        if worker is None or worker.lead!=parent or worker.state is WorkerState.RETIRED: raise InvariantError("accepted request has no matching live worker")
         task.state=TaskState.ACTIVE
         worker.task_ids.add(task_id)
     def request_audit(self, now:int) -> RequestAudit:
@@ -2414,9 +2472,12 @@ class Swarm:
         state,digest,records=self._request_snapshot(); record=next((item for item in records if item.id==request_id),None)
         if record is None or record.state not in prior or not self._request_matches_live(state,record): raise InvariantError("request transition requires its current task, stage, goal, owner, route, and outcome")
         return state,digest,record,self.tasks[record.task_id]
-    def _request_transition(self, actor:Role, request_id:str, prior:set[RequestState], event_receipt:str, kinds:set[CtrlFeedEventKind], *, next_state:RequestState|None=None, successor_id:str="", due:RequestDue|None=None, owner:bool=True, user:bool=False, fresh_proof:bool=True, append_evidence:bool=True):
+    def _request_transition(self, actor:Role, request_id:str, prior:set[RequestState], event_receipt:str, kinds:set[CtrlFeedEventKind], *, next_state:RequestState|None=None, successor_id:str="", due:RequestDue|None=None, owner:bool=True, user:bool=False, fresh_proof:bool=True, append_evidence:bool=True, actor_id:str=""):
         state,digest,record,task=self._request_record(request_id,prior)
-        if owner and actor is not (Role.CTRL if record.accepted_owner=="CTRL" else Role.LEAD): raise InvariantError("request transition requires its current accepted owner")
+        if owner:
+            expected=Role.LEAD if task.owning_lead_id else Role.DOER
+            if actor is not expected: raise InvariantError("request transition requires its current accepted owner")
+            if actor is Role.DOER: self._require_lane_actor(task,actor,actor_id)
         event,cursor=self._published_request_event(request_id,event_receipt,kinds)
         if event.task_id!=task.id: raise InvariantError("request event does not match its current task")
         retained=next((item for item in record.transitions if item.cursor.event_receipt==event.receipt),None)
@@ -2432,12 +2493,12 @@ class Swarm:
         return state,digest,replace(record,evidence_receipts=evidence,transitions=record.transitions+(RequestTransition(next_state or record.state,event.kind,cursor),),successor_id=successor_id or record.successor_id),task,event,False
     def _write_request(self,state:dict,digest:str,record:RequestRecord,lifecycle_state:str,event_identity:str)->RequestView:
         return self._append_request_lifecycle(state,digest,record.id,lifecycle_state,event_identity,record)
-    def advance_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
-        state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.RESULT,CtrlFeedEventKind.HANDOFF},due=due); record=record if replay else replace(record,next_due_event=due.event,next_due_at=due.at); lifecycle="RESULT_PENDING" if event.kind is CtrlFeedEventKind.RESULT else "RUNNING"; return self._write_request(state,digest,record,lifecycle,event.receipt)
-    def block_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
-        state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.BLOCKER},due=due); record=record if replay else replace(record,next_due_event=due.event,next_due_at=due.at); return self._write_request(state,digest,record,"WAITING",event.receipt)
-    def refresh_blocked_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
-        state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.BLOCKER},due=due)
+    def advance_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue, *, actor_id:str="") -> RequestView:
+        state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.RESULT,CtrlFeedEventKind.HANDOFF},due=due,actor_id=actor_id); record=record if replay else replace(record,next_due_event=due.event,next_due_at=due.at); lifecycle="RESULT_PENDING" if event.kind is CtrlFeedEventKind.RESULT else "RUNNING"; return self._write_request(state,digest,record,lifecycle,event.receipt)
+    def block_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue, *, actor_id:str="") -> RequestView:
+        state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.BLOCKER},due=due,actor_id=actor_id); record=record if replay else replace(record,next_due_event=due.event,next_due_at=due.at); return self._write_request(state,digest,record,"WAITING",event.receipt)
+    def refresh_blocked_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue, *, actor_id:str="") -> RequestView:
+        state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.BLOCKER},due=due,actor_id=actor_id)
         record=record if replay else replace(record,next_due_event=due.event,next_due_at=due.at); return self._write_request(state,digest,record,"WAITING",event.receipt)
     def resume_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
         self._role(actor,{Role.CTRL}); state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.OPEN,due=due,owner=False,user=True)
@@ -2447,8 +2508,8 @@ class Swarm:
     def cancel_request(self, actor:Role, request_id:str, event_receipt:str) -> RequestView:
         self._role(actor,{Role.CTRL}); state,digest,record,_,event,_=self._request_transition(actor,request_id,{RequestState.OPEN,RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.CANCELLED,owner=False,user=True)
         return self._write_request(state,digest,record,"COMPLETE",event.receipt)
-    def complete_request(self, actor:Role, request_id:str, event_receipt:str, review_receipt:str) -> RequestView:
-        state,digest,record,task,event,_=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.ACCEPTANCE},next_state=RequestState.COMPLETED,fresh_proof=False,append_evidence=False); review=task.acceptance_review_receipt
+    def complete_request(self, actor:Role, request_id:str, event_receipt:str, review_receipt:str, *, actor_id:str="") -> RequestView:
+        state,digest,record,task,event,_=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.ACCEPTANCE},next_state=RequestState.COMPLETED,fresh_proof=False,append_evidence=False,actor_id=actor_id); review=task.acceptance_review_receipt
         if task.state is not TaskState.COMPLETE or not self._acceptance_ready(task) or review is None or dict(review.receipt).get("acceptance")!=review_receipt or review_receipt not in event.proof_receipts or not set(event.proof_receipts).issubset(record.evidence_receipts): raise InvariantError("request completion requires current exact acceptance proof")
         return self._write_request(state,digest,record,"COMPLETE",event.receipt)
     def reprioritize_requests(self, actor:Role, unresolved_ids:tuple[str,...]) -> RequestAudit:
@@ -2464,7 +2525,7 @@ class Swarm:
             for request_id in ids:
                 record=next(item for item in audit.records if item.id==request_id); task=self.tasks.get(record.task_id)
                 binding=None if task is None else task.watchdog_binding
-                if task is None or binding is None or binding.watched_role not in {Role.LEAD,Role.SPECIALIST,Role.ARCHITECT} or binding.watched_owner!=record.accepted_owner or record.id in audit.orphaned_ids: continue
+                if task is None or binding is None or record.goal_id is None or binding.watched_role not in {Role.LEAD,Role.SPECIALIST,Role.ARCHITECT} or binding.watched_owner!=record.accepted_owner or record.id in audit.orphaned_ids: continue
                 text=f"request:{request_id}:{scope.value}"; rows.append(WatchdogEvidence(task.id,record.goal_id,task.watchdog_binding.watched_owner,scope,signal,sha256(text.encode()).hexdigest(),text))
         return tuple(rows)
 
@@ -2692,7 +2753,21 @@ class Swarm:
             if decision.action is ControlPathRecoveryAction.NEEDS_AUTHORITY: self._record("events",("NEEDS_AUTHORITY",task.id))
             elif decision.action is ControlPathRecoveryAction.TERMINAL_BLOCKED: self._record("events",("BLOCKED",task.id))
         return decision
+    def _require_task_intake(self, task:Task, *, producer:bool=True) -> None:
+        if task.work_unit is not None:
+            unit=validate_work_unit(task.work_unit)
+            if unit["goal_id"]!=(task.goal_id or None): raise InvariantError("work unit goal must match the task goal binding")
+            if producer: raise InvariantError("Lab and Factory holders coordinate; delegate production to bounded child blocks")
+        if self.use_goals and (not isinstance(task.goal_id,str) or not task.goal_id.strip()): raise InvariantError("default goal policy requires a bound goal ID before task admission")
+        if task.routing_facts is not None:
+            if not isinstance(task.routing_facts,WorkRoutingFacts): raise InvariantError("task routing facts must be typed")
+            if producer and (not task.routing_facts.bounded or task.routing_facts.size is WorkSize.LARGE): raise InvariantError("large or unbounded parent goals require decomposition into bounded artifact blocks before production")
     def _validate_task_acceptance(self, task:Task) -> None:
+        if task.work_unit is not None:
+            unit=validate_work_unit(task.work_unit)
+            if unit["goal_id"]!=(task.goal_id or None): raise InvariantError("work unit goal must match the task goal binding")
+            if unit["parent_unit_task_id"]==task.id: raise InvariantError("work unit cannot parent itself")
+            if task.lane_kind is not LaneKind.NON_CODE or task.artifacts or task.acceptance_contract is None or not task.acceptance_contract.explicitly_empty: raise InvariantError("Lab and Factory holders are non-producing coordination tasks")
         if not isinstance(task.work_kind,WorkKind) or not isinstance(task.visual_ownership,VisualOwnership): raise InvariantError("task requires typed work kind and visual ownership")
         facts=WorkRoutingFacts(WorkSize.SMALL,True,True,1,work_kind=task.work_kind,visual_ownership=task.visual_ownership)
         required=facts.required_visual_profession()
@@ -2703,7 +2778,8 @@ class Swarm:
             try: actual=resolve_profession_id(supplied)
             except ValueError as error: raise InvariantError(str(error)) from error
             if actual!=required: raise InvariantError(f"{task.visual_ownership.value} {task.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
-        if task.ctrl_mode is CtrlMode.DIRECT and task.work_kind is not WorkKind.GENERAL: raise InvariantError("CTRL_DIRECT tasks must use the GENERAL work kind")
+        if task.ctrl_mode is CtrlMode.DIRECT: raise InvariantError("CTRL_DIRECT is retired; delegate production to a LEAD or DOER")
+        if task.owner.strip().upper()==Role.CTRL.value and (task.lane_kind is not LaneKind.NON_CODE or task.artifacts or task.acceptance_contract is not None and not task.acceptance_contract.explicitly_empty): raise InvariantError("CTRL owns coordination records only; delegate production to a LEAD or DOER")
         if not isinstance(task.lane_kind,LaneKind): raise InvariantError("task requires a typed lane kind")
         empty=task.acceptance_contract is not None and task.acceptance_contract.explicitly_empty
         if empty and task.lane_kind is not LaneKind.NON_CODE: raise InvariantError("empty acceptance contracts are allowed only for NON_CODE lanes")
@@ -2714,12 +2790,13 @@ class Swarm:
         if task.owning_lead_id and task.owning_lead_id!=worker.lead: raise InvariantError("task owning LEAD identity must match the assigned worker lead")
         task.owning_lead_id=worker.lead
     def _require_lane_actor(self, task:Task, actor:Role, actor_id:str) -> None:
+        if task.ctrl_mode is CtrlMode.DIRECT: raise InvariantError("CTRL_DIRECT is retired; delegate production to a LEAD or DOER")
         identity=actor_id.strip()
         if actor is Role.LEAD and (not task.owning_lead_id or identity!=task.owning_lead_id): raise InvariantError("lane transition requires the bound owning LEAD identity")
-        if actor is Role.CTRL:
-            owner=self.workers.get(task.owner)
-            direct=task.ctrl_mode is CtrlMode.DIRECT or (owner is not None and owner.lead==Role.CTRL.value)
-            if identity!=Role.CTRL.value or not direct or task.owning_lead_id: raise InvariantError("CTRL completion is limited to direct CTRL-bound work")
+        if actor is Role.DOER:
+            worker=self.workers.get(task.owner)
+            if identity!=task.owner or task.owning_lead_id or task.topology_receipt!=("CTRL","DOER","atomic:isolated") or worker is None or worker.lead!=Role.CTRL.value or task.id not in worker.task_ids and task.state not in {TaskState.REQUEST_PENDING,TaskState.COMPLETE,TaskState.ARCHIVED}: raise InvariantError("DOER lane transition requires its exact atomic delegated ownership")
+        if actor is Role.CTRL: raise InvariantError("CTRL coordinates only; lane transitions require their owning producer")
     def add_lead(self, actor: Role, lead: str) -> None:
         self._role(actor,{Role.CTRL}); self.topology.add(lead)
     def add_worker(self, actor: Role, worker: Worker) -> None:
@@ -2731,20 +2808,17 @@ class Swarm:
         if sum(w.lead==worker.lead and w.state!=WorkerState.RETIRED for w in self.workers.values()) >= self.lane_width: raise InvariantError("lead capacity reached")
         self.workers[worker.id]=worker
     def start_atomic(self, actor:Role, task:Task) -> None:
-        """CTRL may create exactly one direct DOER ownership path for atomic work."""
+        """CTRL delegates one atomic artifact to a distinct DOER; never produces it."""
         self._role(actor,{Role.CTRL}); self._require_subagent_contract(task)
         if task.work_kind is not WorkKind.GENERAL: raise InvariantError("CTRL atomic ownership is limited to GENERAL work")
-        self._worker_identity(task.owner); self._validate_task_acceptance(task)
+        self._worker_identity(task.owner); self._validate_task_acceptance(task); self._require_task_intake(task)
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("atomic ownership already exists")
         task.topology_receipt=("CTRL","DOER","atomic:isolated"); self.workers[task.owner]=Worker(task.owner,"CTRL",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def start_ctrl_direct(self, actor:Role, task:Task, *, outcomes:int, mutable_surfaces:int, cross_lane_dependency:bool, measurable_minutes:int) -> None:
-        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task)
-        if ctrl_mode(outcomes=outcomes,mutable_surfaces=mutable_surfaces,cross_lane_dependency=cross_lane_dependency,risk=task.risk,measurable_minutes=measurable_minutes,direct_horizon_minutes=self.direct_work_horizon,work_kind=task.work_kind) is not CtrlMode.DIRECT: raise InvariantError("CTRL_DIRECT predicate failed; hire a LEAD")
-        task.ctrl_mode=CtrlMode.DIRECT; self._validate_task_acceptance(task)
-        if task.owner.strip().upper()!=Role.CTRL.value or task.id in self.tasks: raise InvariantError("CTRL_DIRECT requires the sole CTRL owner and a new atomic task")
-        task.topology_receipt=("CTRL_DIRECT","atomic:one-surface"); self.tasks[task.id]=task
+        self._role(actor,{Role.CTRL})
+        raise InvariantError("CTRL_DIRECT is retired; delegate production to a LEAD or DOER")
     def reuse_warm(self, actor:Role, task:Task, *, architecture:dict[str,int], affinity:int) -> str|None:
-        self._role(actor,{Role.LEAD,Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task)
+        self._role(actor,{Role.LEAD,Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._require_task_intake(task)
         for worker in self.workers.values():
             self._worker_identity(worker.id)
             context=worker.context
@@ -2808,7 +2882,7 @@ class Swarm:
         if provenance is not None: self.provenance_index[provenance.id]=key; task.artifact_provenance[key]=provenance
         return key
     def assign(self, actor: Role, task: Task) -> None:
-        self._role(actor,{Role.LEAD}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._worker_identity(task.owner); w=self.workers.get(task.owner)
+        self._role(actor,{Role.LEAD}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._require_task_intake(task); self._worker_identity(task.owner); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
         operation={WorkKind.GENERAL:OperationClass.EXECUTE,WorkKind.DESIGN:OperationClass.MUTATE,WorkKind.IMAGEGEN:OperationClass.GENERATE,WorkKind.IMAGE_EDIT:OperationClass.GENERATE}[task.work_kind]
         if role_gate(actor,replace(task,owning_lead_id=w.lead),operation,actor_id=w.lead,lease_version=task.current_lease_version) is not RoleGateDecision.ALLOW: raise InvariantError("role gate denied task dispatch")
@@ -2942,8 +3016,8 @@ class Swarm:
     def complexity_mismatch(self, actor: Role, task_id: str, observed_tier: int) -> None:
         self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self._record("events",("MISMATCH",task_id))
     def add_artifact(self, actor: Role, task_id: str, artifact: ArtifactIdentity, risk: str="", *, source:str|None=None, justification:ArtifactJustification|None=None, provenance:ArtifactProvenance|None=None) -> None:
-        self._role(actor,{Role.DOER,Role.CTRL}); t=self.tasks[task_id]
-        if actor is Role.CTRL and (t.ctrl_mode is not CtrlMode.DIRECT or t.work_kind is not WorkKind.GENERAL): raise InvariantError("CTRL artifact mutation requires a general CTRL_DIRECT task")
+        self._role(actor,{Role.DOER}); t=self.tasks[task_id]
+        self._validate_task_acceptance(t)
         if t.acceptance_contract is None or t.acceptance_contract.explicitly_empty: raise InvariantError("artifact-producing lanes require an exact nonempty acceptance contract before artifact registration")
         identity=self._register_artifact(t,artifact,source,justification,provenance); t.evidence.append(identity); t.findings.extend([risk] if risk else [])
     def register_ctrl_evidence(self, actor:Role, task_id:str, evidence_id:str, kind:str, locator:str, *, material:bool=True, steering:bool=True) -> str:
@@ -3031,7 +3105,7 @@ class Swarm:
         self._record("events",("TELEMETRY",f"{task_type}:{role}:L{tier}:{outcome}"))
     def record_gate_receipt(self, actor:Role, task_id:str, receipt:GateReceipt, *, actor_id:str) -> None:
         """Retain external PASS/FAIL/TIMEOUT as UNVERIFIED; host supervision is not a runtime gate."""
-        self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); contract=t.acceptance_contract
+        self._role(actor,{Role.LEAD,Role.DOER}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); self._validate_task_acceptance(t); contract=t.acceptance_contract
         if not isinstance(receipt,GateReceipt): raise InvariantError("acceptance gates require a GateReceipt; watchdog alerts carry no authority")
         if contract is None: raise InvariantError("task requires an explicit acceptance contract")
         if contract.explicitly_empty: raise InvariantError("empty acceptance contract has no gates")
@@ -3048,7 +3122,7 @@ class Swarm:
         return spec
     def run_gate(self, actor:Role, task_id:str, gate:str, argv:tuple[str,...], *, cwd:str, actor_id:str, timeout_seconds:int|None=None) -> GateReceipt:
         """Run a planned gate without a shell, preserving timeout and retry history."""
-        self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); contract=t.acceptance_contract
+        self._role(actor,{Role.LEAD,Role.DOER}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); self._validate_task_acceptance(t); contract=t.acceptance_contract
         if contract is None: raise InvariantError("task requires an explicit acceptance contract")
         if contract.explicitly_empty: raise InvariantError("empty acceptance contract has no gates")
         if not t.incident_consultation_receipt: raise InvariantError("LEAD must consult matching unresolved incidents during the execution brief")
@@ -3109,7 +3183,7 @@ class Swarm:
         if current!=target_contract.artifact or receipt.before!=current.observables or receipt.after!=current.observables: raise InvariantError("receipt adoption requires current exact artifact observations")
         adopted=replace(receipt,authority_context_digest=_sha256_text(f"{target_task_id}:{actor_id}:{target_contract.proof_plan.plan_digest}"),adopted=True); object.__setattr__(adopted,"_authority",self._gate_capability); object.__setattr__(adopted,"_bound_task_id",target_task_id); target.gate_receipts[gate]=adopted; target.unverified_gate_receipts.pop(gate,None); return adopted
     def consult_incidents(self, actor:Role, task_id:str, ledger:IncidentLedger, *, artifact:str, scope:str, actor_id:str) -> tuple[IncidentRecord,...]:
-        self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); incidents=ledger.unresolved(artifact=artifact,scope=scope); t.incident_consultation_receipt=f"{artifact}:{scope}:{','.join(item.incidentId for item in incidents) or 'none'}"; return incidents
+        self._role(actor,{Role.LEAD,Role.DOER}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); incidents=ledger.unresolved(artifact=artifact,scope=scope); t.incident_consultation_receipt=f"{artifact}:{scope}:{','.join(item.incidentId for item in incidents) or 'none'}"; return incidents
     def record_post_handoff_incident(self, actor:Role, task_id:str, ledger:IncidentLedger, record:IncidentRecord, *, material:bool, actor_id:str) -> bool:
         self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id)
         if not material: return False
@@ -3198,6 +3272,8 @@ class Swarm:
     def retire(self, actor: Role, worker_id: str, replacement: str|None=None, *, lessons:list[HiveRecord]|None=None, now:int=0, watchdog_review:WatchdogChangeReview|None=None) -> None:
         self._role(actor,{Role.LEAD}); w=self.workers[worker_id]
         if not replacement or replacement not in self.workers or self.workers[replacement].lead!=w.lead: self._request_guard(owner=w.lead)
+        for task_id in w.task_ids:
+            if self.tasks[task_id].topology_receipt==("CTRL","DOER","atomic:isolated"): self._request_guard(task_id=task_id)
         self._require_watchdog_change([task for task in self.tasks.values() if task.owner==worker_id],"retire",worker_id,watchdog_review)
         if w.task_ids and (not replacement or replacement not in self.workers or self.workers[replacement].state==WorkerState.RETIRED): raise InvariantError("retirement needs a live replacement for owned tasks")
         flushed=(lessons or [])[:3] if self.hive_enabled else []
@@ -3205,7 +3281,11 @@ class Swarm:
         if replacement:
             target=self.workers[replacement]
             if len(target.task_ids)+len(w.task_ids)>self.wip_limit: raise InvariantError("replacement WIP limit")
-            for task_id in w.task_ids: self.tasks[task_id].owner=replacement; self._runtime_acceptances.pop(task_id,None); target.task_ids.add(task_id)
+            for task_id in w.task_ids:
+                task=self.tasks[task_id]; task.owner=replacement
+                if task.delegation_contract is not None: task.delegation_contract=replace(task.delegation_contract,owner_id=replacement)
+                task.delegated_return_receipts.clear(); task.acceptance_review_receipt=None; task.review_passed=False
+                self._runtime_acceptances.pop(task_id,None); target.task_ids.add(task_id)
         w.state=WorkerState.RETIRED; w.archive={"tasks":sorted(w.task_ids),"lane":w.lane,"hive_flush":[item.id for item in flushed]}; w.task_ids.clear()
         if self.hive_enabled: self.telemetry["hive_retirement_flushes"]=self.telemetry.get("hive_retirement_flushes",0)+len(flushed)
     def collapse(self, actor: Role, lead: str, *, watchdog_review:WatchdogChangeReview|None=None) -> Depth:
@@ -3221,7 +3301,7 @@ class Swarm:
         if len(active) <= 1: self._request_guard(owner=lead,action=shrink); return Depth.ATOMIC
         return Depth.WORKSTREAM
     def complete(self, actor: Role, task_id: str, integration_ok: bool, architecture_ok: bool, now: int, *, actor_id:str) -> None:
-        self._role(actor,{Role.LEAD,Role.CTRL}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); self._validate_task_acceptance(t)
+        self._role(actor,{Role.LEAD,Role.DOER}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); self._validate_task_acceptance(t)
         self._require_subagent_contract(t)
         pending=self._open_ctrl_evidence(task_id)
         if pending: raise InvariantError(f"open CTRL evidence acceptance failure: {','.join(pending)}")

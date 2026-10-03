@@ -65,6 +65,7 @@ DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
         ".github",
         "console/node_modules",
         "console/tests",
+        "telemetry",
         "plugins",
         "skills/swarm/evals",
         "skills/swarm/tests",
@@ -226,6 +227,21 @@ def validate_plugin_manifest(root: Path, files: dict[str, str] | None = None) ->
     surface = files if files is not None else installed_file_hashes(root)
     if not any(path.startswith(normalise_relative_path(skills_relative).rstrip("/") + "/") for path in surface):
         raise ValueError(f"plugin manifest skills path has no shipped files: {skills}")
+    interface = manifest.get("interface", {})
+    if not isinstance(interface, dict):
+        raise ValueError("plugin manifest interface must be an object")
+    for field in ("composerIcon", "logo"):
+        value = interface.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.startswith("./"):
+            raise ValueError(f"plugin manifest {field} must be a ./-prefixed file path")
+        relative = normalise_relative_path(Path(value))
+        target = (root / relative).resolve()
+        if not target.is_relative_to(root) or relative not in surface or not target.is_file():
+            raise ValueError(f"plugin manifest {field} is not a shipped file: {value}")
+        if target.stat().st_size > 5 * 1024 * 1024:
+            raise ValueError(f"plugin manifest {field} exceeds 5 MiB")
     return manifest
 
 

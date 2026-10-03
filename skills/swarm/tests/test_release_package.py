@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import struct
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -38,6 +39,29 @@ SPEC.loader.exec_module(verifier)
 
 
 class ReleasePackageTests(unittest.TestCase):
+    def test_release_icons_reuse_exact_canonical_mascot(self):
+        manifest = json.loads((REPOSITORY_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
+        expected = {
+            "composerIcon": (64, "fbc528b1b7233105a5ddb5a32b1dfed9dbfe1a0db26e0bdb45a4c2d54f3c0bf4"),
+            "logo": (512, "247fc2a02b5505c13815d78c4cce8765b893f51b70cf9167d1e2d43350209666"),
+        }
+        for field, (size, digest) in expected.items():
+            data = (REPOSITORY_ROOT / manifest["interface"][field]).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), digest)
+            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(struct.unpack(">II", data[16:24]), (size, size))
+
+    def test_declared_icon_must_be_shipped_and_confined(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_plugin(Path(temporary))
+            path = root / ".codex-plugin/plugin.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            for icon in ("./missing.png", "../escape.png", "./../escape.png"):
+                manifest["interface"] = {"logo": icon}
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.subTest(icon=icon), self.assertRaises(ValueError):
+                    package_builder.validate_plugin_manifest(root)
+
     @staticmethod
     def write_sidecar(package: Path) -> None:
         package.with_name(package.name + ".sha256").write_bytes(

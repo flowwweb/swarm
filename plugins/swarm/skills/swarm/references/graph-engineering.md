@@ -8,7 +8,8 @@ proof boundary.
 ## Invariants
 
 - One `CTRL` root owns intake, graph selection, shared-surface coordination,
-  and final composed acceptance.
+  and final composed acceptance. CTRL has no production node or direct-work
+  exception; small work is routed to a distinct producer.
 - Every non-root node has one accountable owner, one bounded purpose, and an
   explicit dependency or handoff reason.
 - Parallel lanes must be independent in mutable surface, artifact, and
@@ -31,6 +32,16 @@ records. It contains only TASK and content-addressed ARTIFACT nodes plus
 roster, or persistence system. Use its deterministic digest in the immutable
 review packet so a real dependency or artifact change invalidates proof while
 unrelated hierarchy metadata does not.
+
+Goals default on for CTRL, Lab and factory entrypoints. The parent goal holds
+the major outcome; each producer block binds that goal, one artifact, exact
+scope, dependencies, proof, acceptance and stop condition. Typed large general
+intake opens a decomposition LEAD before any producer; it does not send the
+whole outcome to a DOER. Only ready bounded blocks become production tasks.
+Runtime admission rejects missing default goal bindings and declared LARGE or
+unbounded producer facts. Retained contracts without typed size stay bound to
+their exact single artifact, custody and proof; size is not inferred from text. Goal IDs are metadata bindings, not proof that native Codex goal
+creation or semantic task-size verification occurred.
 
 ## Registered profiles
 

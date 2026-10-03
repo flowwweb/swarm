@@ -21,6 +21,7 @@ def _canonical_role(role: str) -> str:
     if not isinstance(role, str) or not role.strip():
         raise ValueError("role must be a non-empty string")
     canonical = role.strip().casefold()
+    if canonical in {"lab", "factory"}: return "ctrl"
     return "specialist" if canonical.startswith("specialist:") else canonical
 
 
@@ -54,10 +55,14 @@ def goal_decision(
     expected_objective_key: str,
     *,
     goal_controls_available: bool = True,
+    use_goals: bool = True,
 ) -> Decision:
     """Return the required host-level action without creating or changing a goal."""
 
+    if not isinstance(use_goals,bool): raise ValueError("use_goals must be a boolean")
     requested_role = _canonical_role(role)
+    if requested_role == "ctrl" and not use_goals:
+        return Decision("disabled", "explicit root goal persistence opt-out; bounded intake still required")
     if requested_role not in MANDATORY_DURABLE_GOAL_ROLES:
         return Decision("not_required", "finite role does not own a durable goal")
     if not goal_controls_available:
@@ -135,8 +140,11 @@ def register(swarm:Swarm, stage_id:str, decision_event_receipt:str, *, accepted_
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("forward-test", "request"))
+    parser.add_argument("command", choices=("forward-test", "request", "jev"))
     args = parser.parse_args()
+    if args.command == "jev":
+        from swarm_jev import main as jev_main
+        return jev_main([])
     if args.command == "forward-test":
         print(json.dumps(forward_cases(), sort_keys=True))
     if args.command == "request":

@@ -1,0 +1,29 @@
+{
+  "upstream": "burnigtm/jev-mcp",
+  "revision": "dd2e639f74db940c6aee994fe6db5bd21d1ec6ee",
+  "patch": "TypeSafeClient retry maxRetries set to 0 at both call sites",
+  "bundle_sha256": "4d72f94bc08313e23a8d05e597defe9f6512007132f977fb54e85a7db4b5659f",
+  "external_imports": [
+    {
+      "path": "node:fs",
+      "kind": "require-call",
+      "external": true
+    },
+    {
+      "path": "node:process",
+      "kind": "require-call",
+      "external": true
+    }
+  ],
+  "licenses": {
+    "@modelcontextprotocol/sdk": "MIT",
+    "@typesafe-ai/sdk": "MIT",
+    "ajv": "MIT",
+    "ajv-formats": "MIT",
+    "fast-deep-equal": "MIT",
+    "fast-uri": "BSD-3-Clause",
+    "json-schema-traverse": "MIT",
+    "zod": "MIT",
+    "zod-to-json-schema": "ISC"
+  }
+}

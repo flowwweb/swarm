@@ -74,6 +74,19 @@ worktree only through Git-aware cleanup after verifying retained branch/commit,
 archive recovery, and the storage guards above. Place retained sequential artifacts
 on verified `O:\`; keep active dependencies local and avoid duplicate installs.
 
+For unreleased projects, clearly marked WIP may consolidate on the development
+main line after proportionate safety/integrity checks and the existing review and
+Git gates; full release QA remains due before publishing. Before pushing main,
+verify its actual deployment triggers cannot publish to a live environment and
+respect branch protection. Otherwise retain the checkpoint on a named branch.
+An inactive unmerged worktree need not wait for final feature acceptance when its
+WIP commit is verified reachable on a retained named branch and every unique,
+untracked, and ignored artifact has a complete verified recoverable archive.
+Neither a commit nor a clean Git status proves those extra artifacts preserved.
+The existing STORAGE LEAD retires the exact worktree through supported Git only
+after owner handoff, no active writer, and all storage guards above; keep the
+archive manifest and retained commit in the existing proof packet.
+
 Creation age alone is never stale or quiescent evidence. Archive or relocation
 requires explicit idle, completed, or handed-off state; proof that the rollout is
 not under direct user control; no active process, file handle, or lock; and size

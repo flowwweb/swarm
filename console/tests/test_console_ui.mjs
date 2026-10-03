@@ -21,12 +21,32 @@ const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8").replace(/\r\n/g, "\n");
 const html = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
 assert.match(html, /data-view="labs"[\s\S]*id="view-labs"/);
-assert.match(app, /api\('\/api\/labs'\)/);
+assert.match(app, /api\('\/api\/' \+ key\)/);
 assert.match(app, /\/assets\/role-avatars\//);
 assert.match(app, /function labManifestMarkup[\s\S]*Block progress/);
 assert.doesNotMatch(app, /function startLab|data-lab-form|data-custom-lab-form/);
 assert.doesNotMatch(app, /LAB_CATALOG|\/api\/labs\/commands/);
 assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(3/);
+{
+  for (const scenario of ["user-focus", "scope-changed", "restore"]) {
+    let finish, restored=0;
+    const body={}, trigger={id:"removed-option"}, target={focus(){restored++;}};
+    const state={projectId:"before",view:"assets"};
+    const document={body,activeElement:body};
+    const sandbox={state,document,CSS:{escape:value=>value},Promise,
+      savedProjectRoster:()=>({state:"KNOWN",projects:[{id:"selected"}]}),
+      setProjectSelection:id=>state.projectId=id,scopeLabel:()=>"Project",writeRoute(){},renderProjectNavigation(){},renderAllViews(){},
+      mobileDrawerQuery:{matches:false},refreshOverview:()=>new Promise(resolve=>finish=resolve),
+      requestAnimationFrame:callback=>callback(),$:()=>target};
+    vm.createContext(sandbox);
+    vm.runInContext(app.slice(app.indexOf('async function selectProjectScope('),app.indexOf('function runLogBindingForCtrl(')),sandbox);
+    const pending=sandbox.selectProjectScope("selected",trigger);
+    if(scenario==="user-focus") document.activeElement={id:"project-navigation-heading"};
+    if(scenario==="scope-changed") state.projectId="newer";
+    finish();await pending;
+    assert.equal(restored,scenario==="restore"?1:0,"An async project refresh must preserve a newer keyboard focus or project selection.");
+  }
+}
 {
   const sandbox={escapeHTML:value=>String(value),milestoneSummary:items=>items[0]};
   vm.createContext(sandbox);
@@ -381,7 +401,7 @@ for (const status of ["Live", "Reconnecting", "Offline"]) assert.match(app, new 
 assert.match(css, /\.status-dot\.is-reconnecting/);
 assert.match(css, /\.status-dot\.is-offline/);
 
-for (const [tab, icon] of [["overview", "layout-dashboard"], ["agents", "users"], ["labs", "flask-conical"], ["roles", "list-tree"], ["review", "shield-check"], ["assets", "image"], ["diagnostics", "activity"], ["settings", "settings"]]) {
+for (const [tab, icon] of [["overview", "layout-dashboard"], ["agents", "users"], ["labs", "flask-conical"], ["factories", "git-branch"], ["roles", "list-tree"], ["review", "shield-check"], ["assets", "image"], ["diagnostics", "activity"], ["settings", "settings"]]) {
   assert.match(indexHtml, new RegExp(`id="tab-${tab}"[\\s\\S]*?<use href="#lucide-${icon}"></use>`));
   assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 }
@@ -1389,7 +1409,7 @@ assert.ok(css.includes('.settings-save-bar[hidden] { display:none; }'));
 assert.ok(css.includes('@media (min-width:901px) and (pointer:fine)'));
 assert.ok(css.includes('.project-scope-button { min-height:32px; }'));
 assert.ok(app.includes('filter(tab => !tab.closest("details") || tab.closest("details").open)'));
-assert.match(app, /\["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"\]/);
+assert.match(app, /\["overview", "agents", "labs", "factories", "roles", "review", "assets", "diagnostics", "settings"\]/);
 assert.doesNotMatch(app.slice(app.indexOf("function routeView"), app.indexOf("function setView")), /dashboard|hierarchy|kanban/);
 for (const retiredView of ["dashboard", "hierarchy", "kanban"]) {
   assert.doesNotMatch(indexHtml, new RegExp(`id="view-${retiredView}"`));
@@ -2857,6 +2877,7 @@ async function mount(page, overview, overrides = {}) {
   const profileRequests = [];
   const projectRequests = [];
   const repairRequests = [];
+  const unitControl = overrides.unitControl || {instances:[],prepares:[],submissions:[],failFirst:false};
   const proofFeed = overrides.proofFeed || fixture.proofFeed;
   const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
   const notificationControl = overrides.notificationControl || { failGet: false, failSeen: false, feed: structuredClone(overrides.notifications || notificationFixture()) };
@@ -2914,6 +2935,7 @@ async function mount(page, overview, overrides = {}) {
       return route.fulfill(response(bootstrap));
     }
     if (url.pathname === "/api/overview") return route.fulfill(response(overview));
+    if (url.pathname === "/api/usage-saver-tunnel") return route.fulfill(response({ok:true,state:"NOT_CONFIGURED",verified_at_ms:null,connector:"SWARM",stores_secret:false}));
     if (url.pathname === "/api/tasks/approvals") return route.fulfill(response({ok:true,requests:[]}));
     if (url.pathname === "/api/assets" && request.method() === "GET") {
       const projection = url.searchParams.get("projection") === "trash" ? "trash" : "active";
@@ -3131,7 +3153,21 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/storage") return route.fulfill(response(fixture.storage));
     if (url.pathname === "/api/ctrl-settings") return route.fulfill(response(configControl.ctrlFeed));
     if (url.pathname === "/api/skills") return route.fulfill(response({ ok: true, settings: { inheritance_enabled: true }, skills: [], overlays: { global: null, project: null, ctrl: null } }));
-    if (url.pathname === "/api/labs") return route.fulfill(response({ ok: true, labs: labCatalogFixture.labs, manifest_contract: labCatalogFixture.manifest_contract }));
+    if (["/api/labs", "/api/factories"].includes(url.pathname)) {
+      const kind = url.pathname === "/api/labs" ? "LAB" : "FACTORY", key = kind === "LAB" ? "labs" : "factories";
+      return route.fulfill(response({ok:true,[key]:labCatalogFixture[key],manifest_contract:labCatalogFixture.manifest_contract,instances:unitControl.instances.filter(item=>item.work_unit.kind===kind)}));
+    }
+    if (url.pathname === "/api/work-units/prepare") {
+      const payload = request.postDataJSON(); unitControl.prepares.push(payload);
+      return route.fulfill(response({ok:true,status:"PREPARED",endpoint:"/api/tasks/create",command_digest:"digest-"+payload.request_id,submission:{acknowledge:true,instruction:payload.objective,envelope:{command_id:payload.request_id,idempotency_key:payload.request_id,project_id:payload.project_id,ctrl_id:payload.ctrl_id,unit_request:payload}}}));
+    }
+    if (url.pathname === "/api/tasks/create") {
+      const payload = request.postDataJSON(); unitControl.submissions.push(payload);
+      if (unitControl.failFirst && unitControl.submissions.length===1) return route.abort();
+      const unit = payload.envelope.unit_request, thread = "native-"+unit.kind.toLowerCase();
+      if (!unitControl.instances.some(item=>item.coordinator_id===thread)) unitControl.instances.push({task_id:thread,coordinator_id:thread,name:unit.name,project_id:unit.project_id,ctrl_id:unit.ctrl_id,work_unit:{kind:unit.kind,goal_id:null,parent_goal_id:unit.parent_goal_id,parent_unit_task_id:null},child_task_ids:[],blocks:[{block_id:"unit-block-0",title:"Frame the first bounded outcome",lifecycle_state:"UNKNOWN"}],outcome_acceptance:"UNKNOWN"});
+      return route.fulfill(response({ok:true,status:unitControl.submissions.length>1?"REPLAY":"RESULT",thread_id:thread,command_digest:"digest-"+payload.envelope.command_id,work_completed:false}));
+    }
     if (url.pathname.startsWith("/api/proof-media/")) return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#0f1726"/></svg>' });
     if (/^\/api\/assets\/[a-z0-9_-]+\/preview$/i.test(url.pathname)) return route.fulfill({ status: 200, contentType: "image/png", body: mascotAsset });
     if (url.pathname === "/assets/swarm-wordmark.png") return route.fulfill({ status: 200, contentType: "image/png", body: wordmarkAsset });
@@ -3340,6 +3376,54 @@ const executablePath = browserCandidates.find((candidate) => fs.existsSync(candi
 const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
 const evidenceDir = process.env.SWARM_UI_EVIDENCE_DIR || "";
 if (evidenceDir) fs.mkdirSync(evidenceDir, { recursive: true });
+async function assertWorkUnitCreation() {
+  for (const width of [1440,390]) {
+    const page = await browser.newPage({viewport:{width,height:980}});
+    const unitControl = {instances:[],prepares:[],submissions:[],failFirst:true};
+    await mount(page, structuredClone(fixture.overview), {unitControl});
+    await page.evaluate(() => {state.projectId="all";state.ctrlId="";renderLabs();});
+    if(width===390) await page.locator('#mobile-menu-button').click();
+    await openPrimaryView(page,"factories");
+    assert.equal(await page.locator('#factory-catalog button[type="submit"]').isDisabled(),true);
+    await page.evaluate(() => {state.projectId="project:fixture";state.ctrlId="ctrl";state.auto={ctrl_id:"foreign",project_id:"foreign",goal_id:"foreign-goal"};renderLabs();});
+    const form = page.locator('#factory-catalog .unit-create-form');
+    await form.locator('[name="name"]').fill("Software delivery");
+    await form.locator('[name="objective"]').fill("Ship one reviewed deliverable");
+    await page.evaluate(() => renderAllViews());
+    assert.equal(await form.locator('[name="objective"]').inputValue(),"Ship one reviewed deliverable");
+    await form.locator('button[type="submit"]').click();
+    await page.waitForFunction(() => state.unitLaunch?.pending===false && Boolean(state.unitLaunch?.submission));
+    assert.equal(unitControl.prepares.length,1);
+    assert.equal(unitControl.prepares[0].parent_goal_id,null);
+    await form.getByRole('button',{name:'Check launch'}).click();
+    await page.waitForFunction(() => state.unitLaunch?.pending===false && !state.unitLaunch?.submission);
+    assert.equal(unitControl.prepares.length,1);
+    assert.deepEqual(unitControl.submissions[0],unitControl.submissions[1]);
+    await page.locator('#factory-instances .unit-instance').waitFor({state:'visible'});
+    assert.match(await page.locator('#factory-instances').innerText(),/native-factory[\s\S]*Pending goal binding[\s\S]*Outcome acceptance pending/);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+    if(evidenceDir) await page.screenshot({path:path.join(evidenceDir,'factory-'+width+'.png'),fullPage:true});
+    await page.reload();
+    await page.waitForFunction(() => Boolean(state.overview));
+    if (await page.locator('#onboarding-dialog').isVisible()) await page.getByRole('button',{name:'Skip for now'}).click();
+    await page.evaluate(() => {state.projectId="project:fixture";state.ctrlId="ctrl";setView("factories");renderLabs();});
+    await page.locator('#factory-instances .unit-instance').waitFor({state:'visible'});
+    assert.match(await page.locator('#factory-instances').innerText(),/Software delivery/);
+    await page.evaluate(() => setView("labs"));
+    const labForm=page.locator('#lab-catalog .unit-create-form');
+    await labForm.locator('[name="objective"]').fill("Investigate the next uncertainty");
+    await labForm.locator('button[type="submit"]').click();
+    await page.waitForFunction(() => state.unitLaunch?.pending===false && !state.unitLaunch?.submission);
+    await page.locator('#lab-instances .unit-instance').waitFor({state:'visible'});
+    assert.equal(unitControl.instances.length,2);
+    if(evidenceDir) await page.screenshot({path:path.join(evidenceDir,'lab-'+width+'.png'),fullPage:true});
+    await page.close();
+  }
+  console.log('Work units: desktop/mobile creation, pending receipts, retained retry, reload and taxonomy PASS');
+}
+await assertWorkUnitCreation();
+if (process.env.SWARM_UI_FOCUS === "work-units") { await browser.close(); process.exit(0); }
+
 async function settleOnboardingImage(image) {
   await image.waitFor({ state: "visible" });
   await image.evaluate(async (node) => {
@@ -3467,7 +3551,7 @@ async function assertHostWorkPage() {
     if (evidenceDir) await page.screenshot({path:path.join(evidenceDir,"host-work-"+viewport.width+".png"),animations:"disabled"});
     await page.evaluate(() => {state.projectProgressStatus="stale";renderProjectDetail();});
     assert.equal(await section.locator("[data-host-work-id]").count(), 5);
-    assert.deepEqual(runtime.runtimeErrors, []);
+    assert.deepEqual(runtime.runtimeErrors, [], `failed=${runtime.failedRequests.join(" | ")}`);
     assert.deepEqual(runtime.failedRequests, []);
     for (const caller of ["refreshMonitoring", "refreshOverview"]) {
       assert.equal(await section.locator("[data-host-work-id]").count(), 5);
@@ -4103,6 +4187,7 @@ proofFeed.items.push({
     pendingConfigControl.deferredPost = null;
     await pendingPage.getByRole("button", { name: "Start using SWARM" }).waitFor({ state: "visible" });
     await pendingPage.waitForFunction(() => !document.querySelector("#onboarding-primary")?.disabled);
+    await pendingPage.waitForFunction(() => document.activeElement?.dataset.configKey === "execution.fast_mode");
     assert.equal(await pendingPage.evaluate(() => document.activeElement?.dataset.configKey), "execution.fast_mode");
     assert.equal(pending.configRequests.length, 1);
     assert.deepEqual(pending.runtimeErrors, []);
@@ -4161,6 +4246,7 @@ proofFeed.items.push({
     await taskLifePage.waitForFunction(() => document.querySelector('#onboarding-task-life')?.getAttribute("aria-valuetext") === "Between Balanced and Long — 24 hours");
     assert.equal(taskLifeRuntime.configRequests.length, 1);
     assert.equal(configRequestValue(taskLifeRuntime.configRequests[0], "lifecycle.task_lifetime_hours"), 24);
+    await taskLifePage.waitForFunction(() => document.activeElement?.id === "onboarding-task-life");
     assert.equal(await taskLifePage.evaluate(() => document.activeElement?.id), "onboarding-task-life");
     assert.deepEqual(taskLifeRuntime.runtimeErrors, []);
     await taskLifePage.close();
@@ -4287,6 +4373,7 @@ proofFeed.items.push({
     releaseRetryPost();
     failedConfigControl.deferredPost = null;
     await failedPage.waitForFunction(() => !document.querySelector("#onboarding-primary")?.disabled);
+    await failedPage.waitForFunction(() => document.activeElement?.id === "onboarding-config-status");
     assert.equal(await failedPage.evaluate(() => document.activeElement?.id), "onboarding-config-status");
     assert.equal(failed.configRequests.length, 2);
     assert.equal(configRequestValue(failed.configRequests[0], "execution.fast_mode"), true);
@@ -4799,6 +4886,7 @@ proofFeed.items.push({
     await profileTrigger.click();
     await profilePage.locator("#view-title").click();
     assert.equal(await profilePage.locator("#profile-dialog").evaluate((element) => element.matches(":popover-open")), false);
+    await profilePage.waitForFunction(() => document.querySelector("#profile").getAttribute("aria-expanded") === "false");
     assert.equal(await profileTrigger.getAttribute("aria-expanded"), "false");
     assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET", "GET", "GET", "GET"]);
     assert.equal(profileRuntime.runtimeErrors.length, 4);
@@ -4951,6 +5039,7 @@ proofFeed.items.push({
     assert.match(await checkToken.getAttribute("title"), /Project\.Ctrl Binding: The saved project/);
     await checkToken.press("Enter");
     assert.equal(await diagnosticsPage.locator(".diagnostics-all-checks").evaluate((details) => details.open), true);
+    await diagnosticsPage.waitForFunction(() => document.activeElement?.dataset.diagnosticDetail === "project.ctrl_binding");
     assert.equal(await diagnosticsPage.evaluate(() => document.activeElement?.dataset.diagnosticDetail), "project.ctrl_binding");
     const diagnosticsReads = diagnosticsControl.getCount;
     const refreshedDiagnostics = diagnosticsPage.waitForResponse((response) => new URL(response.url()).pathname === "/api/diagnostics");
@@ -5011,6 +5100,7 @@ proofFeed.items.push({
     assert.equal(await page.locator("#message-status").textContent(), "No authorized CTRL is available in this project scope.");
     await page.locator("#message-draft").fill("Please review this screen.");
     await page.keyboard.press("Escape");
+    await page.waitForFunction(() => document.activeElement?.id === "message-launcher");
     assert.equal(await page.locator("#message-composer").isVisible(), false);
     assert.equal(await page.evaluate(() => document.activeElement?.id), "message-launcher");
     await page.locator("#message-launcher").click();
@@ -5024,7 +5114,7 @@ proofFeed.items.push({
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "40-message-unavailable-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.keyboard.press("Escape");
-    for (const view of ["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
+    for (const view of ["overview", "agents", "labs", "factories", "roles", "review", "assets", "diagnostics", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
     assert.equal(await page.getByRole("tab", { name: "Projects", exact: true }).count(), 0);
     for (const retired of ["dashboard", "hierarchy", "kanban"]) assert.equal(await page.locator('.nav-item[data-view="' + retired + '"]').count(), 0);
     assert.equal(await page.locator("#project-scope-filter").isVisible(), true);
@@ -5065,7 +5155,7 @@ proofFeed.items.push({
     await page.keyboard.press("Home");
     assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectScopeId), "all");
     await page.keyboard.press("Escape");
-    const scopedViews = ["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"];
+    const scopedViews = ["overview", "agents", "labs", "factories", "roles", "review", "assets", "diagnostics", "settings"];
     for (let index = 0; index < scopedViews.length; index += 1) {
       const view = scopedViews[index];
       const projectId = index % 2 ? "project:fixture" : "project:branch";
@@ -5121,6 +5211,7 @@ proofFeed.items.push({
     await page.waitForFunction(() => state.usageWindowHours === 168 && state.usageStatus === "current");
     assert.equal(await usageRanges.getByRole("button", { name: "1w", exact: true }).getAttribute("aria-pressed"), "true");
     await page.keyboard.press('Escape');
+    await page.waitForFunction(() => document.querySelector('[data-overview-metric="usage"]') === document.activeElement);
     assert.equal(await page.locator('[data-overview-metric="usage"]').evaluate(el => el === document.activeElement), true);
     assert.equal(await page.locator("#overview-monitoring-heading").isVisible(), true);
     assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Swarm");
@@ -5240,7 +5331,7 @@ proofFeed.items.push({
     assert.equal(await page.locator("[data-project-tab]").count(), 0);
     assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-label"), "Project overview");
     assert.match(await page.locator("#project-detail-summary").textContent(), /60%/);
-    assert.equal(await page.locator(".milestone-ring").count(), 2);
+    assert.equal(await page.locator(".project-milestones progress").count(), 2);
     assert.equal(await page.locator(".project-yield-chart").count(), 0);
     assert.equal(await page.locator(".project-yield-empty").count(), 1);
     assert.equal(await page.locator(".project-detail-feed > li").count(), 2);
@@ -5456,6 +5547,7 @@ proofFeed.items.push({
     const assetFetchesBeforePaging = desktop.requests.filter((request) => request.startsWith("/api/assets?")).length;
     await page.locator('[data-collection-more="assets"]').click();
     assert.equal(await page.locator(".asset-tile").count(), 20);
+    await page.waitForFunction(() => document.activeElement?.dataset.collectionStatus === "assets");
     assert.equal(await page.evaluate(() => document.activeElement?.dataset.collectionStatus), "assets");
     assert.equal(desktop.requests.filter((request) => request.startsWith("/api/assets?")).length, assetFetchesBeforePaging);
     await page.evaluate(() => {
@@ -5511,6 +5603,7 @@ proofFeed.items.push({
     assert.equal(restoreRequest.payload.expected_revision, 2);
     assert.match(restoreRequest.payload.operation_id, /^asset-restore-/);
     assert.equal(await page.getByRole("button", { name: "Library", exact: true }).getAttribute("aria-pressed"), "true");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Open asset details for Roadmap");
     assert.equal(await page.getByRole("button", { name: "Open asset details for Roadmap" }).evaluate((element) => element === document.activeElement), true);
     await page.getByRole("button", { name: "Open asset details for Onboarding illustration" }).click();
     assert.match(await page.locator("#asset-dialog").textContent(), /Onboarding illustration[\s\S]*Generating[\s\S]*42%/);
@@ -5860,6 +5953,7 @@ proofFeed.items.push({
     await mobilePage.keyboard.press('Space');
     await assertMetricDetailContainment(mobilePage);
     await mobilePage.getByRole('button',{name:'Close metric details',exact:true}).click();
+    await mobilePage.waitForFunction(() => document.querySelector('[data-overview-metric="usage"]') === document.activeElement);
     assert.equal(await mobilePage.locator('[data-overview-metric="usage"]').evaluate(el => el === document.activeElement), true);
     await mobilePage.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
     assert.equal(await mobilePage.locator("#overview-project-cards .overview-hierarchy-children").evaluateAll((groups) => groups.every((group) => getComputedStyle(group).gridTemplateColumns.split(" ").length === 1)), true);
@@ -5893,6 +5987,7 @@ proofFeed.items.push({
     await mobilePage.locator("#message-draft").fill("Mobile draft remains local.");
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "41-message-unavailable-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.keyboard.press("Escape");
+    await mobilePage.waitForFunction(() => document.activeElement?.id === "mobile-message-action");
     assert.equal(await mobilePage.locator("#message-composer").isVisible(), false);
     assert.equal(await mobilePage.evaluate(() => document.activeElement?.id), "mobile-message-action");
     const menuButton = mobilePage.locator("#mobile-menu-button");
@@ -5946,6 +6041,7 @@ proofFeed.items.push({
     assert.equal(await mobilePage.locator("#role-library-detail").evaluate((detail) => { const box = detail.getBoundingClientRect(); return Math.abs(box.left) <= 1 && Math.abs(box.top) <= 1 && Math.abs(box.width - innerWidth) <= 1 && Math.abs(box.height - innerHeight) <= 1; }), true);
     assert.doesNotMatch(await mobilePage.locator("#role-library-detail").textContent(), /Metadata only|server-owned|Profession · not authority|No authority transfer|Built in/i);
     await mobilePage.getByRole("button", { name: "Back to roles" }).click();
+    await mobilePage.waitForFunction(() => document.querySelector('.role-choice[data-role-select="developer"]') === document.activeElement);
     assert.equal(await mobileRoleTrigger.evaluate((element) => element === document.activeElement), true);
     await mobilePage.setViewportSize({ width: 390, height: 844 });
     await mobilePage.evaluate(() => clearError());
@@ -6006,7 +6102,7 @@ proofFeed.items.push({
     assert.doesNotMatch(await mobilePage.locator("#role-editor .edge-scroll").evaluate((element) => getComputedStyle(element).scrollbarColor), /^auto$/);
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "29-role-editor-edge-scroll-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.keyboard.press("Escape");
-    await mobilePage.waitForTimeout(50);
+    await mobilePage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Edit Accountant avatar");
     assert.equal(await mobilePage.locator("#role-editor").isVisible(), false);
     assert.equal(await mobilePage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant avatar");
     assert.equal(await mobilePage.locator("#role-library-detail").isVisible(), true, "Escape closes only the topmost role editor");

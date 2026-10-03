@@ -49,7 +49,7 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertTrue(exists)
         self.assertEqual(config.DEFAULTS["lifecycle"]["task_lifetime_hours"], 4)
         self.assertEqual(effective["lifecycle"]["task_lifetime_hours"], 4)
-        self.assertTrue(effective["lifecycle"]["pin_created_tasks"])
+        self.assertFalse(effective["lifecycle"]["pin_created_tasks"])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             custom = root / "custom.toml"
@@ -275,6 +275,120 @@ class SwarmConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 config.ConfigError,
                 "execution.usage_saver must be true or false",
+            ):
+                config.load(invalid)
+
+    def test_jev_model_selection_is_opt_in_and_requires_real_choice(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        disabled = config.plan_jev_model_selection(
+            effective, "lead", surface="codex_task",
+        )
+        self.assertEqual((disabled["status"], disabled["options"]), ("disabled", []))
+        for field, value in (
+            ("surface", "invalid"),
+            ("workload", "invalid"),
+            ("required_tools", []),
+            ("explicit_model", ""),
+            ("explicit_reasoning", "invalid"),
+            ("explicit_provider", ""),
+        ):
+            with self.subTest(invalid=field), self.assertRaises(config.ConfigError):
+                arguments = {"surface": "codex_task", field: value}
+                config.plan_jev_model_selection(
+                    effective, "lead", **arguments,
+                )
+
+        enabled = deepcopy(effective)
+        enabled["execution"]["jev_model_selection"] = True
+        plan = config.plan_jev_model_selection(
+            enabled, "lead", surface="codex_task",
+        )
+        self.assertEqual(plan["status"], "eligible")
+        self.assertEqual(plan["schema_id"], "model_profile.v1")
+        self.assertEqual(plan["eligible_profile_ids"], ["routine", "analysis", "astra"])
+        self.assertEqual(len({(item["model"], item["reasoning_effort"]) for item in plan["options"]}), 3)
+
+        locked = config.plan_jev_model_selection(
+            enabled, "lead", surface="codex_task", explicit_model="gpt-5.6-terra",
+        )
+        self.assertEqual((locked["status"], locked["options"]), ("locked", []))
+
+        for field, value in (
+            ("explicit_model", "gpt-5.6-terra"),
+            ("explicit_reasoning", "low"),
+            ("explicit_provider", "openai"),
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(config.plan_jev_model_selection(
+                    enabled, "lead", surface="codex_task", **{field: value},
+                )["status"], "locked")
+                with self.assertRaisesRegex(config.ConfigError, "locked"):
+                    config.resolve_jev_model_assignment(
+                        enabled, "lead", selected_profile_id="routine", surface="codex_task",
+                        **{field: value},
+                    )
+
+        for field, value in (("model", "gpt-5.6-terra"), ("reasoning", "low")):
+            with self.subTest(configured=field):
+                configured = deepcopy(enabled)
+                configured["roles"]["lead"] = {field: value}
+                self.assertEqual(config.plan_jev_model_selection(
+                    configured, "lead", surface="codex_task",
+                )["status"], "locked")
+                with self.assertRaisesRegex(config.ConfigError, "locked"):
+                    config.resolve_jev_model_assignment(
+                        configured, "lead", selected_profile_id="routine", surface="codex_task",
+                    )
+
+        with self.assertRaisesRegex(config.ConfigError, "surface"):
+            config.plan_jev_model_selection(enabled, "lead", surface="invalid")
+
+        enabled["execution"]["min_reasoning"] = "medium"
+        enabled["execution"]["max_reasoning"] = "medium"
+        single = config.plan_jev_model_selection(
+            enabled, "doer", surface="codex_task",
+        )
+        self.assertEqual((single["status"], len(single["options"])), ("no_selection", 1))
+
+    def test_jev_bypasses_clear_work_and_reasoning_only_choices(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        effective["execution"]["jev_model_selection"] = True
+        for role, workload, status in (("lead", "simple", "direct"), ("doer", "general", "no_selection")):
+            with self.subTest(role=role, workload=workload):
+                before = config.resolve_model_assignment(effective, role, surface="codex_task", workload=workload)
+                plan = config.plan_jev_model_selection(effective, role, surface="codex_task", workload=workload)
+                self.assertEqual((plan["status"], plan["schema_id"], plan["eligible_profile_ids"]), (status, "", []))
+                with self.assertRaisesRegex(config.ConfigError, status):
+                    config.resolve_jev_model_assignment(effective, role, selected_profile_id="routine", surface="codex_task", workload=workload)
+                self.assertEqual(config.resolve_model_assignment(effective, role, surface="codex_task", workload=workload), before)
+        self.assertGreater(len(plan["options"]), 1)
+        self.assertEqual({option["model"] for option in plan["options"]}, {"gpt-6-luna"})
+
+    def test_jev_model_selection_applies_only_an_eligible_advisory(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        effective["execution"]["jev_model_selection"] = True
+        receipt = config.resolve_jev_model_assignment(
+            effective, "lead", selected_profile_id="routine", surface="codex_task",
+        )
+        self.assertEqual(
+            (receipt["model"], receipt["reasoning_effort"], receipt["selection_source"], receipt["jev_profile_id"]),
+            ("gpt-6-sol", "low", "jev_advisory", "routine"),
+        )
+        with self.assertRaisesRegex(config.ConfigError, "ineligible"):
+            config.resolve_jev_model_assignment(
+                effective, "lead", selected_profile_id="unknown", surface="codex_task",
+            )
+
+    def test_jev_model_selection_setting_accepts_only_boolean(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "enabled.toml"
+            path.write_text("[execution]\njev_model_selection = true\n", encoding="utf-8")
+            effective, _ = config.load(path)
+            self.assertTrue(effective["execution"]["jev_model_selection"])
+            invalid = Path(directory) / "invalid.toml"
+            invalid.write_text('[execution]\njev_model_selection = "auto"\n', encoding="utf-8")
+            with self.assertRaisesRegex(
+                config.ConfigError, "execution.jev_model_selection must be true or false",
             ):
                 config.load(invalid)
 
@@ -638,6 +752,18 @@ class SwarmConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(config.ConfigError,"FAST, STANDARD, or DEFAULT"):
                 config.load(unknown)
 
+    def test_known_jev_host_preference_remains_canonical(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"host.toml"
+            path.write_text("[execution]\nusage_saver = true\njev_model_selection = true\n",encoding="utf-8")
+            effective,_=config.load(path)
+            self.assertTrue(effective["execution"]["usage_saver"])
+            self.assertTrue(effective["execution"]["jev_model_selection"])
+            invalid=Path(directory)/"invalid.toml"
+            invalid.write_text("[execution]\njev_model_selection = \"yes\"\n",encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError,"execution.jev_model_selection must be true or false"):
+                config.load(invalid)
+
     def test_legacy_service_tier_must_be_text(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"invalid.toml"
@@ -706,22 +832,24 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             json.loads(completed.stdout),
-            {"model": "gpt-5.6-terra", "reasoning": "high"},
+            {"model": "gpt-6-sol", "reasoning": "high"},
         )
 
-    def test_default_hierarchy_requests_sol_ctrl_terra_lead_and_luna_workers(self) -> None:
+    def test_default_hierarchy_requests_gpt_6_sol_leads_and_luna_workers(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
-        self.assertEqual(config.resolve_role_assignment(effective, "ctrl")["model"], "gpt-5.6-sol")
-        self.assertEqual(config.resolve_role_assignment(effective, "lead")["model"], "gpt-5.6-terra")
-        self.assertEqual(config.resolve_role_assignment(effective, "doer")["model"], "gpt-5.6-luna")
-        self.assertEqual(config.resolve_role_assignment(effective, "subtask")["model"], "gpt-5.6-luna")
+        self.assertEqual(config.resolve_role_assignment(effective, "ctrl")["model"], "gpt-6-sol")
+        self.assertEqual(config.resolve_role_assignment(effective, "lead")["model"], "gpt-6-sol")
+        self.assertEqual(config.resolve_role_assignment(effective, "doer")["model"], "gpt-6-luna")
+        self.assertEqual(config.resolve_role_assignment(effective, "subtask")["model"], "gpt-6-luna")
+        effective["execution"]["usage_profile"] = "high"
+        self.assertEqual(config.resolve_role_assignment(effective, "ctrl")["model"], "gpt-6-astra")
 
     def test_luna_assignment_is_requested_but_actual_execution_stays_unverified_without_host_metadata(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
         receipt = config.resolve_model_assignment(
             effective,"doer",surface="subagent",workload="general",required_tools=("shell",),
         )
-        self.assertEqual(receipt["model"],"gpt-5.6-luna")
+        self.assertEqual(receipt["model"],"gpt-6-luna")
         self.assertEqual(receipt["reasoning_effort"],"xhigh")
         self.assertEqual(receipt["actual_model_verification"],"UNVERIFIED")
         self.assertEqual(receipt["actual_model"],"")
@@ -729,12 +857,12 @@ class SwarmConfigTests(unittest.TestCase):
     def test_explicit_model_provider_and_reasoning_are_preserved_without_tier_authority(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
         receipt=config.resolve_model_assignment(
-            effective,"doer",surface="codex_task",explicit_model="gpt-5.6-terra",explicit_provider="openai",
-            explicit_reasoning="max",host_actual_model="gpt-5.6-terra",host_receipt="host:model:gpt-5.6-terra",
+            effective,"doer",surface="codex_task",explicit_model="gpt-6-sol",explicit_provider="openai",
+            explicit_reasoning="max",host_actual_model="gpt-6-sol",host_receipt="host:model:gpt-6-sol",
         )
         self.assertEqual(
             (receipt["model"],receipt["provider"],receipt["reasoning_effort"],receipt["requested_service_tier"]),
-            ("gpt-5.6-terra","openai","max",None),
+            ("gpt-6-sol","openai","max",None),
         )
         self.assertNotIn("service_tier",receipt)
         self.assertEqual(receipt["selection_source"],"explicit_user")

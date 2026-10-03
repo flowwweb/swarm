@@ -108,9 +108,9 @@ class RoleCardTests(unittest.TestCase):
         lab = "references/lab-workflow.md"
         self.assertIn(f"[Lab workflow]({lab})", skill)
         lab_contract = (SKILL_ROOT / lab).read_text(encoding="utf-8")
-        self.assertRegex(lab_contract, r"existing milestone, task, block, artifact, decision-set, proof, and review\s+contracts")
-        self.assertIn("every role follows", skill)
+        self.assertRegex(lab_contract, r"existing milestone, task, block,\s+artifact, decision-set, proof, and review\s+contracts")
         task_contract = (SKILL_ROOT / "references/task-contract.md").read_text(encoding="utf-8")
+        self.assertIn("for every role", task_contract)
         self.assertIn("[recovery loop](runtime-recovery.md)", task_contract)
         self.assertEqual((SKILL_ROOT / recovery).read_bytes(), (PLUGIN_ROLE_ROOT.parent / recovery).read_bytes())
         self.assertEqual((SKILL_ROOT / lab).read_bytes(), (PLUGIN_ROLE_ROOT.parent / lab).read_bytes())

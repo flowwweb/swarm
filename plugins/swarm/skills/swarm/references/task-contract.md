@@ -44,8 +44,8 @@ OWNERSHIP: owner, exact mutable surface, canonical artifact/version.
 BOUNDARIES: dependencies, proof/claim limits, no hidden scope change.
 ESCALATION: accepting route or exact blocker.
 CHANGE: ADDITIVE, CORRECTIVE, or REVERSAL; explicitly named scope and accepted behavior preserved.
-MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt and typed work kind (`GENERAL`, `DESIGN`, `IMAGEGEN`, or `IMAGE_EDIT`). Only `GENERAL` can pass the CTRL_DIRECT predicate; visual work records `product_experience` or `expressive_art` ownership and binds Designer or Artist respectively.
-GOAL: stable goal ID, objective version, measurable milestone, and locally chosen review horizon; optional WATCHDOG binding is separate and names the watched owner plus validated alert route. New-task persistence follows `goals.use_goals`, which defaults true; when it is false the intake and graph remain recorded but the root task does not create or continue a durable goal. LEAD and persistent SPECIALIST ownership goals remain fixed role invariants.
+MODE: CTRL_DELEGATED for every production task; CTRL_DIRECT is retired. Record typed work kind (`GENERAL`, `DESIGN`, `IMAGEGEN`, or `IMAGE_EDIT`) and an accountable producer distinct from CTRL, even for small edits. Visual work records `product_experience` or `expressive_art` ownership and binds Designer or Artist respectively.
+GOAL: stable parent goal ID for every production block, objective version, measurable milestone, and locally chosen review horizon; optional WATCHDOG binding is separate and names the watched owner plus validated alert route. CTRL, Lab and factory persistence follows `goals.use_goals`, which defaults true; when it is false the intake and graph remain recorded but the root task does not create or continue a durable goal. LEAD and persistent SPECIALIST ownership goals remain fixed role invariants.
 ACCEPTANCE: typed lane kind, exact ArtifactIdentity, deterministic ProofPlan, bound owning LEAD identity, and accepting REVIEW route; CODE has at least one gate and only NON_CODE non-artifact work may use an explicit empty contract.
 DELEGATION: exact deliverable, owner ID, portable custody roots, immutable artifact and artifact paths, required proof classes, bounded due event, and maximum readable return size.
 TOPOLOGY: structural authority is exactly CTRL, LEAD, or DOER. Freeze one `TopologyMaterializationPlan` before task creation: one CTRL administrator; generated `<icon><Profession> LEAD|DOER - <responsibility>` titles; one parent and boundary/artifact per lane; direct LEAD production, bounded DOER delegation, or typed durable-boundary facts for a nested LEAD; and a span exception receipt when CTRL fanout exceeds the soft preferred width. Dispatch only the current ready wave. A child enters a later packet only after its parent has a retained host-confirmed identity; a same-packet parent, public existing ID, or previously confirmed lane fails closed. Review requires a fresh runtime-issued `TopologyArtifactFreezeReceipt` bound to the producer lane, immutable content-addressed artifact, current accepted proof/review, and exact topology plan; caller labels and plain artifact IDs do not qualify. Reserve each lane identity before a host create attempt; timeout, ambiguous failure, or schema error keeps the reservation pending until exact resolution or explicit cancellation, while confirmation permanently prevents redispatch. Bare roles, profession-only titles, raw prompt titles, future review before its producer freezes, and duplicate retries fail closed. The current Codex host cannot consume the typed packet, so this is instruction-only and live enforcement remains `UNVERIFIED`. No fixed depth, arbitrary ratio, or mandatory pass-through.
@@ -139,12 +139,13 @@ exact operation, target, and scope. Missing or conflicting custody means no
 mutation is permitted: it is a fail-closed blocker, not permission to normalize or
 replace the user state.
 
-SWARM runtime never calls or authorizes pin/unpin. Every user-authorized CTRL creation
-surfaces the created ID, exact directive/title, `pinned: false`, and
-`placement: placement_unverified`. Only the host may consume an exact explicit-user
-pin request. Follow [SKILL.md START](../SKILL.md#start) for the single host
-pin/placement procedure and relative-order readback. Existing user state is always
-preserved; naming alone and runtime policy never authorize that mutation.
+SWARM runtime never calls host pin/unpin. A newly created or adopted top-level
+CTRL is eligible for host pinning only when `lifecycle.pin_created_tasks = true` is
+explicitly configured or the user directly requests that exact pin. Follow
+[SKILL.md START](../SKILL.md#start) for the single host pin procedure and fresh
+membership/order readback before archiving a predecessor CTRL. Existing user
+state is always preserved; naming alone and runtime policy never authorize
+that mutation.
 
 Any substantive lane uses a visible senior Codex task/chat with its own cwd, owner,
 and heartbeat. A hidden subagent is bounded sidecar inspection or non-authoritative

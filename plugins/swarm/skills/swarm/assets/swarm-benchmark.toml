@@ -1,0 +1,89 @@
+# Benchmark-only override. Pass this absolute path through SWARM_CONFIG_PATH.
+# Host assignments must ALSO specify model and effort explicitly.
+schema_version = 4
+
+[execution]
+usage_saver = false
+jev_model_selection = false
+fast_mode = false
+min_reasoning = "xhigh"
+max_reasoning = "xhigh"
+
+[model_capabilities."gpt-6.1-sol"]
+# Official model documentation checked 2026-10-01. Host availability is separate.
+provider = "openai"
+workloads = ["simple", "general", "large_goal", "review"]
+tools = ["shell", "web", "computer_use", "image_input"]
+reasoning = ["low", "medium", "high", "xhigh", "max"]
+
+[chat_relay]
+enabled = false
+
+[boost]
+spark_enabled = false
+
+[models.high]
+ctrl_model = "gpt-6.1-sol"
+ctrl_reasoning = "xhigh"
+lead_model = "gpt-6.1-sol"
+lead_reasoning = "xhigh"
+doer_model = "gpt-6.1-sol"
+doer_reasoning = "xhigh"
+task_model = "gpt-6.1-sol"
+task_reasoning = "xhigh"
+subtask_model = "gpt-6.1-sol"
+subtask_reasoning = "xhigh"
+assist_model = "gpt-6.1-sol"
+assist_reasoning = "xhigh"
+review_model = "gpt-6.1-sol"
+review_reasoning = "xhigh"
+advisor_model = "gpt-6.1-sol"
+advisor_reasoning = "xhigh"
+specialist_model = "gpt-6.1-sol"
+specialist_reasoning = "xhigh"
+architect_model = "gpt-6.1-sol"
+architect_reasoning = "xhigh"
+
+[models.medium]
+ctrl_model = "gpt-6.1-sol"
+ctrl_reasoning = "xhigh"
+lead_model = "gpt-6.1-sol"
+lead_reasoning = "xhigh"
+doer_model = "gpt-6.1-sol"
+doer_reasoning = "xhigh"
+task_model = "gpt-6.1-sol"
+task_reasoning = "xhigh"
+subtask_model = "gpt-6.1-sol"
+subtask_reasoning = "xhigh"
+assist_model = "gpt-6.1-sol"
+assist_reasoning = "xhigh"
+review_model = "gpt-6.1-sol"
+review_reasoning = "xhigh"
+advisor_model = "gpt-6.1-sol"
+advisor_reasoning = "xhigh"
+specialist_model = "gpt-6.1-sol"
+specialist_reasoning = "xhigh"
+architect_model = "gpt-6.1-sol"
+architect_reasoning = "xhigh"
+
+[models.low]
+ctrl_model = "gpt-6.1-sol"
+ctrl_reasoning = "xhigh"
+lead_model = "gpt-6.1-sol"
+lead_reasoning = "xhigh"
+doer_model = "gpt-6.1-sol"
+doer_reasoning = "xhigh"
+task_model = "gpt-6.1-sol"
+task_reasoning = "xhigh"
+subtask_model = "gpt-6.1-sol"
+subtask_reasoning = "xhigh"
+assist_model = "gpt-6.1-sol"
+assist_reasoning = "xhigh"
+review_model = "gpt-6.1-sol"
+review_reasoning = "xhigh"
+advisor_model = "gpt-6.1-sol"
+advisor_reasoning = "xhigh"
+specialist_model = "gpt-6.1-sol"
+specialist_reasoning = "xhigh"
+architect_model = "gpt-6.1-sol"
+architect_reasoning = "xhigh"

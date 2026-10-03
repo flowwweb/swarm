@@ -1184,6 +1184,11 @@ html[data-theme="pearl"] .drawer,html[data-theme="pearl"] .mobile-app-bar,html[d
 .lab-progress-contract i { height:5px; border-radius:999px; background:linear-gradient(90deg,var(--blue) var(--lab-progress),rgba(96,165,250,.18) var(--lab-progress)); }
 .lab-progress-contract strong { font-size:9px; }.lab-progress-contract li span { overflow:hidden; color:var(--faint); font-size:8px; text-overflow:ellipsis; white-space:nowrap; }
 .lab-manifest > p { margin:0; color:var(--faint); font-size:9px; line-height:1.5; }
+.unit-create-form { display:grid; gap:10px; }
+.unit-create-form label { display:grid; gap:5px; color:var(--muted); font-size:11px; }
+.unit-create-form input,.unit-create-form textarea { width:100%; min-width:0; padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); font:inherit; }
+.unit-create-form textarea { min-height:80px; resize:vertical; }
+.unit-instance { margin-top:12px; padding:16px; overflow-wrap:anywhere; }
 .lab-loading { display:grid; grid-column:1/-1; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
 .lab-loading i { display:block; min-height:142px; border-radius:12px; }
 .lab-new-card { border-style:dashed; }

@@ -10,7 +10,7 @@ from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, 
 def delegated_task(task_id, owner):
     artifact=ArtifactIdentity(f"evidence-{task_id}","v1","non-artifact"); path=f"receipts/{task_id}.txt"
     contract=DelegationContract(task_id,f"Return the exact {task_id} evidence surface.",owner,(path,),artifact,(path,),(ProofClass.SOURCE,),60)
-    return Task(task_id,owner,"CTRL",1,{},subagent_receipt=f"host:thread:{owner}",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty(),delegation_contract=contract)
+    return Task(task_id,owner,"CTRL",1,{},goal_id=f"goal-{task_id}",subagent_receipt=f"host:thread:{owner}",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty(),delegation_contract=contract)
 
 
 def delegated_accept(swarm, task_id):
@@ -34,7 +34,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
 
     def accept(self):
         self.acceptance_review_only()
-        self.swarm.complete(Role.CTRL, "covers", True, True, 1,actor_id="CTRL")
+        self.swarm.complete(Role.DOER, "covers", True, True, 1,actor_id="artist-worker")
 
     def acceptance_review_only(self):
         delegated_accept(self.swarm,"covers")
@@ -59,7 +59,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
             self.swarm.surface_ctrl_evidence(Role.CTRL, "cover-folder", surface_kind="path", caption="Folder inventory for ten generated covers.", claim_limit="This link does not display or approve any cover.", surface_receipt="chat:folder")
         self.acceptance_review_only()
         with self.assertRaisesRegex(InvariantError, "open CTRL evidence acceptance failure"):
-            self.swarm.complete(Role.CTRL, "covers", True, True, 1,actor_id="CTRL")
+            self.swarm.complete(Role.DOER, "covers", True, True, 1,actor_id="artist-worker")
         with self.assertRaisesRegex(InvariantError, "before phase advance"):
             self.swarm.advance_ctrl_phase(Role.CTRL, "implementation")
         self.assertEqual(len(self.swarm.ctrl_feed_due(Role.CTRL)), 10)
@@ -77,7 +77,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.assertEqual(self.swarm.ctrl_feed_due(Role.CTRL), ())
         self.acceptance_review_only()
         with self.assertRaisesRegex(InvariantError,"require one surfaced final gallery"):
-            self.swarm.complete(Role.CTRL, "covers", True, True, 1,actor_id="CTRL")
+            self.swarm.complete(Role.DOER, "covers", True, True, 1,actor_id="artist-worker")
         candidate_ids=tuple(f"cover-{index}" for index in range(10))
         self.swarm.register_ctrl_decision_set(Role.CTRL,"covers","cover-choice",candidate_ids,user_requested_all=True)
         self.swarm.surface_ctrl_decision_gallery(Role.CTRL,"cover-choice",embedded_ids=candidate_ids,labels_defects={candidate:f"Option {index + 1}: no known objective defect." for index,candidate in enumerate(candidate_ids)},complete_inventory=candidate_ids,surface_receipt="final:gallery:covers")
@@ -105,7 +105,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.assertEqual(self.swarm.ctrl_feed_due(Role.CTRL),())
         self.acceptance_review_only()
         with self.assertRaisesRegex(InvariantError,"open CTRL decision gallery acceptance failure"):
-            self.swarm.complete(Role.CTRL,"covers",True,True,1,actor_id="CTRL")
+            self.swarm.complete(Role.DOER,"covers",True,True,1,actor_id="artist-worker")
         with self.assertRaisesRegex(InvariantError,"before phase advance"):
             self.swarm.advance_ctrl_phase(Role.CTRL,"production")
 
@@ -262,7 +262,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
     def test_feed_reorientation_does_not_create_an_unbound_watchdog(self):
         self.swarm.register_ctrl_evidence(Role.DOER,"covers","watchdog-proof","test","watchdog proof")
         receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"watchdog-proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="Reconnect proof is ready.",claim_limit="Production remains unverified.",surface_receipt="chat:watchdog-proof")
-        self.swarm.propose_milestone(Role.CTRL,"covers",goal_id="feed-goal",milestone="accepted feed",proof_kind="review",horizon_minutes=15,now=10)
+        self.swarm.propose_milestone(Role.CTRL,"covers",goal_id=self.swarm.tasks["covers"].goal_id,milestone="accepted feed",proof_kind="review",horizon_minutes=15,now=10)
         self.assertNotIn("covers",self.swarm.scheduled_wakeups)
         drift=CtrlFeedMessage("drift-with-lost-clock",((CtrlFeedPart.ACTIVITY,"Still running."),),(),"covers","chat:feed:drift-clock")
         correction=CtrlFeedMessage("corrected-clock",(
@@ -331,7 +331,8 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.assertRegex(self.skill, r"(?is)Materialize a visible task lane.*durable ownership.*interruption-safe resumption")
         self.assertRegex(self.skill, r"(?is)Use a subagent only as short bounded capacity inside an existing lane")
         self.assertIn("never substitutes for a qualifying durable task", self.skill)
-        self.assertRegex(self.skill, r"(?is)CTRL_DIRECT.*low-risk atomic outcome.*otherwise use.*CTRL_DELEGATED")
+        self.assertIn("`CTRL_DIRECT` is retired; all production uses `CTRL_DELEGATED`", self.skill)
+        self.assertIn("separate bounded producer, not CTRL", self.skill)
         self.assertNotIn("each delegated or non-CTRL task delegates", self.skill)
         self.assertNotIn("Default to CTRL working directly or one atomic owner", self.skill)
 

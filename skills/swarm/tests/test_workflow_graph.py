@@ -22,7 +22,7 @@ def delegated_accept(swarm:Swarm, task_id:str) -> None:
 class WorkflowGraphTests(unittest.TestCase):
     def task(self, task_id:str, owner:str, lead:str)->Task:
         artifact=ArtifactIdentity(f"workflow-{task_id}","v1","non-artifact"); path=f"artifacts/{task_id}.receipt"
-        return Task(task_id,owner,"author",1,{},subagent_receipt=f"host:thread:{task_id}",lane_kind=LaneKind.NON_CODE,owning_lead_id=lead,acceptance_contract=AcceptanceContract.empty(),delegation_contract=delegation(task_id,owner,artifact,path))
+        return Task(task_id,owner,"author",1,{},goal_id=f"goal-{task_id}",subagent_receipt=f"host:thread:{task_id}",lane_kind=LaneKind.NON_CODE,owning_lead_id=lead,acceptance_contract=AcceptanceContract.empty(),delegation_contract=delegation(task_id,owner,artifact,path))
 
     def two_lanes(self, reverse:bool=False)->Swarm:
         swarm=Swarm()
@@ -91,7 +91,7 @@ class WorkflowGraphTests(unittest.TestCase):
             artifact_path=Path(root)/"artifact.txt"; artifact_path.write_text("version-1",encoding="utf-8")
             artifact=ArtifactIdentity.capture("route","sha-1","release",root=root,paths=("artifact.txt",))
             swarm=Swarm(); swarm.add_lead(Role.CTRL,"lead"); swarm.add_worker(Role.LEAD,Worker("builder","lead",1))
-            task=Task("route","builder","author",1,{},subagent_receipt="host:thread:route",lane_kind=LaneKind.CODE,owning_lead_id="lead",acceptance_contract=AcceptanceContract(artifact,("test",),observation_root=root),delegation_contract=delegation("route","builder",artifact,"artifact.txt"))
+            task=Task("route","builder","author",1,{},goal_id="goal-route",subagent_receipt="host:thread:route",lane_kind=LaneKind.CODE,owning_lead_id="lead",acceptance_contract=AcceptanceContract(artifact,("test",),observation_root=root),delegation_contract=delegation("route","builder",artifact,"artifact.txt"))
             swarm.assign(Role.LEAD,task); swarm.consult_incidents(Role.LEAD,"route",IncidentLedger(root),artifact="route",scope="routing",actor_id="lead")
             before=derive_workflow_graph(swarm); self.assertEqual(next(node for node in before.nodes if node.kind=="GATE").state,"UNVERIFIED"); self.assertEqual(swarm.open_gates("route"),("test",))
             swarm.run_gate(Role.LEAD,"route","test",(sys.executable,"-c","pass"),cwd=root,actor_id="lead")
