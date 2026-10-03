@@ -2,7 +2,7 @@
   "schema_version": 1,
   "manifest_contract": {
     "shape": "One Lab or Factory is one coordinated work unit under its owning CTRL.",
-    "delegation": "CTRL routes the request to the unit coordinator. The coordinator delegates bounded child tasks with independent review.",
+    "delegation": "CTRL routes the request to the unit coordinator. The coordinator chooses or adapts the starting Flow, hires only the Leads and Doers needed, and delegates bounded child tasks with separate independent review.",
     "progress": {
       "source": "The work unit coordinator's existing blocks.",
       "steps": [
@@ -82,24 +82,6 @@
       ]
     },
     {
-      "id": "build",
-      "name": "Build Lab",
-      "icon": "git-branch",
-      "summary": "Test architecture and prototypes before committing to a build.",
-      "outcome": "A proven architecture or prototype that resolves the next engineering decision.",
-      "suggested_roles": [
-        "developer",
-        "architect",
-        "tester",
-        "reviewer"
-      ],
-      "guide": [
-        "Name the engineering uncertainty and evidence needed.",
-        "Compare small prototypes or bounded technical experiments.",
-        "Return the finding and promote accepted work to a Factory."
-      ]
-    },
-    {
       "id": "test",
       "name": "Test Lab",
       "icon": "shield-check",
@@ -152,24 +134,6 @@
         "Run the smallest measurable experiment.",
         "Keep, change, or stop from evidence."
       ]
-    },
-    {
-      "id": "ops",
-      "name": "Ops Lab",
-      "icon": "settings",
-      "summary": "Deliver and keep it running.",
-      "outcome": "One dependable delivery path with monitoring and recovery.",
-      "suggested_roles": [
-        "operator",
-        "producer",
-        "developer",
-        "reviewer"
-      ],
-      "guide": [
-        "Frame the delivery target and safe operating boundary.",
-        "Connect, automate, launch, and observe the smallest complete path.",
-        "Verify the live result and recovery route."
-      ]
     }
   ],
   "factories": [
@@ -186,9 +150,74 @@
         "reviewer"
       ],
       "guide": [
-        "Define the deliverable and its acceptance evidence.",
+        "Choose or adapt a Flow for the deliverable and its acceptance evidence.",
         "Delegate bounded implementation, test and review tasks.",
         "Integrate and release the accepted increment."
+      ]
+    },
+    {
+      "id": "web_app",
+      "name": "Web App Factory",
+      "icon": "layout-dashboard",
+      "summary": "Build a usable web experience.",
+      "outcome": "A working user journey with rendered desktop, mobile and interaction proof.",
+      "suggested_roles": ["manager", "designer", "developer", "reviewer"],
+      "guide": [
+        "Choose or adapt a Flow for the user journey and accepted visual direction.",
+        "Delegate bounded interface and behavior tasks; verify the rendered experience.",
+        "Integrate the independently reviewed experience and its delivery evidence."
+      ]
+    },
+    {
+      "id": "game",
+      "name": "Game Factory",
+      "icon": "sparkles",
+      "summary": "Build a playable game increment.",
+      "outcome": "A playable slice with verified mechanics, visual consistency and playtest evidence.",
+      "suggested_roles": ["manager", "developer", "artist", "tester", "reviewer"],
+      "guide": [
+        "Choose or adapt a game-studio Flow around one testable play loop.",
+        "Delegate bounded mechanics, art and playtest tasks as dependencies require.",
+        "Integrate the independently reviewed slice and verify it can be played."
+      ]
+    },
+    {
+      "id": "integration",
+      "name": "Integration Factory",
+      "icon": "git-branch",
+      "summary": "Connect a verified service path.",
+      "outcome": "One working connection with contract, failure, recovery and live service evidence.",
+      "suggested_roles": ["developer", "operator", "tester", "reviewer"],
+      "guide": [
+        "Choose or adapt a Flow for the exact service, account and operation contract.",
+        "Delegate bounded connector and success, failure and recovery checks.",
+        "Integrate the reviewed connection and verify the intended live operation."
+      ]
+    },
+    {
+      "id": "data",
+      "name": "Data Factory",
+      "icon": "grid-2x2",
+      "summary": "Deliver a reproducible data result.",
+      "outcome": "A reproducible transform or data product with reconciled inputs and verified outputs.",
+      "suggested_roles": ["analyst", "developer", "tester", "reviewer"],
+      "guide": [
+        "Choose or adapt a Flow for the input contract, intended result and data constraints.",
+        "Delegate bounded transforms and validation of representative and invalid records.",
+        "Integrate the reviewed result and retain reproducibility and recovery evidence."
+      ]
+    },
+    {
+      "id": "release",
+      "name": "Release Factory",
+      "icon": "upload",
+      "summary": "Deliver a verified release.",
+      "outcome": "An accepted candidate delivered to the intended target with version and rollback evidence.",
+      "suggested_roles": ["operator", "developer", "tester", "reviewer"],
+      "guide": [
+        "Choose or adapt a Flow for the exact candidate, target and release authority.",
+        "Delegate bounded package, verification and delivery tasks using the existing release route.",
+        "Verify the delivered version and recovery path, then return the accepted release."
       ]
     }
   ]

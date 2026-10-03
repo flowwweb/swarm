@@ -1,6 +1,6 @@
 # Install SWARM on another device
 
-SWARM 0.4.11+codex.20261002 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
+SWARM 0.4.12+codex.20261003 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
 
 Install the current public release from the default branch on each device:
 
@@ -83,8 +83,16 @@ Read-only benchmark snapshots do not prove final closure or participant complete
 
 ## Release scope
 
-This release reconciles committed maturity routing/Jev changes with main's security and font removals, the naming correction, visual-review and development-checkpoint doctrine, the Auto timeout fix, and console lifecycle/backend fixes. New measurement and model-capability fixes are included.
+This release adds guarded Git commit and push preparation plus six starting
+Factory Flows: Software, Web App, Game, Integration, Data and Release. Each
+coordinator receives the selected Flow, chooses or adapts it to its own goal,
+and delegates bounded work to fitting Leads and Doers with separate independent
+review. CTRL stays the switchboard operator. Six Lab starting points remain:
+Product, Research, Design, Test, Content and Growth. Build and Ops are retired
+only from the default catalog; their existing unit identities, manifests and
+history remain intact. Custom Labs and Factories remain available.
 
-The dirty HQ checkout's separate visual redesign remains with its existing owner. It was inventoried and preserved; its unreconciled UI edits are not silently installed as part of this release. Packaging and local tests do not establish acceptance of every HQ screen or live topology enforcement.
+Source, package and installation checks do not establish native hook trust,
+fresh-task adherence or behavior on another device.
 
 Official references: [plugin packaging and local marketplaces](https://developers.openai.com/plugins/build/plugins), [listing icons](https://developers.openai.com/plugins/deploy/submission), [GPT-6.1 Sol pricing](https://developers.openai.com/api/docs/models/gpt-6.1-sol).

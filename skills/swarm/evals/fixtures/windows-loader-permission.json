@@ -5,12 +5,19 @@
     "purpose": "read-only SWARM config load",
     "script": "scripts/swarm_config.py",
     "arguments": ["show", "--json"],
-    "elevation_allowed": false
+    "supported_access_approval_available": true,
+    "blind_privileged_execution_allowed": false
   },
   "primary_receipt": {
     "runtime": "python",
-    "result": "tooling_permission_denied",
+    "result": "local_executable_access_error",
     "provider_auth_observed": false
+  },
+  "access_approval": {
+    "route": "supported sandbox access request",
+    "request_count": 1,
+    "decision": "pending",
+    "same_action_and_target": true
   },
   "fallback_receipt": {
     "runtime": "C:\\authorized-runtime\\python.exe",

@@ -3384,6 +3384,17 @@ async function assertWorkUnitCreation() {
     await page.evaluate(() => {state.projectId="all";state.ctrlId="";renderLabs();});
     if(width===390) await page.locator('#mobile-menu-button').click();
     await openPrimaryView(page,"factories");
+    assert.equal(await page.locator('#factory-catalog .lab-card:not(.lab-new-card)').count(),6);
+    for (const unit of labCatalogFixture.factories) {
+      await page.locator('#factory-catalog [data-lab-id="' + unit.id + '"]').click();
+      const selected = page.locator('#factory-catalog .unit-create-form');
+      assert.equal(await selected.getAttribute('data-unit-template'),unit.id);
+      assert.equal(await selected.locator('[name="name"]').inputValue(),unit.name);
+      assert.equal(await page.locator('#factory-catalog .is-selected .lab-manifest-outcome strong').innerText(),unit.outcome);
+      assert.deepEqual(await page.locator('#factory-catalog .is-selected .lab-guide li').allTextContents(),unit.guide);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+    }
+    await page.locator('#factory-catalog [data-lab-id="software"]').click();
     assert.equal(await page.locator('#factory-catalog button[type="submit"]').isDisabled(),true);
     await page.evaluate(() => {state.projectId="project:fixture";state.ctrlId="ctrl";state.auto={ctrl_id:"foreign",project_id:"foreign",goal_id:"foreign-goal"};renderLabs();});
     const form = page.locator('#factory-catalog .unit-create-form');
@@ -3410,6 +3421,9 @@ async function assertWorkUnitCreation() {
     await page.locator('#factory-instances .unit-instance').waitFor({state:'visible'});
     assert.match(await page.locator('#factory-instances').innerText(),/Software delivery/);
     await page.evaluate(() => setView("labs"));
+    assert.equal(await page.locator('#lab-catalog .lab-card:not(.lab-new-card)').count(),6);
+    assert.equal(await page.locator('#lab-catalog [data-lab-id="custom"]').count(),1);
+    assert.equal(await page.locator('#lab-catalog [data-lab-id="build"], #lab-catalog [data-lab-id="ops"]').count(),0);
     const labForm=page.locator('#lab-catalog .unit-create-form');
     await labForm.locator('[name="objective"]').fill("Investigate the next uncertainty");
     await labForm.locator('button[type="submit"]').click();

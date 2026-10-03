@@ -67,12 +67,17 @@ the old verdict cannot advance it. Dirty or blocked checkpoints cannot emit a
 packet. This is proof invalidation, not a review-loop trigger: unchanged packet
 digests are reviewed once and reused only within their validity window.
 Unchanged or fast-forward history may advance non-destructively; divergent
-remote history requires a separate compatibility receipt before merge. SWARM
+remote history requires a separate compatibility receipt before preparing a
+merge without committing. The resulting candidate then receives affected proof
+and fresh independent acceptance before any push; the pre-merge verdict cannot
+accept it. Commits and pushes require separate current operation-bound Git guard
+receipts, never an inferred guard from a prior operation. SWARM
 never emits force-push, rebase, or reset. Package/install/deploy requests use
 only the repository-defined release path after source/package gates and a
 rollback receipt. Local installation is not provider or production deployment.
 These receipts are typed and exact-artifact bound: repository identity/root,
-branch/remote, candidate SHA/tree, operation, authority, and validity window;
+branch/remote, resolved fetch/push URLs and destination ref, candidate SHA/tree,
+operation, authority, and validity window;
 remote compatibility also binds the fetched remote head. Free-text policy or
 release claims, stale receipts, and repository/artifact mismatches fail closed.
 

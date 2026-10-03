@@ -42,8 +42,13 @@ class AutomationStatus(StrEnum):
 
 
 class GitRelationship(StrEnum):
+    """Host-observed ancestry of the reviewed local and fetched remote heads."""
+
+    # Remote equals or is an ancestor of local; local needs no integration.
     UNCHANGED = "unchanged"
+    # Local is a strict ancestor of remote; advance local before publication.
     FAST_FORWARD = "fast_forward"
+    # Neither head is an ancestor of the other; prepare a reviewed merge.
     DIVERGED = "diverged"
 
 
@@ -54,6 +59,7 @@ class ReceiptAuthority(StrEnum):
 
 
 class ReceiptPurpose(StrEnum):
+    GIT_GUARD = "git_guard"
     REMOTE_COMPATIBILITY = "remote_compatibility"
     PUSH_POLICY = "push_policy"
     RELEASE_POLICY = "release_policy"
@@ -127,6 +133,9 @@ class RepositoryIdentity:
     branch: str
     remote: str
     release_methods: tuple[str, ...] = ()
+    fetch_url: str = ""
+    push_url: str = ""
+    target_ref: str = ""
 
     def __post_init__(self) -> None:
         _token(self.repository_id, "repository id")
@@ -135,6 +144,11 @@ class RepositoryIdentity:
             raise InvariantError("repository root must be absolute")
         _token(self.branch, "repository branch")
         _token(self.remote, "repository remote")
+        for value, label in ((self.fetch_url, "repository fetch URL"), (self.push_url, "repository push URL"), (self.target_ref, "repository target ref")):
+            if value:
+                _token(value, label)
+        if self.target_ref and not self.target_ref.startswith("refs/heads/"):
+            raise InvariantError("repository target ref must name an exact branch ref")
         if not isinstance(self.release_methods, tuple) or not all(isinstance(item, str) and item.strip() for item in self.release_methods):
             raise InvariantError("repository release methods must be a tuple of exact non-empty methods")
         if len(self.release_methods) != len(set(self.release_methods)):
@@ -258,6 +272,9 @@ class ImmutableReviewPacket:
                 self.repository.branch,
                 self.repository.remote,
                 self.repository.release_methods,
+                self.repository.fetch_url,
+                self.repository.push_url,
+                self.repository.target_ref,
             ),
             "producer": self.producer_task_id,
             "reviewer": self.reviewer_task_id,
@@ -550,9 +567,11 @@ def _policy_receipt_blocker(
 
 
 def commit_decision(
-    mode: AutomationMode | str, checkpoint: StableCheckpoint, *, attributable_paths: tuple[str, ...]
+    mode: AutomationMode | str, checkpoint: StableCheckpoint, *, attributable_paths: tuple[str, ...],
+    staged_paths: tuple[str, ...] | None = None, staged_tree: str = "",
+    guard_receipt: BoundPolicyReceipt | None = None, now_ms: int | None = None,
 ) -> AutomationDecision:
-    """Allow an exact owned commit only when the whole dirty set is attributable."""
+    """Allow an exact owned index without absorbing unrelated dirty work."""
     mode = normalize_automation_mode(mode)
     if mode is AutomationMode.MANUAL:
         return _manual()
@@ -560,19 +579,29 @@ def commit_decision(
     owned, dirty, attributable = set(checkpoint.owned_paths), set(checkpoint.dirty_paths), set(paths)
     if checkpoint.blocker:
         return AutomationDecision(AutomationAction.COMMIT, AutomationStatus.BLOCKED, blocker=checkpoint.blocker)
-    if dirty != attributable or not attributable.issubset(owned):
+    if not attributable.issubset(dirty & owned):
         return AutomationDecision(
             AutomationAction.COMMIT,
             AutomationStatus.BLOCKED,
-            blocker="mixed or unattributable dirty paths",
+            blocker="unattributable commit paths",
             claim_limit="Automation never stages, resets, cleans, or absorbs paths outside the exact owned checkpoint.",
         )
+    if staged_paths is None or staged_tree != checkpoint.source_tree:
+        return AutomationDecision(AutomationAction.COMMIT, AutomationStatus.BLOCKED, blocker="current staged tree observation must match the candidate")
+    if set(_paths(staged_paths, "staged paths", allow_empty=True)) != attributable:
+        return AutomationDecision(AutomationAction.COMMIT, AutomationStatus.BLOCKED, blocker="mixed or mismatched staged paths; preserve the index")
+    blocker = _policy_receipt_blocker(
+        guard_receipt, checkpoint, purpose=ReceiptPurpose.GIT_GUARD, operation=AutomationAction.COMMIT,
+        authorities=frozenset({ReceiptAuthority.HOST, ReceiptAuthority.REPOSITORY_POLICY}), now_ms=now_ms,
+    )
+    if blocker:
+        return AutomationDecision(AutomationAction.COMMIT, AutomationStatus.BLOCKED, blocker=blocker)
     return AutomationDecision(
         AutomationAction.COMMIT,
         AutomationStatus.READY,
         paths=tuple(sorted(attributable)),
-        method="stage_exact_paths_then_commit",
-        claim_limit="Eligibility is a source decision; the Git command and resulting immutable receipt remain separately observable.",
+        method="commit_exact_observed_index",
+        claim_limit="Source planning only; guard origin, Git execution, resulting SHA/tree/parent and unchanged unrelated work require host readback.",
     )
 
 
@@ -624,11 +653,14 @@ def git_advance_decision(
     now_ms: int,
     remote_compatibility_receipt: BoundPolicyReceipt | None = None,
     push_policy_receipt: BoundPolicyReceipt | None = None,
+    guard_receipt: BoundPolicyReceipt | None = None,
 ) -> AutomationDecision:
     """Plan a history-preserving integrate/push action after review and fetch."""
     accepted = review_decision(mode, checkpoint, review, now_ms=now_ms)
     if accepted.status is not AutomationStatus.READY:
         return accepted
+    if not all((checkpoint.repository.fetch_url, checkpoint.repository.push_url, checkpoint.repository.target_ref)):
+        return AutomationDecision(AutomationAction.INTEGRATE, AutomationStatus.BLOCKED, blocker="resolved fetch/push URLs and destination ref required")
     if fetch is None:
         return AutomationDecision(AutomationAction.INTEGRATE, AutomationStatus.BLOCKED, blocker="fresh fetch receipt required before integration or push")
     if fetch.repository != checkpoint.repository:
@@ -659,7 +691,7 @@ def git_advance_decision(
                 blocker=blocker,
                 claim_limit="Never force-push, rebase, or reset user or remote work.",
             )
-    method = "merge_reviewed_remote_history" if fetch.relationship is GitRelationship.DIVERGED else "fast_forward_preserving_history"
+    method = "prepare_reviewed_merge_without_commit" if fetch.relationship is GitRelationship.DIVERGED else "fast_forward_preserving_history"
     if push_policy_receipt is not None:
         blocker = _policy_receipt_blocker(
             push_policy_receipt,
@@ -672,7 +704,21 @@ def git_advance_decision(
         )
         if blocker:
             return AutomationDecision(AutomationAction.PUSH, AutomationStatus.BLOCKED, blocker=blocker)
+    if fetch.relationship is not GitRelationship.UNCHANGED:
+        return AutomationDecision(
+            AutomationAction.INTEGRATE, AutomationStatus.READY, method=method,
+            claim_limit="Integration does not authorize push. Recheck the resulting index/candidate, run affected proof and independent review, then fetch and guard again. Never force-push, rebase or reset.",
+        )
     action = AutomationAction.PUSH if push_policy_receipt is not None else AutomationAction.INTEGRATE
+    if action is AutomationAction.PUSH:
+        blocker = _policy_receipt_blocker(
+            guard_receipt, checkpoint, purpose=ReceiptPurpose.GIT_GUARD, operation=AutomationAction.PUSH,
+            authorities=frozenset({ReceiptAuthority.HOST, ReceiptAuthority.REPOSITORY_POLICY}),
+            now_ms=now_ms, remote_head=fetch.remote_head,
+        )
+        if blocker:
+            return AutomationDecision(AutomationAction.PUSH, AutomationStatus.BLOCKED, blocker=blocker)
+        method = "push_exact_reviewed_candidate"
     return AutomationDecision(
         action,
         AutomationStatus.READY,

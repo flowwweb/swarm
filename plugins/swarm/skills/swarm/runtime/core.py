@@ -2062,17 +2062,17 @@ class Swarm:
                 task.handoff_active=True
         return tuple(reconciled)
 
-    def automation_commit(self, checkpoint:"StableCheckpoint", *, attributable_paths:tuple[str,...]) -> "AutomationDecision":
+    def automation_commit(self, checkpoint:"StableCheckpoint", *, attributable_paths:tuple[str,...], staged_paths:tuple[str,...]|None=None, staged_tree:str="", guard_receipt:"BoundPolicyReceipt|None"=None, now_ms:int|None=None) -> "AutomationDecision":
         from .automation import commit_decision
-        return commit_decision(self.automation_mode, checkpoint, attributable_paths=attributable_paths)
+        return commit_decision(self.automation_mode, checkpoint, attributable_paths=attributable_paths, staged_paths=staged_paths, staged_tree=staged_tree, guard_receipt=guard_receipt, now_ms=now_ms)
 
     def automation_review(self, checkpoint:"StableCheckpoint", receipt:"IndependentReviewReceipt|None", *, now_ms:int) -> "AutomationDecision":
         from .automation import review_decision
         return review_decision(self.automation_mode, checkpoint, receipt, now_ms=now_ms)
 
-    def automation_git_advance(self, checkpoint:"StableCheckpoint", review:"IndependentReviewReceipt|None", fetch:"FetchReceipt|None", *, now_ms:int, remote_compatibility_receipt:"BoundPolicyReceipt|None"=None, push_policy_receipt:"BoundPolicyReceipt|None"=None) -> "AutomationDecision":
+    def automation_git_advance(self, checkpoint:"StableCheckpoint", review:"IndependentReviewReceipt|None", fetch:"FetchReceipt|None", *, now_ms:int, remote_compatibility_receipt:"BoundPolicyReceipt|None"=None, push_policy_receipt:"BoundPolicyReceipt|None"=None, guard_receipt:"BoundPolicyReceipt|None"=None) -> "AutomationDecision":
         from .automation import git_advance_decision
-        return git_advance_decision(self.automation_mode, checkpoint, review, fetch, now_ms=now_ms, remote_compatibility_receipt=remote_compatibility_receipt, push_policy_receipt=push_policy_receipt)
+        return git_advance_decision(self.automation_mode, checkpoint, review, fetch, now_ms=now_ms, remote_compatibility_receipt=remote_compatibility_receipt, push_policy_receipt=push_policy_receipt, guard_receipt=guard_receipt)
 
     def automation_release(self, checkpoint:"StableCheckpoint", *, now_ms:int, release_policy:"BoundPolicyReceipt|None", source_gate:"BoundPolicyReceipt|None", package_gate:"BoundPolicyReceipt|None", rollback_receipt:"BoundPolicyReceipt|None") -> "AutomationDecision":
         from .automation import release_decision
