@@ -4187,6 +4187,7 @@ proofFeed.items.push({
     pendingConfigControl.deferredPost = null;
     await pendingPage.getByRole("button", { name: "Start using SWARM" }).waitFor({ state: "visible" });
     await pendingPage.waitForFunction(() => !document.querySelector("#onboarding-primary")?.disabled);
+    await pendingPage.waitForFunction(() => document.activeElement?.dataset.configKey === "execution.fast_mode");
     assert.equal(await pendingPage.evaluate(() => document.activeElement?.dataset.configKey), "execution.fast_mode");
     assert.equal(pending.configRequests.length, 1);
     assert.deepEqual(pending.runtimeErrors, []);
@@ -4245,6 +4246,7 @@ proofFeed.items.push({
     await taskLifePage.waitForFunction(() => document.querySelector('#onboarding-task-life')?.getAttribute("aria-valuetext") === "Between Balanced and Long — 24 hours");
     assert.equal(taskLifeRuntime.configRequests.length, 1);
     assert.equal(configRequestValue(taskLifeRuntime.configRequests[0], "lifecycle.task_lifetime_hours"), 24);
+    await taskLifePage.waitForFunction(() => document.activeElement?.id === "onboarding-task-life");
     assert.equal(await taskLifePage.evaluate(() => document.activeElement?.id), "onboarding-task-life");
     assert.deepEqual(taskLifeRuntime.runtimeErrors, []);
     await taskLifePage.close();
@@ -4371,6 +4373,7 @@ proofFeed.items.push({
     releaseRetryPost();
     failedConfigControl.deferredPost = null;
     await failedPage.waitForFunction(() => !document.querySelector("#onboarding-primary")?.disabled);
+    await failedPage.waitForFunction(() => document.activeElement?.id === "onboarding-config-status");
     assert.equal(await failedPage.evaluate(() => document.activeElement?.id), "onboarding-config-status");
     assert.equal(failed.configRequests.length, 2);
     assert.equal(configRequestValue(failed.configRequests[0], "execution.fast_mode"), true);
