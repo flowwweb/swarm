@@ -6148,6 +6148,7 @@ proofFeed.items.push({
     await mobilePage.evaluate(() => setView("settings"));
     await mobilePage.locator("#settings-scope").selectOption("global|global");
     await mobilePage.waitForFunction(() => state.settingsScopeType === "global" && state.settingsScopeId === "global");
+    await mobilePage.locator("#view-settings").evaluate((view) => Promise.all(view.getAnimations().map((animation) => animation.finished)));
     await mobilePage.waitForFunction(() => { const elements = [...document.querySelectorAll(".settings-switch")].filter((element) => element.getClientRects().length); return elements.length > 0 && elements.every((element) => element.getBoundingClientRect().height >= 44); });
     assert.equal(await mobilePage.locator("#settings-grid").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
     assert.equal(await mobilePage.locator(".settings-switch").evaluateAll((elements) => elements.filter((element) => element.getClientRects().length).every((element) => element.getBoundingClientRect().height >= 44)), true);

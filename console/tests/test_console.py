@@ -7,6 +7,7 @@ import io
 import os
 import json
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -8926,6 +8927,52 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(app.store.config_event("restore-ctrl")["action"], "ctrl_settings_reset")
         self.assertEqual(restored_ctrl["mutation_receipt"]["audit_event"], console.CONFIG_EVENT_KIND)
         self.assertEqual(app.config_projection({"type": "global"})["reset_contract"]["ctrl"]["endpoint"], "/api/ctrl-settings/reset")
+
+    def test_private_quoted_key_regex_rejects_malformed_keys_within_timeout(self) -> None:
+        probe = "\n".join((
+            "import importlib.util, sys",
+            "spec = importlib.util.spec_from_file_location('swarm_console_redos_test', sys.argv[1])",
+            "module = importlib.util.module_from_spec(spec)",
+            "assert spec.loader is not None",
+            "spec.loader.exec_module(module)",
+            "malformed = sys.argv[2] + chr(34) + chr(92) * 80 + '!'",
+            "assert module._config_private_entries(malformed) == {}",
+        ))
+        for prefix in ("", "provider."):
+            with self.subTest(prefix=prefix):
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "-c", probe, str(SERVER), prefix],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired:
+                    self.fail("unterminated quoted keys exceeded the parser timeout")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_private_quoted_keys_redact_and_restore_exact_bytes(self) -> None:
+        keys = (
+            "password",
+            '"password"',
+            "'password'",
+            "provider.password",
+            r'"escaped\\provider".password',
+            r'"escaped\"provider".password',
+            'provider."password"',
+            "provider.'password'",
+        )
+        for key in keys:
+            with self.subTest(key=key):
+                original = key + ' = "synthetic-private-value" # preserved\r\n'
+                redacted, placeholders = console._config_redacted_text(original, "redos-test")
+                self.assertEqual(len(placeholders), 1)
+                self.assertNotIn("synthetic-private-value", redacted)
+                self.assertEqual(
+                    console._config_resolve_opaque_text(redacted, original, "redos-test"),
+                    original,
+                )
 
     def test_config_editor_opaque_private_round_trip_preserves_source_bytes(self) -> None:
         private_bytes = self.config.read_bytes().replace(

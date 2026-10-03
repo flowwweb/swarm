@@ -54,6 +54,7 @@ DEVELOPMENT_ONLY_PATHS = frozenset(
         "docs/friction-audit.md",
         "requirements-dev.txt",
         "scripts/sync_plugin_mirror.py",
+        "scripts/build_jev_bundle.mjs",
         "scripts/run_test_tier.py",
         "scripts/select_ci_scope.py",
         "scripts/optimize_images.py",

@@ -1,8 +1,8 @@
 {
   "upstream": "burnigtm/jev-mcp",
   "revision": "dd2e639f74db940c6aee994fe6db5bd21d1ec6ee",
-  "patch": "TypeSafeClient retry maxRetries set to 0 at both call sites",
-  "bundle_sha256": "4d72f94bc08313e23a8d05e597defe9f6512007132f977fb54e85a7db4b5659f",
+  "patch": "TypeSafeClient retry maxRetries set to 0 at both call sites; Zod code literals escape angle brackets and Unicode line separators",
+  "bundle_sha256": "2050070031e053875e74dba3ffed6bfdfddbac349019ac151aac1fd4da6055b5",
   "external_imports": [
     {
       "path": "node:fs",
@@ -25,5 +25,16 @@
     "json-schema-traverse": "MIT",
     "zod": "MIT",
     "zod-to-json-schema": "ISC"
+  },
+  "build": {
+    "script": "scripts/build_jev_bundle.mjs",
+    "esbuild": "0.28.2",
+    "entrypoint": "src/index.ts",
+    "platform": "node",
+    "format": "cjs",
+    "target": "node20",
+    "baseline_bundle_sha256": "4d72f94bc08313e23a8d05e597defe9f6512007132f977fb54e85a7db4b5659f",
+    "zod": "4.6.5",
+    "reproducible": true
   }
 }
