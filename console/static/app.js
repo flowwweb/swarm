@@ -4736,11 +4736,12 @@ function openMessageComposer(trigger) {
   if (state.messageOpen) return;
   state.messageTrigger = trigger || state.messageTrigger;
   state.messageOpen = true;
+  const recipient = selectedMessageRecipient();
   renderMessageComposer();
   showMessageComposerDialog();
   refreshMessageConversation();
   if (!history.state?.messageComposer) history.pushState({ ...(history.state || {}), messageComposer: true }, "", location.href);
-  requestAnimationFrame(() => (selectedMessageRecipient() ? $("#message-draft") : $("#message-close"))?.focus({ preventScroll: true }));
+  requestAnimationFrame(() => (recipient ? $("#message-draft") : $("#message-close"))?.focus({ preventScroll: true }));
 }
 
 function closeMessageComposer(restoreFocus = true, fromHistory = false) {
