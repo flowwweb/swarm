@@ -383,8 +383,11 @@ coordination can exchange immutable handoffs but cannot mutate another owner's
 surface or bypass REVIEW.
 
 Host display names follow [SKILL.md Step 0](../SKILL.md#start): the root's
-CTRL titles use the emoji best suited to the project, one space and the project name. No routine suffix is added for duplicate mains. `🐙 <objective>` is the SWARM example, subject to the latest explicit user
-title or exception. Structural roles remain internal; generated topology titles
+CTRL titles use `<project emoji> <project>`: the emoji best suited to the project,
+one space and the project name. 🐙 is specific to `🐙 SWARM`, not a global CTRL
+default. No routine suffix is added for duplicate mains. Follow Step 0 for
+explicit user icons, custom titles, opt-outs and authorized icon-only repairs.
+Structural roles remain internal; generated topology titles
 do not override host display names. A separate review task uses a fitting assurance profession
 and enters a ready wave only after the runtime issues a fresh
 `TopologyArtifactFreezeReceipt`. That receipt binds the producer lane, immutable

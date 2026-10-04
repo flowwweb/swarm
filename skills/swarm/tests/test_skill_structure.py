@@ -130,8 +130,8 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("# 🐙 SWARM", skill)
         self.assertIn("CTRL is the sole root and owns intake", skill)
         self.assertIn("choose the emoji best suited to the project", skill)
-        self.assertIn("🐙 <objective>", skill)
-        self.assertIn("🐙 <objective>", hierarchy)
+        self.assertIn("<project emoji> <project>", skill)
+        self.assertIn("<project emoji> <project>", hierarchy)
         self.assertIn("`<objective>` when icons are disabled", skill)
         self.assertRegex(skill, r"Preserve an\s+explicit custom title or naming exception")
 
@@ -143,7 +143,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("🐙 <objective>", skill)
+        self.assertIn("<project emoji> <project>", skill)
         self.assertIn("Step 0", skill)
         self.assertIn("verif", skill.lower())
         self.assertIn("exact blocker", skill)

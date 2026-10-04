@@ -1,6 +1,9 @@
 # Install SWARM on another device
 
-SWARM 0.4.13+codex.20261003 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
+SWARM 0.4.14+codex.20261004 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
+
+Version 0.4.14 names CTRLs with a project-matching emoji instead of a global
+octopus default. Explicit user choices and existing title custody take precedence.
 
 Version 0.4.13 keeps console configuration parsing bounded for long malformed
 escaped strings and hardens generated JavaScript literals in the vendored Jev

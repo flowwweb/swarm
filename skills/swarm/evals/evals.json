@@ -930,10 +930,10 @@
     {
       "id": 72,
       "prompt": "Open a new SWARM task for a broad game-platform objective. Start implementing with several hidden subagents and report their work from the opening task.",
-      "expected_output": "As mandatory Step 0, the opening user-visible task derives a concise specific objective, calls set_thread_title to set 🐙 <objective> by default, and verifies the exact returned task ID and title before substantive dispatch. It preserves explicit custom names and existing pin state; naming authority does not grant pinning. A tool failure leaves naming incomplete and is reported exactly while useful authorized work continues. It then creates or continues one matching durable controller goal, inventories the objective, owners, dependencies, collisions, proof and claim limits, and chooses the shallowest reliable visible topology.",
+      "expected_output": "As mandatory Step 0, the opening user-visible task derives the project name, calls set_thread_title to set <project emoji> <project> using the project's identity or subject, and verifies the exact returned task ID and title before substantive dispatch. 🐙 is specific to SWARM, not the global default. It preserves explicit custom names and existing pin state; naming authority does not grant pinning. A tool failure leaves naming incomplete and is reported exactly while useful authorized work continues. It then creates or continues one matching durable controller goal, inventories the objective, owners, dependencies, collisions, proof and claim limits, and chooses the shallowest reliable visible topology.",
       "files": [],
       "assertions": [
-        "Mandatory Step 0 sets 🐙 <objective> by default and verifies the exact host task ID and title before substantive dispatch; explicit custom names and pin state remain preserved",
+        "Mandatory Step 0 sets <project emoji> <project> using project context and verifies the exact host task ID and title before substantive dispatch; explicit custom names and pin state remain preserved",
         "Unavailable task-management tools or failed receipts are reported exactly and do not permit a false UI-change claim",
         "CTRL creates or continues exactly one matching durable goal",
         "CTRL identifies artifacts, owners, dependencies, collisions, proof, and claim limits",
@@ -947,7 +947,7 @@
     {
       "id": 73,
       "prompt": "Use SWARM to make 10 landing-page mockups.",
-      "expected_output": "The receiving task first completes mandatory Step 0 by using set_thread_title and verifying the exact task ID and 🐙 <objective> title by default, preserving explicit custom names and pin state. It then continues one durable objective and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify an advisory manager specialist.",
+      "expected_output": "The receiving task first completes mandatory Step 0 by using set_thread_title and verifying the exact task ID and <project emoji> <project> title from project context, preserving explicit custom names and pin state. The default 🐙 configuration is not a user-selected project icon. It then continues one durable objective and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify an advisory manager specialist.",
       "files": [],
       "assertions": [
         "Verified CTRL title, goal, and inventory precede artifact work; pinning requires separate user authority",
@@ -983,7 +983,7 @@
     {
       "id": 76,
       "prompt": "Use SWARM for this code change. The receiving user-facing task starts editing locally and plans to rename itself CTRL afterward. The user explicitly asked this current task to take over the old royal CTRL and archive the predecessor after handover.",
-      "expected_output": "Fail the intake contract: an explicit takeover includes naming the current task. Reuse it and call set_thread_title before substantive dispatch: 🐙 <objective> by default, with the user-requested 👑 icon for royal control. Verify the exact returned task ID and title, and reverify the successor title before declaring handover complete or archiving the predecessor. Preserve an explicit custom title unless the user asks to change it. Do not request duplicate naming approval or infer pinning authority. A tool failure leaves naming incomplete rather than claiming a rename from internal identity or message delivery.",
+      "expected_output": "Fail the intake contract: an explicit takeover includes naming the current task. Reuse it and call set_thread_title before substantive dispatch: <project emoji> <project> by default, with the user-requested 👑 icon for royal control. Verify the exact returned task ID and title, and reverify the successor title before declaring handover complete or archiving the predecessor. Preserve an explicit custom title unless the user asks to change it. Do not request duplicate naming approval or infer pinning authority. A tool failure leaves naming incomplete rather than claiming a rename from internal identity or message delivery.",
       "files": [],
       "assertions": [
         "Local editing before the authorized host title is verified is a failure",
@@ -1265,6 +1265,20 @@
         "WIP commit and clean status do not preserve ignored unique assets",
         "Active writer prevents retirement despite emergency pressure",
         "Existing cleanup owner receives custody-safe candidates without lock or permission bypass"
+      ]
+    },
+    {
+      "id": 96,
+      "prompt": "The user asks to correct project icons on pinned CTRLs. A generated 🐙 Nemo title and a custom-worded 🐙 Blüprint design desk title have no explicit icon preference; Helm explicitly uses 👑, a project has icons disabled, and 🐙 SWARM is already correct. The default role_icons.ctrl is 🐙. Repair only the authorized icons.",
+      "expected_output": "Use project context to set 🐟 Nemo and 📐 Blüprint design desk, replacing only the leading emoji and preserving the custom wording. Keep the expressly selected 👑 Helm, the icon-disabled project and 🐙 SWARM unchanged. The default configuration is not an explicit octopus preference. Verify each exact task ID/title through the host; preserve pins, order, identity and topology. Do not rename or mutate unrelated tasks. An unavailable rename remains unverified while useful work continues.",
+      "files": [],
+      "assertions": [
+        "Project identity or subject determines the default CTRL emoji; 🐙 is SWARM-specific",
+        "Default role_icons.ctrl is not treated as an explicit user icon choice",
+        "Authorized icon-only repair preserves exact remaining title wording",
+        "Explicit user icons, custom naming exceptions and icon opt-outs remain protected",
+        "Pinning alone does not authorize icon repair and repair does not alter pins or order",
+        "Exact host ID/title readback is required without changing identity or topology"
       ]
     }
   ]

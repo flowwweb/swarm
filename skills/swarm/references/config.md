@@ -71,7 +71,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `portfolio.default_parallel_tasks` | Preferred ceiling for an independent wave, never a creation quota | 1-8, not above max |
 | `portfolio.reuse_existing_tasks` | Reuse matching live owners | boolean |
 | `role_icons.enabled` | Include exactly one role-matched emoji in every SWARM task title | boolean; default true |
-| `role_icons.ctrl` | CTRL title emoji | trimmed single line, 1-24 chars; default 🐙 |
+| `role_icons.ctrl` | SWARM CTRL icon or explicit custom choice | trimmed single line, 1-24 chars; default 🐙 is SWARM-specific |
 | `role_icons.lead` | LEAD title emoji | trimmed single line, 1-24 chars |
 | `role_icons.review` | REVIEW title emoji | trimmed single line, 1-24 chars |
 | `role_icons.fallback` | Generic finite-task emoji when no logical contextual choice exists | trimmed single line, 1-24 chars |
@@ -195,12 +195,12 @@ current typed host custody receipt, bound to the task and exact target-state
 digest with bounded freshness. Until confirmation, report `archive_unverified` and
 keep the task visible. Active, stalled, blocked, or merely old tasks never close.
 
-The default title hierarchy is `🐙 <objective>`, an optional advisory
+The main CTRL title is `<project emoji> <project>` (for example `🐙 SWARM`), with an optional advisory
 specialist such as `🛡️Security - access controls`, a lane owner such as `🔐LEAD - payments`, a
 contextual owner such as `💻DEVELOPER - webhook`, and `🔎REVIEW - webhook`.
 Generic DOER is an authority type, not a required task name: use the concrete
 job. Keep the lane marker `LEAD` stable, put its domain or responsibility after
-the dash, and use a domain-matched icon. With `role_icons.enabled = true`, every
+the dash, and use a domain-matched icon. With `role_icons.enabled = true`, each lane
 title has exactly one literal role emoji concatenated directly with its label.
 The label and emoji express the same responsibility. Fewer characters are
 better only while the title remains unambiguous. `labels.doer` is only the
@@ -392,7 +392,15 @@ off a dedicated REVIEW task never turns off QC.
 
 The role emoji system is active by default. Set `role_icons.enabled = false`
 only to remove emojis from all SWARM task titles; direct user instruction still
-wins for the requested task. CTRL chooses the emoji best suited to the project; `role_icons.ctrl` (default `🐙`) is the fallback when no project match is clear. Explicit user emoji choices always win. CTRL titles contain only that emoji, one space and the project name, or the project name when icons are disabled.
+wins for the requested task. CTRL chooses the emoji best suited to the project
+from its established identity or subject. The serialized default `role_icons.ctrl`
+is SWARM's 🐙 icon, not evidence of an explicit user choice or a global fallback.
+For unclear project context, use `role_icons.fallback` (default 📋). An explicit
+user emoji choice, including an expressly customized CTRL icon, always wins.
+CTRL titles use `<project emoji> <project>`, or the project name when icons are
+disabled. Existing-title repairs follow [SKILL.md Step 0](../SKILL.md#start):
+an authorized icon-only correction preserves all wording, pin state and order;
+custom titles, explicit icons and opt-outs remain protected.
 Hierarchy roles use their matching `role_icons` setting. Contextual tasks use `roles.<ROLE>.icon` when present;
 otherwise select automatically from `role_icons.doer_choices` by conventional
 literal meaning. Prefer a familiar object or action understandable without a
