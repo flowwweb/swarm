@@ -167,7 +167,7 @@ Then ask Codex to use it:
 Use SWARM to ship the next release of this project.
 ```
 
-That task becomes `🐙 <objective>`: the one place where you direct the work and review what the swarm returns.
+That task uses `<project emoji> <project>`, such as `⚓ Helm` or `🐙 SWARM`: the one place where you direct the work and review what the swarm returns. Explicit titles and icon preferences are preserved.
 
 To update an existing installation:
 

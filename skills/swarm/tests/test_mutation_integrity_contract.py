@@ -50,7 +50,7 @@ class MutationIntegrityContractTests(unittest.TestCase):
         self.assertRegex(skill, r"(?s)Never invent a method or arguments.*leave placement unverified")
         self.assertNotIn("current host may append", skill)
         self.assertRegex(skill, r"(?s)project name only: emoji \+ project,.*exactly one space.*Never add a CTRL label, suffix or duplicate-main description.*internal structural roles unchanged")
-        for title in ("🐙 Nemo", "🧱 BLÖCKS", "⚓ Helm"):
+        for title in ("🐟 Nemo", "🧱 BLÖCKS", "⚓ Helm"):
             self.assertIn(title, skill)
         self.assertNotIn("Add a short description only to distinguish", skill)
 

@@ -102,15 +102,23 @@ CTRL, or take over an existing CTRL includes naming the current task for that
 role. Reuse the current task for a takeover; create or fork another task only
 when explicitly requested. Derive a concise objective and resolve `role_icons`:
 choose the emoji best suited to the project, or `<objective>` when icons are disabled;
+use the project's established identity or subject, never the SWARM method as
+the icon source. The default `role_icons.ctrl = "🐙"` is not an explicit user
+icon choice: 🐙 belongs to SWARM. If the project context has no clear match,
+use `role_icons.fallback`; do not default every project to 🐙.
 retain a user-requested role icon such as `👑` for royal portfolio control.
 For the main task, `<objective>` is the project name only: emoji + project,
-with exactly one space between the emoji and project name. Never add a CTRL label, suffix or duplicate-main description. Examples: `🐙 Nemo`, `🧱 BLÖCKS`, `⚓ Helm`. For SWARM, `🐙 <objective>` follows the same project-only rule; keep internal structural roles unchanged.
+with exactly one space between the emoji and project name. Never add a CTRL label, suffix or duplicate-main description. The default template is `<project emoji> <project>`; examples: `🐟 Nemo`, `🧱 BLÖCKS`, `⚓ Helm`, `📐 Blüprint`, `🐙 SWARM`. Keep internal structural roles unchanged.
 An assigned lane keeps its assigned profession and structural role. Preserve an
 explicit custom title or naming exception unless the user asks to change it.
 Visible lane names use a concise responsibility or artifact, with the configured
 icon when enabled; CTRL/LEAD/DOER remain internal roles, not display prefixes.
-The latest explicit naming preference wins: `🐙 Blüprint` stays exactly that,
-not `🐙CTRL - Blüprint Lost Villa delivery`.
+The latest explicit naming preference wins: an expressly requested `👑 Portfolio`
+stays exactly that. A generated generic 🐙 title is not such a preference.
+When the user authorizes project-icon correction on an existing pinned CTRL,
+replace only its leading emoji; preserve the rest of the title exactly, including
+custom wording. Explicit user icon choices, naming exceptions and icon opt-outs
+remain protected. Do not infer icon-repair authority from pinning alone.
 
 Before substantive dispatch, call the host `set_thread_title` tool for the exact
 task ID using that authority; do not ask the user to repeat it or invent a
