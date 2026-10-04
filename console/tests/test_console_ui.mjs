@@ -48,6 +48,30 @@ assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(3/);
   }
 }
 {
+  for (const [initialId, recipients, expectedId, focusTarget] of [
+    ["", [{id:"ctrl",structuralRole:"CTRL"}], "ctrl", "#message-draft"],
+    ["chosen", [{id:"ctrl",structuralRole:"CTRL"},{id:"chosen",structuralRole:"CTRL"}], "chosen", "#message-draft"],
+    ["stale", [{id:"ctrl",structuralRole:"CTRL"}], "stale", "#message-close"],
+    ["", [], "", "#message-close"],
+  ]) {
+    const state={messageOpen:false,messageRecipientId:initialId};
+    const frames=[], renders=[], focused=[];
+    const sandbox={state,messageRecipients:()=>recipients,MESSAGE_CONNECTOR_UNAVAILABLE:"Messaging is unavailable until SWARM exposes the authenticated HQ connector.",
+      renderMessageComposer:()=>renders.push(state.messageRecipientId),showMessageComposerDialog(){},refreshMessageConversation(){},
+      history:{state:{},pushState(){}},location:{href:"http://swarm.test/"},requestAnimationFrame:callback=>frames.push(callback),
+      $:selector=>({focus:()=>focused.push(selector)})};
+    vm.createContext(sandbox);
+    vm.runInContext(app.slice(app.indexOf('function selectedMessageRecipient('),app.indexOf('let messageHistoryRequestGeneration')) + app.slice(app.indexOf('function openMessageComposer('),app.indexOf('function closeMessageComposer(')) + app.slice(app.indexOf('function messageStatusCopy('),app.indexOf('function renderMessageComposer(')),sandbox);
+    sandbox.openMessageComposer();
+    assert.equal(state.messageRecipientId,expectedId,"Opening selects only an eligible default and preserves an explicit or stale choice.");
+    assert.deepEqual(renders,[expectedId],"The first composer render must receive its recipient before any animation frame.");
+    assert.equal(sandbox.messageStatusCopy(),focusTarget === "#message-draft" ? sandbox.MESSAGE_CONNECTOR_UNAVAILABLE : "No authorized CTRL is available in this project scope.","An admitted recipient with no connector differs from an absent or stale recipient.");
+    frames[0]();
+    assert.equal(state.messageRecipientId,expectedId,"The deferred frame only focuses; it cannot select a recipient.");
+    assert.deepEqual(focused,[focusTarget]);
+  }
+}
+{
   const sandbox={escapeHTML:value=>String(value),milestoneSummary:items=>items[0]};
   vm.createContext(sandbox);
   vm.runInContext(app.slice(app.indexOf("function projectMilestonesMarkup("),app.indexOf("function projectTabMarkup(")),sandbox);
@@ -4756,6 +4780,16 @@ proofFeed.items.push({
     const messageRuntime = await mount(messagePage, scopedFixture(), { ...overrides, messageControl, testOrigin: "http://127.0.0.1" });
     await messagePage.evaluate(() => selectProjectScope("project:fixture"));
     await messagePage.waitForFunction(() => state.projectId === "project:fixture");
+    await messagePage.evaluate(() => {
+      const schedule = window.requestAnimationFrame;
+      const pending = [];
+      window.requestAnimationFrame = (callback) => pending.push(callback);
+      window.__restoreMessageFrames = () => {
+        window.requestAnimationFrame = schedule;
+        pending.forEach((callback) => schedule(callback));
+        delete window.__restoreMessageFrames;
+      };
+    });
     await messagePage.locator("#message-launcher").click();
     await messagePage.locator("#message-draft").fill("Please review the selected screen.");
     await messagePage.evaluate(() => {
@@ -4763,6 +4797,7 @@ proofFeed.items.push({
       renderMessageComposer();
     });
     assert.equal(await messagePage.getByRole("button", { name: "Send message" }).isDisabled(), false);
+    await messagePage.evaluate(() => window.__restoreMessageFrames());
     await messagePage.getByRole("button", { name: "Send message" }).click();
     await messagePage.waitForFunction(() => state.messageStatus === "pending");
     assert.match(await messagePage.locator("#message-status").textContent(), /^Pending/);
@@ -5111,7 +5146,11 @@ proofFeed.items.push({
     assert.deepEqual(await page.locator("#message-recipient option").allTextContents(), ["No observed conversations"]);
     assert.equal(await page.locator("#message-recipient").isDisabled(), true);
     assert.deepEqual(await page.evaluate(() => ({ sendDisabled: document.querySelector("#message-send").disabled, retryHidden: document.querySelector("#message-retry").hidden })), { sendDisabled: true, retryHidden: true });
-    assert.equal(await page.locator("#message-status").textContent(), "No authorized CTRL is available in this project scope.");
+    assert.deepEqual(await page.evaluate(() => ({
+      selectedEligibleCtrl: messageRecipients().some(recipient => recipient.id === state.messageRecipientId),
+      connector: state.messageConnector,
+    })), { selectedEligibleCtrl: true, connector: null });
+    assert.equal(await page.locator("#message-status").textContent(), "Messaging is unavailable until SWARM exposes the authenticated HQ connector.");
     await page.locator("#message-draft").fill("Please review this screen.");
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => document.activeElement?.id === "message-launcher");
