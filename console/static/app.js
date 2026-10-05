@@ -786,6 +786,7 @@ function setLoading(loading) {
 }
 
 const mobileDrawerQuery = window.matchMedia("(max-width: 620px)");
+const compactDrawerQuery = window.matchMedia("(min-width: 621px) and (max-width: 860px)");
 
 function mobileDrawerFocusable() {
   return Array.from($("#console-drawer").querySelectorAll('a[href], button:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])'))
@@ -795,13 +796,13 @@ function mobileDrawerFocusable() {
 function setMobileDrawer(open, restoreFocus = false) {
   const shell = $(".app-shell");
   const drawer = $("#console-drawer");
-  const trigger = $("#mobile-menu-button");
+  const trigger = mobileDrawerQuery.matches ? $("#mobile-menu-button") : $("#sidebar-expand");
   const backdrop = $("#drawer-backdrop");
   const workspace = $(".workspace");
-  const expanded = Boolean(open && mobileDrawerQuery.matches);
+  const expanded = Boolean(open && (mobileDrawerQuery.matches || compactDrawerQuery.matches));
   if (expanded && $("#project-scope-selector")?.open) $("#project-scope-selector").open = false;
   shell.classList.toggle("is-drawer-open", expanded);
-  trigger.setAttribute("aria-expanded", String(expanded));
+  [$("#mobile-menu-button"), $("#sidebar-expand")].forEach((button) => button.setAttribute("aria-expanded", String(expanded)));
   trigger.setAttribute("aria-label", expanded ? "Close navigation" : "Open navigation");
   backdrop.hidden = !expanded;
   document.body.classList.toggle("drawer-open", expanded);
@@ -814,7 +815,7 @@ function setMobileDrawer(open, restoreFocus = false) {
     drawer.inert = false;
   }
   if (expanded) requestAnimationFrame(() => ($(".nav-item.is-active") || mobileDrawerFocusable()[0])?.focus());
-  else if (restoreFocus && mobileDrawerQuery.matches) trigger.focus({ preventScroll: true });
+  else if (restoreFocus && (mobileDrawerQuery.matches || compactDrawerQuery.matches)) trigger.focus({ preventScroll: true });
 }
 
 function syncMobileDrawer() {
@@ -1056,6 +1057,7 @@ function savedProjectRoster() {
       activeCtrlId: typeof project.active_ctrl_id === "string" ? project.active_ctrl_id : "",
       taskCount: Number.isInteger(project.task_count) && project.task_count >= 0 ? project.task_count : null,
       activeNowCount: Number.isInteger(project.active_now_count) && project.active_now_count >= 0 ? project.active_now_count : null,
+      unobservedOpenThreadCount: Number.isInteger(activityFacts?.unobserved_open_thread_count) && activityFacts.unobserved_open_thread_count >= 0 ? activityFacts.unobserved_open_thread_count : null,
       eligibility: project.project_eligibility === "swarm_ctrl" ? "swarm_ctrl" : "no_ctrl",
       logo: project.logo || project.identity?.logo || null,
     };
@@ -1075,6 +1077,10 @@ function scopeLabel() {
   const project = savedProjectRoster().projects.find((item) => item.id === state.projectId);
   const ctrl = historicalControllers().find((item) => item.id === state.ctrlId);
   return ctrl && state.ctrlId ? ctrlLabel(ctrl) : (project?.label || "All projects");
+}
+
+function visibleSavedProjects(roster) {
+  return roster.projects.filter((project) => project.status !== "inactive" || project.id === state.projectId);
 }
 
 function setProjectSelection(projectId, ctrlId = "") {
@@ -1108,7 +1114,7 @@ function renderScopeNotice() {
 
 function renderProjectNavigation() {
   const roster = savedProjectRoster();
-  const projects = roster.projects;
+  const projects = visibleSavedProjects(roster);
   const selector = $("#project-scope-filter");
   if (roster.state !== "KNOWN") {
     $("#project-navigation").innerHTML = '<p class="project-roster-state" role="status">Saved projects unavailable</p>';
@@ -1165,7 +1171,7 @@ async function selectProjectScope(projectId, trigger = null, historyMode = "push
   state.scopeNoticeVisible = false;
   writeRoute(historyMode);
   renderProjectNavigation();
-  if (mobileDrawerQuery.matches) setMobileDrawer(false, true);
+  if (mobileDrawerQuery.matches || compactDrawerQuery.matches) setMobileDrawer(false, true);
   renderAllViews();
   await refreshOverview(false);
   requestAnimationFrame(() => {
@@ -4235,19 +4241,18 @@ function renderOverviewProjects() {
     const observedTasks = Number.isInteger(project.taskCount) ? project.taskCount : 0;
     const activeTasks = Number.isInteger(project.activeNowCount) ? project.activeNowCount : (project.status === "active" ? 1 : 0);
     const observedLabel = observedTasks ? observedTasks + " observed task" + (observedTasks === 1 ? "" : "s") : status;
-    const milestoneFallback = activeTasks ? activeTasks + " active" : observedTasks ? "No active work" : "No task activity";
+    const unobservedChats = project.unobservedOpenThreadCount;
+    const milestoneFallback = activeTasks ? activeTasks + " active" : project.status === "unknown" ? (unobservedChats ? unobservedChats + " open chat" + (unobservedChats === 1 ? "" : "s") + " · Recent activity unavailable" : "Activity unavailable") : observedTasks ? "No active work" : "No task activity";
     const progressMarkup = percent === null
       ? '<span class="overview-observed-progress" aria-label="Observed activity, progress unavailable">' + escapeHTML(observedLabel) + '</span><small class="overview-data-note">Completion needs an accepted receipt.</small>'
       : '<span>' + percent + '%</span><progress max="100" value="' + percent + '" aria-label="' + escapeHTML(project.label) + ' progress"></progress>';
     return '<tr><th scope="row"><button type="button" data-project-id="' + escapeHTML(project.id) + '" aria-label="' + escapeHTML(project.label + ' · ' + status) + '">' + projectScopeMark(project) + '<strong>' + escapeHTML(project.label) + '</strong></button></th><td>' + (milestoneName ? escapeHTML(milestoneName) : '<span class="overview-observed-milestone" aria-label="Current milestone unavailable; observed project activity">' + escapeHTML(milestoneFallback) + '</span>') + '</td><td>' + progressMarkup + '</td></tr>';
   };
   const tableMarkup = (projects, group, caption) => '<table class="overview-project-table" data-overview-project-group="' + group + '"><caption class="sr-only">' + caption + '</caption><thead><tr><th>Project</th><th>Milestone</th><th>Progress</th></tr></thead><tbody>' + projects.map(rowMarkup).join('') + '</tbody></table>';
-  const current = roster.projects.filter(project => ["active", "recent", "stalled"].includes(project.status));
-  const other = roster.projects.filter(project => !current.includes(project));
-  host.innerHTML = roster.projects.length
-    ? (current.length ? tableMarkup(current, "current", "Current projects") : '<p role="status">No current projects.</p>')
-      + (other.length ? '<details class="overview-other-projects"><summary>' + other.length + ' other project' + (other.length === 1 ? '' : 's') + '</summary>' + tableMarkup(other, "other", "Other projects") + '</details>' : '')
-    : '<p role="status">No saved projects.</p>';
+  const current = visibleSavedProjects(roster);
+  host.innerHTML = current.length
+    ? tableMarkup(current, "current", "Current projects")
+    : '<p role="status">No current projects.</p>';
 }
 
 function renderOverview() {
@@ -6656,7 +6661,7 @@ document.addEventListener("click", async (event) => {
   const tab = event.target.closest("[data-view]");
   if (tab) {
     setView(tab.dataset.view);
-    if (mobileDrawerQuery.matches) setMobileDrawer(false, true);
+    if (mobileDrawerQuery.matches || compactDrawerQuery.matches) setMobileDrawer(false, true);
   }
 });
 
@@ -7032,6 +7037,7 @@ $("#role-filter-reset").addEventListener("click", () => {
   $("#role-search").focus({ preventScroll: true });
 });
 $("#mobile-menu-button").addEventListener("click", () => setMobileDrawer(!$(".app-shell").classList.contains("is-drawer-open"), true));
+$("#sidebar-expand").addEventListener("click", () => setMobileDrawer(!$(".app-shell").classList.contains("is-drawer-open"), true));
 $("#mobile-flows").addEventListener("click", () => {
   $("#nav-flows").open = true;
   setMobileDrawer(true);
@@ -7041,6 +7047,7 @@ $("#overview-swarm").addEventListener("toggle", scheduleOverviewHierarchyEdges);
 $("#drawer-close").addEventListener("click", () => setMobileDrawer(false, true));
 $("#drawer-backdrop").addEventListener("click", () => setMobileDrawer(false, true));
 mobileDrawerQuery.addEventListener("change", syncMobileDrawer);
+compactDrawerQuery.addEventListener("change", syncMobileDrawer);
 mobileDrawerQuery.addEventListener("change", syncMessageComposerMode);
 document.addEventListener('change', async (event) => {
   if (event.target.matches('[data-theme-option]')) {

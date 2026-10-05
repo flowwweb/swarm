@@ -36,7 +36,7 @@ assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(3/);
     const sandbox={state,document,CSS:{escape:value=>value},Promise,
       savedProjectRoster:()=>({state:"KNOWN",projects:[{id:"selected"}]}),
       setProjectSelection:id=>state.projectId=id,scopeLabel:()=>"Project",writeRoute(){},renderProjectNavigation(){},renderAllViews(){},
-      mobileDrawerQuery:{matches:false},refreshOverview:()=>new Promise(resolve=>finish=resolve),
+      mobileDrawerQuery:{matches:false},compactDrawerQuery:{matches:false},refreshOverview:()=>new Promise(resolve=>finish=resolve),
       requestAnimationFrame:callback=>callback(),$:()=>target};
     vm.createContext(sandbox);
     vm.runInContext(app.slice(app.indexOf('async function selectProjectScope('),app.indexOf('function runLogBindingForCtrl(')),sandbox);
@@ -206,12 +206,15 @@ assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(3/);
 {
   const host = {innerHTML:''};
   const summary = {freshness:{state:'fresh'},current_milestone:{state:'KNOWN',source:'ledger_active_task_manifest',project_id:'p',name:'Ship <V1>'}};
-  const sandbox = {state:{connectionStatus:'live'},$:()=>host,savedProjectRoster:()=>({state:'KNOWN',projects:[{id:'p',label:'Swarm',status:'recent'},{id:'i',label:'Idle',status:'inactive'}]}),authoritativeProgress:(id)=>id==='p'?summary:null,projectScopeMark:()=>'',humanize:String};
+  const sandbox = {state:{connectionStatus:'live',projectId:'all'},$:()=>host,savedProjectRoster:()=>({state:'KNOWN',projects:[{id:'p',label:'Swarm',status:'recent'},{id:'i',label:'Idle',status:'inactive'},{id:'u',label:'Unobserved',status:'unknown',unobservedOpenThreadCount:2}]}),authoritativeProgress:(id)=>id==='p'?summary:null,projectScopeMark:()=>'',humanize:String};
   vm.createContext(sandbox);
-  vm.runInContext(app.slice(app.indexOf('function escapeHTML('),app.indexOf('const COLLECTION_PAGE_SIZE')) + app.slice(app.indexOf('function renderOverviewProjects('),app.indexOf('function renderOverview()')),sandbox);
+  vm.runInContext(app.slice(app.indexOf('function escapeHTML('),app.indexOf('const COLLECTION_PAGE_SIZE')) + app.slice(app.indexOf('function visibleSavedProjects('),app.indexOf('function setProjectSelection(')) + app.slice(app.indexOf('function renderOverviewProjects('),app.indexOf('function renderOverview()')),sandbox);
   sandbox.renderOverviewProjects(); assert.match(host.innerHTML,/Ship &lt;V1&gt;/);
   assert.match(host.innerHTML,/data-overview-project-group="current"[\s\S]*Swarm/);
-  assert.match(host.innerHTML,/<summary>1 other project<\/summary>[\s\S]*data-overview-project-group="other"[\s\S]*Idle/);
+  assert.doesNotMatch(host.innerHTML,/Idle|overview-other-projects/);
+  assert.match(host.innerHTML,/Unobserved[\s\S]*2 open chats · Recent activity unavailable/);
+  sandbox.state.projectId='i'; sandbox.renderOverviewProjects(); assert.match(host.innerHTML,/Idle/);
+  sandbox.state.projectId='all';
   for (const change of [{project_id:'foreign'},{state:'UNKNOWN'},{source:'snapshot'}]) {
     const saved = {...summary.current_milestone}; Object.assign(summary.current_milestone,change);
     sandbox.renderOverviewProjects(); assert.match(host.innerHTML,/Current milestone unavailable/);
@@ -2733,8 +2736,8 @@ function overflowingProjectFixture(count = 24) {
       active_ctrl_id: null,
       active_ctrl: false,
       ordering: { position: overview.navigation.projects.length, normalized_name: id, project_id: id },
-      activity_status: "inactive",
-      activity_facts: { active_now: false, recently_active: false, inactive: true, unknown: false, source: "fixture" },
+      activity_status: "unknown",
+      activity_facts: { active_now: false, recently_active: false, inactive: false, unknown: true, unobserved_open_thread_count: 1, source: "fixture" },
       activity_source: "fixture",
       task_count: 0,
     });
@@ -5140,8 +5143,23 @@ proofFeed.items.push({
     assert.equal(await page.locator("#nav-more").evaluate((details) => details.open), false);
     await page.locator("#nav-flows > summary").focus();
     await page.keyboard.press("Enter");
+    const flowsKeyboardState = () => page.evaluate(() => ({
+      tag: document.activeElement?.tagName, id: document.activeElement?.id,
+      summaryFocused: document.activeElement === document.querySelector("#nav-flows > summary"),
+      open: document.querySelector("#nav-flows").open, labsTabIndex: document.querySelector("#tab-labs").tabIndex,
+    }));
+    try {
+      await page.waitForFunction(() => {
+        const labs = document.querySelector("#tab-labs");
+        return document.querySelector("#nav-flows").open && labs.tabIndex === 0 && labs.getBoundingClientRect().width > 0;
+      });
+    } catch (error) {
+      throw new Error("Flows disclosure readiness: " + JSON.stringify(await flowsKeyboardState()) + "; " + error.message);
+    }
+    assert.deepEqual(await flowsKeyboardState(), { tag: "SUMMARY", id: "", summaryFocused: true, open: true, labsTabIndex: 0 }, "Enter must open Flows and retain summary focus before Tab.");
     await page.keyboard.press("Tab");
-    assert.equal(await page.evaluate(() => document.activeElement?.id), "tab-labs");
+    const flowsTabState = await flowsKeyboardState();
+    assert.equal(flowsTabState.id, "tab-labs", "Tab enters the opened Flows group: " + JSON.stringify(flowsTabState));
     await page.keyboard.press("Enter");
     assert.equal(await page.evaluate(() => state.view), "labs");
     await page.locator("#nav-flows > summary").click();
@@ -5201,16 +5219,14 @@ proofFeed.items.push({
       "Flowwweb, Active",
       "swarm, Active",
       "Stalled project, Recently active",
-      "Idle project, Inactive",
-      "Unassigned planning, Inactive",
     ]);
     assert.deepEqual(await page.locator("#project-navigation .scope-dot").evaluateAll((elements) => elements.map((element) => [...element.classList].find((name) => name.startsWith("is-")))), [
-      "is-active", "is-active", "is-active", "is-active", "is-recent", "is-inactive", "is-inactive",
+      "is-active", "is-active", "is-active", "is-active", "is-recent",
     ]);
     assert.doesNotMatch(await page.locator("#project-navigation").textContent(), /All projects|Archived project|Resolve customer export/);
     await page.locator("#project-scope-filter").click();
     assert.equal(await page.locator('#project-scope-options .project-scope-logo[src="/assets/project-fixture.svg"]').count(), 1);
-    assert.equal(await page.locator("#project-scope-options .scope-dot").count(), 7);
+    assert.equal(await page.locator("#project-scope-options .scope-dot").count(), 5);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "27-project-dropdown-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     assert.deepEqual(await page.locator("#project-scope-options [data-project-scope-id]").evaluateAll((elements) => elements.map((element) => ({ label: element.querySelector("span:nth-of-type(2)")?.textContent, status: element.querySelector("small")?.textContent }))), [
       { label: "All projects", status: "Portfolio" },
@@ -5219,8 +5235,6 @@ proofFeed.items.push({
       { label: "Flowwweb", status: "Active" },
       { label: "swarm", status: "Active" },
       { label: "Stalled project", status: "Recently active" },
-      { label: "Idle project", status: "Inactive" },
-      { label: "Unassigned planning", status: "Inactive" },
     ]);
     await page.keyboard.press("Escape");
     assert.equal(await page.locator("#project-scope-selector").getAttribute("open"), null);
@@ -5228,7 +5242,7 @@ proofFeed.items.push({
     await page.keyboard.press("ArrowDown");
     assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectScopeId), "all");
     await page.keyboard.press("End");
-    assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectScopeId), "project:waiting");
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectScopeId), "project:stalled", "End focuses the final visible project; confirmed inactive projects are excluded.");
     await page.keyboard.press("Home");
     assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectScopeId), "all");
     await page.keyboard.press("Escape");
@@ -5389,7 +5403,7 @@ proofFeed.items.push({
     await page.keyboard.press("Enter");
     await keyboardScopeRequest;
     assert.equal(await page.locator('#project-navigation [data-project-id="project:arc"]').getAttribute("aria-pressed"), "true");
-    assert.equal(await page.locator('#project-navigation [data-project-id="project:waiting"]').count(), 1);
+    assert.equal(await page.locator('#project-navigation [data-project-id="project:waiting"]').count(), 0);
     const scopedOverviewRequest = page.waitForRequest((request) => {
       const url = new URL(request.url());
       return url.pathname === "/api/overview" && url.searchParams.get("project_id") === "project:fixture";
@@ -5400,7 +5414,7 @@ proofFeed.items.push({
     assert.equal(await page.locator("#projects-portfolio").isVisible(), false);
     assert.equal(await page.locator("#project-detail").evaluate((detail) => detail.hidden), false);
     assert.ok(desktop.requests.includes("/api/overview?project_id=project%3Afixture"));
-    assert.equal(await page.locator('#project-navigation [data-project-id="project:waiting"]').count(), 1);
+    assert.equal(await page.locator('#project-navigation [data-project-id="project:waiting"]').count(), 0);
     await page.locator("#notification-unread").waitFor({ state: "visible" });
     await page.waitForFunction(() => document.querySelector("#notification-unread")?.textContent === "1");
     assert.equal(await page.locator("#notification-unread").textContent(), "1");
