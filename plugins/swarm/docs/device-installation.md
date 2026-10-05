@@ -1,6 +1,11 @@
 # Install SWARM on another device
 
-SWARM 0.4.15+codex.20261004 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
+SWARM 0.4.16+codex.20261005 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
+
+Version 0.4.16 keeps Overview, Agents, Flows and Assets in everyday navigation.
+Flows keeps Labs and Factories together; More holds Review, Roles and Diagnostics.
+The Swarm diagram expands when needed, and project detail appears after selecting
+a project. Existing routes and controls remain available by keyboard.
 
 Version 0.4.15 selects the message recipient before the composer first renders,
 so sending a project request does not depend on an animation frame.

@@ -892,11 +892,17 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
     settings: ["Settings", "Defaults and optional per-CTRL overrides."],
   };
   $(".app-shell").dataset.currentView = selectedView;
+  const navigationGroup = $("#tab-" + selectedView)?.closest(".nav-more");
+  if (navigationGroup) navigationGroup.open = true;
   $$(".nav-item[data-view]").forEach((tab) => {
     const selected = tab.dataset.view === selectedView;
     tab.classList.toggle("is-active", selected);
     tab.setAttribute("aria-selected", String(selected));
     tab.tabIndex = selected ? 0 : -1;
+  });
+  $$(".nav-more").forEach((group) => {
+    const tabs = [...group.querySelectorAll(".nav-item[data-view]")];
+    if (!tabs.some((tab) => tab.classList.contains("is-active")) && tabs[0]) tabs[0].tabIndex = 0;
   });
   $$("[data-view-panel]").forEach((panel) => {
     const selected = panel.dataset.viewPanel === selectedView;
@@ -907,6 +913,8 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
     if (button.dataset.view === selectedView) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   });
+  if (["labs", "factories"].includes(selectedView)) $("#mobile-flows").setAttribute("aria-current", "page");
+  else $("#mobile-flows").removeAttribute("aria-current");
   const project = state.projectId !== "all" && !state.ctrlId ? projectGroups().find((item) => item.id === state.projectId) : null;
   $("#view-title").textContent = selectedView === "overview" && project ? project.label : titles[selectedView][0];
   $("#view-subtitle").textContent = "";
@@ -4191,7 +4199,7 @@ function setOverviewHierarchyZoom(action) {
 }
 
 function scheduleOverviewHierarchyEdges() {
-  if (state.view === "overview" && state.projectId === "all") requestAnimationFrame(drawOverviewHierarchyEdges);
+  if (state.view === "overview" && state.projectId === "all" && $("#overview-swarm").open) requestAnimationFrame(drawOverviewHierarchyEdges);
 }
 
 function scopedActiveHostTasks() {
@@ -7024,6 +7032,12 @@ $("#role-filter-reset").addEventListener("click", () => {
   $("#role-search").focus({ preventScroll: true });
 });
 $("#mobile-menu-button").addEventListener("click", () => setMobileDrawer(!$(".app-shell").classList.contains("is-drawer-open"), true));
+$("#mobile-flows").addEventListener("click", () => {
+  $("#nav-flows").open = true;
+  setMobileDrawer(true);
+  requestAnimationFrame(() => $("#nav-flows > summary").focus());
+});
+$("#overview-swarm").addEventListener("toggle", scheduleOverviewHierarchyEdges);
 $("#drawer-close").addEventListener("click", () => setMobileDrawer(false, true));
 $("#drawer-backdrop").addEventListener("click", () => setMobileDrawer(false, true));
 mobileDrawerQuery.addEventListener("change", syncMobileDrawer);

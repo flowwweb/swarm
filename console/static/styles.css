@@ -418,6 +418,12 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--focus); ou
 .mini-sparkline polyline { fill:none; stroke:var(--cyan); stroke-width:1.5; vector-effect:non-scaling-stroke; }
 .yield-warning { margin-left:5px; color:var(--amber); cursor:help; }
 .project-detail { display:grid; gap:12px; }
+.project-detail[hidden] { display:none; }
+.overview-swarm > summary { min-height:44px; cursor:pointer; list-style:none; align-items:center; }
+.overview-swarm > summary::-webkit-details-marker { display:none; }
+.overview-swarm > summary > p { margin-left:auto; }
+.overview-swarm > summary > .lucide { width:16px; height:16px; color:var(--faint); }
+.overview-swarm[open] > summary > .lucide { transform:rotate(180deg); }
 .project-detail-head { display:flex; align-items:center; justify-content:space-between; gap:24px; min-height:112px; padding:18px 20px; }
 .project-detail-head h2 { margin:5px 0; font-size:24px; letter-spacing:-.04em; }
 .project-detail-head > div > p:last-child { margin:0; color:var(--muted); font-size:10px; }
