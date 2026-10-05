@@ -5143,8 +5143,23 @@ proofFeed.items.push({
     assert.equal(await page.locator("#nav-more").evaluate((details) => details.open), false);
     await page.locator("#nav-flows > summary").focus();
     await page.keyboard.press("Enter");
+    const flowsKeyboardState = () => page.evaluate(() => ({
+      tag: document.activeElement?.tagName, id: document.activeElement?.id,
+      summaryFocused: document.activeElement === document.querySelector("#nav-flows > summary"),
+      open: document.querySelector("#nav-flows").open, labsTabIndex: document.querySelector("#tab-labs").tabIndex,
+    }));
+    try {
+      await page.waitForFunction(() => {
+        const labs = document.querySelector("#tab-labs");
+        return document.querySelector("#nav-flows").open && labs.tabIndex === 0 && labs.getBoundingClientRect().width > 0;
+      });
+    } catch (error) {
+      throw new Error("Flows disclosure readiness: " + JSON.stringify(await flowsKeyboardState()) + "; " + error.message);
+    }
+    assert.deepEqual(await flowsKeyboardState(), { tag: "SUMMARY", id: "", summaryFocused: true, open: true, labsTabIndex: 0 }, "Enter must open Flows and retain summary focus before Tab.");
     await page.keyboard.press("Tab");
-    assert.equal(await page.evaluate(() => document.activeElement?.id), "tab-labs");
+    const flowsTabState = await flowsKeyboardState();
+    assert.equal(flowsTabState.id, "tab-labs", "Tab enters the opened Flows group: " + JSON.stringify(flowsTabState));
     await page.keyboard.press("Enter");
     assert.equal(await page.evaluate(() => state.view), "labs");
     await page.locator("#nav-flows > summary").click();
