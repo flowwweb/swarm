@@ -488,7 +488,7 @@ assert.match(app, /\$\("#support-dialog"\)\.addEventListener\("click", \(event\)
 assert.doesNotMatch(css, /\.drawer-status/);
 assert.match(indexHtml, /id="message-launcher"[^>]*aria-label="Message"[^>]*aria-controls="message-composer"[^>]*aria-expanded="false"/);
 assert.match(indexHtml, /id="mobile-message-action"[^>]*aria-label="Message"[^>]*aria-controls="message-composer"/);
-assert.match(indexHtml, /class="mobile-message-footer" aria-label="Primary navigation"[\s\S]*?data-view="overview"[\s\S]*?data-view="agents"[\s\S]*?id="mobile-message-action"[\s\S]*?message-mascot-silhouette[\s\S]*?data-view="assets"[\s\S]*?data-view="roles"/);
+assert.match(indexHtml, /class="mobile-message-footer" aria-label="Primary navigation"[\s\S]*?data-view="overview"[\s\S]*?data-view="agents"[\s\S]*?id="mobile-flows"[^>]*aria-label="Flows"[\s\S]*?id="mobile-message-action"[\s\S]*?message-mascot-silhouette[\s\S]*?data-view="assets"/);
 assert.match(indexHtml, /<dialog class="message-composer" id="message-composer" aria-modal="false"[^>]*aria-labelledby="message-title"/);
 assert.match(app, /function showMessageComposerDialog\(\)[\s\S]*?panel\.showModal\(\)[\s\S]*?panel\.show\(\)/);
 assert.match(app, /history\.pushState\(\{ \.\.\.\(history\.state \|\| \{\}\), messageComposer: true \}/);
@@ -1320,7 +1320,8 @@ assert.match(indexHtml, /id="view-diagnostics"[\s\S]*?id="diagnostics-check-stri
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0 46px; height: 46px; \}/);
 assert.match(app, /function routeView\(\)/);
 assert.doesNotMatch(indexHtml, /id="highest-usage-tasks"/, "Task usage belongs in TBR, not the Overview page body");
-assert.doesNotMatch(indexHtml, /id="nav-more"/);
+assert.match(indexHtml, /<details class="nav-more" id="nav-flows">[\s\S]*?<b>Flows<\/b>[\s\S]*?id="tab-labs"[\s\S]*?id="tab-factories"/);
+assert.match(indexHtml, /<details class="nav-more" id="nav-more">[\s\S]*?<b>More<\/b>[\s\S]*?id="tab-review"[\s\S]*?id="tab-roles"[\s\S]*?id="tab-diagnostics"/);
 assert.equal((indexHtml.match(/<button type="button" aria-haspopup="dialog" aria-controls="metric-detail-dialog"/g) || []).length, 4);
 assert.match(indexHtml, /<dialog class="metric-detail-dialog" id="metric-detail-dialog"/);
 assert.match(css, /\.metric-detail-dialog \{ width:calc\(100vw - 32px\); height:min\(720px,calc\(100dvh - 32px\)\); margin:auto; border-radius:12px;/, 'Mobile metric dialog retains margins on every side');
@@ -2886,7 +2887,10 @@ async function assertMetricDetailContainment(page) {
 }
 
 async function openPrimaryView(page, view) {
-  await page.locator('.nav-item[data-view="' + view + '"]').click();
+  const tab = page.locator('.nav-item[data-view="' + view + '"]');
+  const closedGroup = await tab.evaluate((element) => { const group = element.closest("details"); return group && !group.open ? group.id : ""; });
+  if (closedGroup) await page.locator("#" + closedGroup + " > summary").click();
+  await tab.click();
 }
 
 async function mount(page, overview, overrides = {}) {
@@ -5127,7 +5131,27 @@ proofFeed.items.push({
         repairResponses: [],
       },
     });
-    await assertSharedCircleGeometry(page, ["#profile", "#notifications", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
+    assert.equal(await page.locator("#project-detail").isVisible(), false, "All-project Overview must not show an unselected Project detail panel");
+    assert.equal(await page.locator("#projects-portfolio").isVisible(), true);
+    assert.equal(await page.locator("#overview-swarm").evaluate((details) => details.open), false);
+    assert.equal(await page.locator("#overview-project-cards").isVisible(), false);
+    assert.deepEqual(await page.locator('.nav-list > button > b, #nav-flows > summary > b').allTextContents(), ["Overview", "Agents", "Flows", "Assets"]);
+    assert.equal(await page.locator("#nav-flows").evaluate((details) => details.open), false);
+    assert.equal(await page.locator("#nav-more").evaluate((details) => details.open), false);
+    await page.locator("#nav-flows > summary").focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Tab");
+    assert.equal(await page.evaluate(() => document.activeElement?.id), "tab-labs");
+    await page.keyboard.press("Enter");
+    assert.equal(await page.evaluate(() => state.view), "labs");
+    await page.locator("#nav-flows > summary").click();
+    await openPrimaryView(page, "overview");
+    await page.locator("#tab-overview").focus();
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await page.evaluate(() => document.activeElement?.id), "tab-agents");
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await page.evaluate(() => document.activeElement?.id), "tab-assets", "Closed Flows must be skipped by tab navigation");
+    await openPrimaryView(page, "overview");
     await page.locator("#notifications").click();
     await page.locator("#notifications-panel").waitFor({ state: "visible" });
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "circle-invariant-notifications-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
@@ -5212,7 +5236,7 @@ proofFeed.items.push({
     for (let index = 0; index < scopedViews.length; index += 1) {
       const view = scopedViews[index];
       const projectId = index % 2 ? "project:fixture" : "project:branch";
-      await page.locator('.nav-item[data-view="' + view + '"]').click();
+      await openPrimaryView(page, view);
       await chooseProjectScope(page, projectId);
       await page.waitForFunction(({ view, projectId }) => state.view === view && state.projectId === projectId, { view, projectId });
       assert.equal(await page.locator('[data-view-panel="' + view + '"]').isVisible(), true);
@@ -5268,6 +5292,13 @@ proofFeed.items.push({
     assert.equal(await page.locator('[data-overview-metric="usage"]').evaluate(el => el === document.activeElement), true);
     assert.equal(await page.locator("#overview-monitoring-heading").isVisible(), true);
     assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Swarm");
+    await page.locator("#overview-swarm > summary").click();
+    assert.equal(await page.locator("#overview-project-cards").isVisible(), true);
+    await page.locator("#overview-swarm > summary").click();
+    assert.equal(await page.locator("#overview-project-cards").isVisible(), false);
+    await page.locator("#overview-swarm > summary").click();
+    await page.waitForFunction(() => { const edges = [...document.querySelectorAll("[data-overview-hierarchy-edge]")]; return edges.length > 0 && edges.every((edge) => Boolean(edge.getAttribute("d"))); });
+    await assertSharedCircleGeometry(page, ["#profile", "#notifications", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-project-id] strong").allTextContents(), ["Arc", "Atlas", "Flowwweb", "swarm"]);
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-hierarchy-project]").evaluateAll((projects) => projects.map((project) => project.dataset.overviewHierarchyProject)), ["project:arc", "project:atlas", "project:branch", "project:fixture"]);
     assert.match(await page.locator("#overview-project-cards .overview-hierarchy-canvas > .overview-independent:not(.is-error)").textContent(), /Active host tasks[\s\S]*Resolve customer export[\s\S]*Inspect export evidence[\s\S]*Anonymous[\s\S]*Independent task/);
@@ -5366,6 +5397,8 @@ proofFeed.items.push({
     await page.locator('#project-navigation [data-project-id="project:fixture"]').click();
     await scopedOverviewRequest;
     await page.locator("#project-detail").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#projects-portfolio").isVisible(), false);
+    assert.equal(await page.locator("#project-detail").evaluate((detail) => detail.hidden), false);
     assert.ok(desktop.requests.includes("/api/overview?project_id=project%3Afixture"));
     assert.equal(await page.locator('#project-navigation [data-project-id="project:waiting"]').count(), 1);
     await page.locator("#notification-unread").waitFor({ state: "visible" });
@@ -5876,7 +5909,6 @@ proofFeed.items.push({
 
     const tabletPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
     const tablet = await mount(tabletPage, scopedFixture(), overrides);
-    await assertSharedCircleGeometry(tabletPage, ["#profile", "#notifications", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
     assert.equal(await tabletPage.locator("#notifications").evaluate((notification) => {
       const profile = document.querySelector("#profile");
       return Boolean(notification.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING)
@@ -5885,6 +5917,8 @@ proofFeed.items.push({
     assert.equal(await tabletPage.locator(".top-actions #profile").count(), 1);
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "shell-profile-sidebar-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "circle-invariant-overview-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
+    await tabletPage.locator("#overview-swarm > summary").click();
+    await assertSharedCircleGeometry(tabletPage, ["#profile", "#notifications", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
     assert.equal(await tabletPage.locator("#overview-project-cards .overview-hierarchy-project").count(), 4);
     await tabletPage.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
     assert.equal(await tabletPage.locator("#overview-project-cards .overview-node-open").evaluateAll((nodes) => nodes.every((node) => node.getBoundingClientRect().height >= 68)), true);
@@ -5986,7 +6020,6 @@ proofFeed.items.push({
 
     const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const mobile = await mount(mobilePage, overflowingProjectFixture(), overrides);
-    await assertSharedCircleGeometry(mobilePage, ["#profile", "#mobile-message-action", ".agent-avatar-token"]);
     await mobilePage.locator("#mobile-menu-button").click();
     await mobilePage.locator("#console-drawer").waitFor({ state: "visible" });
     await assertSharedCircleGeometry(mobilePage, ["#console-drawer .scope-dot", ".support-mark"]);
@@ -6008,7 +6041,12 @@ proofFeed.items.push({
     await mobilePage.getByRole('button',{name:'Close metric details',exact:true}).click();
     await mobilePage.waitForFunction(() => document.querySelector('[data-overview-metric="usage"]') === document.activeElement);
     assert.equal(await mobilePage.locator('[data-overview-metric="usage"]').evaluate(el => el === document.activeElement), true);
+    assert.equal(await mobilePage.locator("#project-detail").isVisible(), false);
+    assert.equal(await mobilePage.locator("#overview-project-cards").isVisible(), false);
+    await mobilePage.locator("#overview-swarm > summary").click();
     await mobilePage.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
+    await assertSharedCircleGeometry(mobilePage, ["#profile", "#mobile-message-action", ".agent-avatar-token"]);
+    assert.equal(await mobilePage.locator("#overview-project-cards").isVisible(), true);
     assert.equal(await mobilePage.locator("#overview-project-cards .overview-hierarchy-children").evaluateAll((groups) => groups.every((group) => getComputedStyle(group).gridTemplateColumns.split(" ").length === 1)), true);
     assert.equal(await mobilePage.locator("#overview-project-cards .overview-node-inspect").evaluateAll((inspects) => inspects.every((inspect) => inspect.getBoundingClientRect().width >= 44 && inspect.getBoundingClientRect().height >= 44 && getComputedStyle(inspect).opacity === "1")), true);
     assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
@@ -6023,7 +6061,16 @@ proofFeed.items.push({
     await mobilePage.evaluate(() => { setTheme("midnight"); setView("overview"); });
     assert.equal(await mobilePage.locator("#message-launcher").isVisible(), false);
     assert.equal(await mobilePage.locator("#mobile-message-action").isVisible(), true);
-    assert.equal(await mobilePage.locator(".mobile-message-footer .mobile-destination").count(), 5);
+    assert.equal(await mobilePage.locator(".mobile-message-footer .mobile-destination").count(), 4);
+    await mobilePage.locator("#mobile-flows").click();
+    await mobilePage.waitForFunction(() => document.activeElement === document.querySelector("#nav-flows > summary"));
+    assert.equal(await mobilePage.locator("#nav-flows").evaluate((details) => details.open), true);
+    assert.equal(await mobilePage.locator("#tab-labs").isVisible(), true);
+    assert.equal(await mobilePage.locator("#tab-factories").isVisible(), true);
+    await openPrimaryView(mobilePage, "factories");
+    assert.equal(await mobilePage.evaluate(() => state.view), "factories");
+    assert.equal(await mobilePage.locator("#mobile-flows").getAttribute("aria-current"), "page");
+    assert.equal(await mobilePage.locator("#console-drawer").getAttribute("aria-hidden"), "true");
     assert.equal(await mobilePage.locator("#mobile-message-action .message-mascot-silhouette").count(), 1);
     await mobilePage.locator('.mobile-message-footer [data-view="assets"]').click();
     assert.equal(await mobilePage.evaluate(() => state.view), "assets");
@@ -6072,7 +6119,8 @@ proofFeed.items.push({
     assert.equal(await mobilePage.locator('#project-navigation [data-project-id="project:overflow-24"]').count(), 1);
     await mobilePage.keyboard.press("Escape");
     assert.equal(await menuButton.evaluate((element) => element === document.activeElement), true);
-    await mobilePage.locator('.mobile-message-footer [data-view="roles"]').click();
+    await mobilePage.locator("#mobile-menu-button").click();
+    await openPrimaryView(mobilePage, "roles");
     const mobileGrid = mobilePage.locator("#role-library-grid");
     assert.equal(await mobileGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 2);
     assert.equal(await mobileGrid.evaluate((element) => getComputedStyle(element).overflowY), "visible");
