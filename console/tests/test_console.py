@@ -3417,8 +3417,74 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertFalse(recent["activity_facts"]["active_now"])
         self.assertTrue(recent["activity_facts"]["recently_active"])
         self.assertEqual(expired["ctrl_ids"], [])
-        self.assertEqual(expired["activity_status"], "inactive")
-        self.assertTrue(expired["activity_facts"]["inactive"])
+        self.assertEqual(expired["activity_status"], "unknown")
+        self.assertFalse(expired["activity_facts"]["inactive"])
+        self.assertEqual(expired["activity_facts"]["unobserved_open_thread_count"], 2)
+
+    def test_verified_git_worktree_projects_retain_observed_activity_without_role_admission(self) -> None:
+        checkout = self.root / "linked-checkout"
+        checkout.mkdir()
+        gitdir = self.alpha_root / ".git" / "worktrees" / "linked"
+        gitdir.mkdir(parents=True)
+        (checkout / ".git").write_text(f"gitdir: {gitdir.as_posix()}\n", encoding="utf-8")
+        (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+        (gitdir / "gitdir").write_text(str(checkout / ".git"), encoding="utf-8")
+        if os.name == "nt":
+            self.assertEqual(console._verified_worktree_root("\\\\?\\" + str(checkout)), console._normalized_project_path(str(self.alpha_root.resolve())))
+        now = int(time.time() * 1000)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET cwd=?, updated_at_ms=? WHERE id='unsafe'", (str(checkout), now))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        view = app.overview()
+        task = next(node for node in view["nodes"] if node["id"] == "unsafe")
+        project = next(item for item in view["navigation"]["projects"] if item["id"] == "project:alpha")
+        self.assertEqual((task["project_id"], task["project_binding_state"]), ("project:alpha", "GIT_WORKTREE"))
+        self.assertEqual(task["node_kind"], "independent_host_task")
+        self.assertEqual(project["activity_status"], "active")
+        self.assertNotIn("unsafe", project["ctrl_ids"])
+        self.assertIsNone(view["progress"]["projects"]["project:alpha"]["progress"])
+
+        nested = checkout / "independent-repository"
+        (nested / ".git").mkdir(parents=True)
+        self.assertIsNone(console._verified_worktree_root(str(nested)))
+
+        (gitdir / "gitdir").write_text(str(self.root / "wrong-checkout" / ".git"), encoding="utf-8")
+        rejected = console.build_overview(self.codex_home, self.config)
+        self.assertEqual(next(node for node in rejected["nodes"] if node["id"] == "unsafe")["project_binding_state"], "UNBOUND")
+
+    def test_worktree_binding_preserves_stale_direct_and_ambiguous_root_boundaries(self) -> None:
+        row = {"project_id": "stale-id", "cwd": "C:/some-checkout"}
+        projects = {"one": {"id": "one"}, "two": {"id": "two"}}
+        with mock.patch.object(console, "_verified_worktree_root", return_value="c:/canonical") as resolver:
+            self.assertEqual(console._canonical_project_binding(row, projects, (("c:/canonical", "one"),)), (None, "stale"))
+            resolver.assert_not_called()
+            row["project_id"] = ""
+            self.assertEqual(console._canonical_project_binding(row, projects, (("c:/canonical", "one"), ("c:/canonical", "two"))), (None, "conflicted"))
+
+    def test_old_open_host_tasks_keep_project_activity_unknown_without_topology_or_credit(self) -> None:
+        old = int(time.time() * 1000) - 2 * 24 * 60 * 60 * 1000
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET updated_at_ms=?, updated_at=? WHERE cwd=?", (old, old // 1000, str(self.alpha_root)))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        view = app.overview()
+        project = next(item for item in view["navigation"]["projects"] if item["id"] == "project:alpha")
+        self.assertEqual(project["activity_status"], "unknown")
+        self.assertEqual(project["activity_facts"]["unobserved_open_thread_count"], 4)
+        self.assertFalse(project["activity_facts"]["active_now"])
+        self.assertFalse(project["activity_facts"]["inactive"])
+        self.assertEqual(project["ctrl_ids"], [])
+        self.assertEqual(project["task_count"], 0)
+        self.assertFalse(any(node.get("project_id") == "project:alpha" for node in view["nodes"]))
+        self.assertEqual(app.project_roster()["current_work"]["project_ids"], ["project:alpha"])
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET archived=1 WHERE cwd=?", (str(self.alpha_root),))
+            connection.commit()
+        archived = console.App._navigation_payload(console.build_overview(self.codex_home, self.config))
+        project = next(item for item in archived["projects"] if item["id"] == "project:alpha")
+        self.assertEqual(project["activity_status"], "inactive")
+        self.assertTrue(project["activity_facts"]["inactive"])
 
     def test_structural_ctrl_requires_fresh_open_project_bound_subagent(self) -> None:
         now = 2_000_000_000_000

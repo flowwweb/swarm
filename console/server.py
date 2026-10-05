@@ -7272,10 +7272,40 @@ def _host_project_catalog(
     return projects, roots
 
 
+def _verified_worktree_root(cwd: str) -> str | None:
+    """Resolve a linked checkout only through Git's reciprocal on-disk metadata."""
+    try:
+        checkout = Path(cwd)
+        for root in (checkout, *checkout.parents):
+            marker = root / ".git"
+            if marker.is_dir():
+                return None
+            if not marker.is_file():
+                continue
+            text = marker.read_text(encoding="utf-8").strip()
+            if not text.startswith("gitdir: "):
+                return None
+            gitdir = (root / text[8:]).resolve()
+            common = (gitdir / (gitdir / "commondir").read_text(encoding="utf-8").strip()).resolve()
+            backlink = Path((gitdir / "gitdir").read_text(encoding="utf-8").strip()).resolve()
+            if (
+                _normalized_project_path(str(backlink)) != _normalized_project_path(str(marker.resolve()))
+                or common.name != ".git"
+                or not common.is_dir()
+                or gitdir.parent != common / "worktrees"
+            ):
+                return None
+            return _normalized_project_path(str(common.parent))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return None
+
+
 def _canonical_project_binding(
     row: sqlite3.Row,
     projects: dict[str, dict[str, Any]],
     project_roots: tuple[tuple[str, str], ...],
+    worktree_roots: dict[str, str | None] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     project_id = str(row["project_id"] or "").strip()
     if project_id:
@@ -7287,6 +7317,26 @@ def _canonical_project_binding(
         if cwd == root or cwd.startswith(f"{root}/")
     ]
     if not matches:
+        cache = worktree_roots if worktree_roots is not None else {}
+        if cwd not in cache:
+            cache[cwd] = _verified_worktree_root(str(row["cwd"] or ""))
+        repository_root = cache[cwd]
+        project_ids = set()
+        if repository_root:
+            for root, bound_project_id in project_roots:
+                key = f"project-root:{root}"
+                if key not in cache:
+                    try:
+                        saved_root = Path(root)
+                        cache[key] = _normalized_project_path(str(saved_root.resolve())) if saved_root.is_dir() else None
+                    except (OSError, ValueError):
+                        cache[key] = None
+                if repository_root in {root, cache[key]}:
+                    project_ids.add(bound_project_id)
+        if len(project_ids) > 1:
+            return None, "conflicted"
+        if project_ids:
+            return projects[next(iter(project_ids))], "git_worktree"
         return None, "unbound"
     longest = len(matches[0][0])
     project_ids = {project_id for root, project_id in matches if len(root) == longest}
@@ -7304,8 +7354,9 @@ def _thread_project_bindings(
     bindings: dict[str, dict[str, Any]] = {}
     states: dict[str, str] = {}
     blocked: set[str] = set()
+    worktree_roots: dict[str, str | None] = {}
     for thread_id, row in rows.items():
-        project, state = _canonical_project_binding(row, projects, project_roots)
+        project, state = _canonical_project_binding(row, projects, project_roots, worktree_roots)
         states[thread_id] = state
         if project is not None:
             bindings[thread_id] = project
@@ -7614,6 +7665,13 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             """,
             (observed_after_ms, observed_after_ms // 1000, *sorted(active_goal_ids)),
         ).fetchall()
+        # A recent-window miss cannot establish that a saved project is inactive.
+        # Retain only host identity/liveness metadata for older unarchived tasks;
+        # these rows do not become topology nodes or accepted progress.
+        open_rows = connection.execute(
+            f"SELECT id, cwd, archived, updated_at, updated_at_ms, {project_id_projection} "
+            "FROM threads WHERE archived = 0"
+        ).fetchall()
         edge_rows = connection.execute(
             """
             SELECT parent_thread_id, child_thread_id, status
@@ -7656,6 +7714,9 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     project_bindings, project_binding_states = _thread_project_bindings(
         all_rows, open_parent_by_child, host_project_catalog, project_roots
     )
+    open_bindings, _ = _thread_project_bindings(
+        {row["id"]: row for row in open_rows}, open_parent_by_child, host_project_catalog, project_roots
+    )
     host_projects: dict[str, dict[str, Any]] = {
         project_id: {
             "id": project_id,
@@ -7665,10 +7726,14 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "ordering": dict(project.get("ordering") or {}),
             "observed_threads": 0,
             "active_threads": 0,
+            "unobserved_open_thread_count": 0,
             "updated_at": 0,
         }
         for project_id, project in host_project_catalog.items()
     }
+    for thread_id, project in open_bindings.items():
+        if thread_id not in all_rows:
+            host_projects[project["id"]]["unobserved_open_thread_count"] += 1
     for thread_id, project in project_bindings.items():
         row = all_rows[thread_id]
         inventory = host_projects[project["id"]]
@@ -7875,6 +7940,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         )
         project["observed_threads"] = inventory["observed_threads"]
         project["active_threads"] = inventory["active_threads"]
+        project["unobserved_open_thread_count"] = inventory["unobserved_open_thread_count"]
         project["updated_at"] = inventory["updated_at"]
 
     incoming = {link["target"] for link in links}
@@ -11619,7 +11685,9 @@ class App:
                 for node in project_nodes
             )
             active = bool(active_ids or active_project_nodes)
-            status = "active" if active else ("stalled" if stalled else "inactive")
+            unobserved_open_count = int(project.get("unobserved_open_thread_count") or 0)
+            activity_unknown = bool(unavailable_candidate_ids or unobserved_open_count) and not active and not recently_active_ids
+            status = "active" if active else "stalled" if stalled else "unknown" if activity_unknown else "inactive"
             projects.append({
                 "id": project_id,
                 "name": project.get("name", project_id),
@@ -11642,14 +11710,15 @@ class App:
                     else "recently_active"
                     if recently_active_ids
                     else "unknown"
-                    if unavailable_candidate_ids
+                    if activity_unknown
                     else "inactive"
                 ),
                 "activity_facts": {
                     "active_now": active,
                     "recently_active": bool(recently_active_ids),
-                    "unknown": bool(unavailable_candidate_ids) and not active and not recently_active_ids,
-                    "inactive": not active and not recently_active_ids and not unavailable_candidate_ids,
+                    "unknown": activity_unknown,
+                    "inactive": not active and not recently_active_ids and not activity_unknown,
+                    "unobserved_open_thread_count": unobserved_open_count,
                     "active_now_count": len(active_project_nodes),
                     "recently_active_count": len(recently_active_ids),
                     "last_activity_at": last_activity_at,
@@ -11657,12 +11726,14 @@ class App:
                     "unknown_reason": (
                         "One or more project-bound host CTRL candidates lacked an accepted persisted role or "
                         "unambiguous structural classification."
-                        if unavailable_candidate_ids else None
+                        if unavailable_candidate_ids else
+                        "Unarchived host tasks exist outside the recent observation window; current activity is unobserved."
+                        if unobserved_open_count else None
                     ),
-                    "source": "host_threads.updated_at_ms+host_thread_spawn_edges.status",
+                    "source": "host_threads.archived+host_threads.updated_at_ms+host_thread_spawn_edges.status",
                 },
                 "ctrl_ids": ctrl_ids,
-                "project_eligibility": "swarm_ctrl" if ctrl_ids else "host_tasks" if project_nodes else "no_ctrl",
+                "project_eligibility": "swarm_ctrl" if ctrl_ids else "host_tasks" if project_nodes or unobserved_open_count else "no_ctrl",
                 "eligibility_source": (
                     "+".join(sorted({
                         str(controller["controller_classification_source"])
