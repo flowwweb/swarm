@@ -9572,6 +9572,8 @@ class App:
             raise ConsoleError("project UI agent page token is invalid")
         try:
             decoded = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+            if base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=") != token:
+                raise ValueError("noncanonical encoding")
             if len(decoded) < 34 or decoded[-33:-32] != b".":
                 raise ValueError("shape")
             raw, signature = decoded[:-33], decoded[-32:]

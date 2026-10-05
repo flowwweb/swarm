@@ -6605,6 +6605,17 @@ class SwarmConsoleTests(unittest.TestCase):
                 with self.subTest(request=request), self.assertRaises(console.ConsoleError):
                     app.project_ui_agent_read(request)
 
+    def test_project_ui_page_token_rejects_equivalent_noncanonical_pad_bits(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        payload = {"padding": ""}
+        token = app._project_ui_page_token(payload=payload)
+        self.assertEqual(len(token) % 4, 3)
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        alias = token[:-1] + alphabet[alphabet.index(token[-1]) + 1]
+        self.assertEqual(app._project_ui_page_token(token=token), payload)
+        with self.assertRaisesRegex(console.ConsoleError, "page token is invalid"):
+            app._project_ui_page_token(token=alias)
+
     def test_project_view_manifest_is_digest_bound_conditional_and_project_generic(self) -> None:
         def encoded(value: dict[str, Any]) -> bytes:
             return json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
