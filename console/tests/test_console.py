@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import hashlib
+import http.client
 import io
 import os
 import json
@@ -46,6 +47,107 @@ from runtime import (  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
+    def test_flow_http_save_restart_and_stale_preview(self) -> None:
+        from contextlib import contextmanager
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        trace = []
+        instances = []
+        bridge = mock.Mock()
+        bridge.command_session.side_effect = AssertionError("Flow preview must not invoke the host")
+        initial_database = self.database.read_bytes()
+
+        @contextmanager
+        def endpoint():
+            app = console.App(self.codex_home, self.config, auto_bridge=bridge)
+            instances.append(app)
+            # Only host observation is a fixture. Root/identity, persistence,
+            # authorization, HTTP parsing and response handling are real.
+            with mock.patch.object(app, "_observed_scope", return_value=(
+                {}, [{"id": "root", "project_id": "project:alpha", "archived": False}], {}, {}
+            )), mock.patch.object(app, "prepare_work_unit", side_effect=AssertionError("No task creation")) as create:
+                httpd = console.SwarmHTTPServer(("127.0.0.1", 0), console.Handler, app)
+                thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+                thread.start()
+                port = httpd.server_address[1]
+
+                def post(payload, expected=200, token=None):
+                    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                    try:
+                        connection.request("POST", "/api/project-flow", json.dumps({"project_id": "project:alpha", **payload}),
+                            {"Content-Type": "application/json", "Connection": "close", "Origin": f"http://127.0.0.1:{port}",
+                             "X-Swarm-Token": app.token if token is None else token})
+                        response = connection.getresponse()
+                        result = json.loads(response.read())
+                        trace.append({"instance": len(instances), "operation": payload["operation"], "status": response.status})
+                        self.assertEqual(response.status, expected, result)
+                        return result
+                    finally:
+                        connection.close()
+                try:
+                    yield post
+                finally:
+                    httpd.shutdown()
+                    httpd.server_close()
+                    thread.join(timeout=5)
+                    self.assertFalse(thread.is_alive())
+                    create.assert_not_called()
+                    self.assertEqual(bridge.mock_calls, [])
+
+        with endpoint() as post:
+            before = brief.read_bytes()
+            post({"operation": "read"}, 403, token="wrong-token")
+            self.assertEqual(brief.read_bytes(), before)
+            original = post({"operation": "read"})
+            draft = original["starter"]
+            draft["nodes"][0].update(owner_id="root", objective="  Define cafe\u0301\nKeep the scope  ",
+                                     completion="  Return proof\nInclude its identity\tand result  ")
+            saved = post({"operation": "save", "expected_digest": original["source_digest"],
+                          "definition": draft, "acknowledge": True})
+            first = saved["definitions"][0]
+            self.assertEqual({k: v for k, v in first.items() if k != "digest"}, draft)
+            retained_bytes = brief.read_bytes()
+
+        with endpoint() as post:
+            reloaded = post({"operation": "read"})
+            self.assertEqual(reloaded["definitions"], [first])
+            self.assertEqual(reloaded["source_digest"], saved["source_digest"])
+            self.assertEqual(brief.read_bytes(), retained_bytes)
+            second = copy.deepcopy(draft)
+            second["version"] = 2
+            second["objective"] = "A separate revised outcome"
+            updated = post({"operation": "save", "expected_digest": reloaded["source_digest"],
+                            "definition": second, "acknowledge": True})
+            self.assertEqual(updated["definitions"][0], first)
+            self.assertEqual(len(updated["definitions"]), 2)
+            current_bytes = brief.read_bytes()
+            request = {"operation": "preview", "expected_digest": saved["source_digest"],
+                       "flow_id": first["id"], "version": 1, "flow_digest": first["digest"]}
+            rejected = post(request, 409)
+            self.assertIn("changed", rejected["error"].lower())
+            self.assertEqual(brief.read_bytes(), current_bytes)
+            preview = post({**request, "expected_digest": updated["source_digest"]})["preview"]
+            self.assertEqual(preview["status"], "PREVIEW")
+            self.assertEqual(preview["readiness"], "READY")
+            self.assertIs(preview["dispatch_available"], False)
+            self.assertEqual(preview["flow_digest"], first["digest"])
+            self.assertEqual(preview["task_manifest_draft"]["task_id"], "draft-only")
+            self.assertEqual(preview["task_manifest_draft"]["task_name"], "Define café Keep the scope")
+            self.assertIn(draft["nodes"][0]["objective"], preview["instruction"])
+            self.assertIn(draft["nodes"][0]["completion"], preview["instruction"])
+            self.assertEqual(brief.read_bytes(), current_bytes)
+        self.assertEqual(self.database.read_bytes(), initial_database)
+        self.assertEqual(len(instances), 2)
+        self.assertIsNot(instances[0], instances[1])
+        self.assertEqual(instances[0].store.path, instances[1].store.path)
+        self.assertEqual([item["status"] for item in trace], [403, 200, 200, 200, 200, 409, 200])
+        print("Flow HTTP restart proof: " + json.dumps(trace, separators=(",", ":")))
+        print("Flow HTTP retained identities: " + json.dumps({"v1_digest": first["digest"],
+            "v1_source": saved["source_digest"], "restarted_source": reloaded["source_digest"],
+            "v2_source": updated["source_digest"], "after_stale_preview_sha256": hashlib.sha256(current_bytes).hexdigest()}, sort_keys=True))
+
     def test_account_limits_native_read_observation_and_usage_handler(self) -> None:
         from contextlib import contextmanager
         now = int(time.time() * 1000)
