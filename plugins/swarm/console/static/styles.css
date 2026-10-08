@@ -197,7 +197,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--focus); ou
 .profile-avatar-editor p,.profile-avatar-editor small { display:block; margin:4px 0 8px; color:var(--faint); font-size:11px; }
 .profile-upload-button { display:inline-flex; align-items:center; gap:8px; min-height:44px; cursor:pointer; }
 .profile-field { display:grid; gap:8px; color:var(--muted); font-size:12px; }
-.profile-field input { width:100%; min-width:0; min-height:44px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--control-surface); color:var(--ink); font:inherit; }
+.profile-field input,.profile-field textarea,.profile-field select { width:100%; min-width:0; min-height:44px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--control-surface); color:var(--ink); font:inherit; }
 .profile-preferences { display:grid; gap:8px; margin:0; padding:0; border:0; }
 .profile-preferences legend { margin-bottom:8px; color:var(--faint); font-size:11px; }
 .profile-preferences label { display:flex; align-items:center; gap:10px; min-height:44px; font-size:12px; }
@@ -1226,3 +1226,11 @@ html[data-theme="pearl"] .drawer,html[data-theme="pearl"] .mobile-app-bar,html[d
   .lab-card-select { min-height:94px; padding:12px 14px; }
   .lab-role-stack .role-avatar { width:30px; height:30px; }
 }
+.flow-editor-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:var(--space-4,16px); margin-block:16px; }
+.flow-editor-grid fieldset { min-width:0; display:grid; align-content:start; gap:12px; border:1px solid var(--line); border-radius:12px; padding:16px; }
+.flow-editor-grid input,.flow-editor-grid textarea { width:100%; min-width:0; }
+#flow-editor-content pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+#flow-editor-content .project-ui-flowchart { overflow-x:auto; }
+#flow-editor-content > .review-actions { display:flex; align-items:end; flex-wrap:wrap; gap:8px; }
+#flow-editor-dialog button { min-height:44px; }
+@media(max-width:700px) { .flow-editor-grid { grid-template-columns:minmax(0,1fr); } }

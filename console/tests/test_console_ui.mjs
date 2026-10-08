@@ -536,14 +536,15 @@ for (const id of ["diagnostics-health-heading", "diagnostics-check-strip", "diag
 assert.match(app, /\$\("#repair-dialog"\)\.addEventListener\("cancel", \(event\) => \{[\s\S]*?closeRepairDialog\(\)/);
 for (const icon of ["eye", "trash-2"]) assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
-assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 11);
+assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 12);
+assert.match(indexHtml, /<dialog class="config-editor-dialog" id="flow-editor-dialog"[\s\S]*?class="dialog-shell config-editor-shell"[\s\S]*?class="dialog-body edge-scroll config-editor-body"[\s\S]*?id="flow-editor-content"[\s\S]*?class="dialog-footer config-editor-footer"[\s\S]*?<\/dialog>/);
 assert.match(indexHtml, /<div popover="auto" role="dialog" class="profile-dialog"/);
 for (const shell of ["agent-detail-shell", "evidence-lightbox-shell", "asset-dialog-shell", "profile-dialog-shell", "support-dialog-shell", "project-create-shell", "repair-dialog-shell", "config-editor-shell", "role-editor-shell", "onboarding-shell"]) {
   assert.match(indexHtml, new RegExp(`class="dialog-shell ${shell}"`));
 }
-assert.equal((indexHtml.match(/class="dialog-body(?: |")/g) || []).length, 11);
-assert.equal((indexHtml.match(/class="dialog-body-content/g) || []).length, 11);
-assert.equal((indexHtml.match(/class="dialog-footer(?: |")/g) || []).length, 11);
+assert.equal((indexHtml.match(/class="dialog-body(?: |")/g) || []).length, 12);
+assert.equal((indexHtml.match(/class="dialog-body-content/g) || []).length, 12);
+assert.equal((indexHtml.match(/class="dialog-footer(?: |")/g) || []).length, 12);
 assert.match(css, /\.dialog-shell \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body \{[^}]*width:100%;[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;[^}]*scrollbar-gutter:stable;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body-content \{ width:100%; min-width:0; \}/);
@@ -788,7 +789,7 @@ assert.match(app, /data-project-view-evidence=/);
 assert.match(app, /function projectViewMapModel\(projection, selectedGroupId = ""\)/);
 assert.match(app, /class="project-ui-flowchart-connectors" aria-hidden="true"/);
 assert.match(app, /data-project-map-group=/);
-assert.match(app, /function drawProjectViewConnectors\(\)/);
+assert.match(app, /function drawProjectViewConnectors\(container = document\)/);
 assert.match(app, /const PROJECT_WORKSPACE_RENDERERS = new Set\(\["document\/blocks", "timeline\/milestones", "canvas\/network", "table\/records", "gallery\/grid", "gallery\/list"\]\)/);
 assert.match(app, /function projectWorkspaceViews\(projection\)/);
 assert.match(app, /function projectWorkspaceModeView\(projection, modeId,[\s\S]*?mode\?\.view_id[\s\S]*?view\.id === viewId/);
@@ -813,7 +814,7 @@ assert.match(app, /\["runtime", "data", "state"\]\.includes\(node\.type\)/);
 assert.match(app, /Flowchart unavailable\. The accepted map projection could not be rendered safely\./);
 assert.doesNotMatch(app, /Sanguine|D&D|Dungeon|project:\/\/swarm/i);
 assert.doesNotMatch(app, /setInterval\([^)]*projectView|localStorage[^\n]*projectView|sessionStorage[^\n]*projectView/i);
-const projectWorkspaceSource = app.slice(app.indexOf("const PROJECT_WORKSPACE_RENDERERS"), app.indexOf("\nfunction projectWorkspaceFlowMarkup"));
+const projectWorkspaceSource = app.slice(app.indexOf("const PROJECT_WORKSPACE_RENDERERS"), app.indexOf("\nconst flowEditor ="));
 const projectWorkspaceSandbox = {};
 vm.runInNewContext(projectWorkspaceSource + "\nthis.projectWorkspaceViews = projectWorkspaceViews; this.projectWorkspaceModeView = projectWorkspaceModeView;", projectWorkspaceSandbox);
 const projectedWorkspaceViews = [

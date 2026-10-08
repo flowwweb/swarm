@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.swarm.runtime import ArtifactIdentity  # noqa: E402
+from skills.swarm.runtime import ArtifactIdentity, ProofClass  # noqa: E402
 
 
 VIEW_SPECS = (
@@ -64,6 +64,96 @@ class ProjectModelError(ValueError):
     pass
 
 
+def create_flow_draft() -> dict[str, Any]:
+    steps = (("brief", "Define the outcome"), ("approach", "Choose the smallest useful approach"),
+             ("produce", "Produce one bounded increment"), ("check", "Check the increment"), ("accept", "Obtain acceptance"))
+    nodes = []
+    for identity, objective in steps:
+        previous = nodes[-1]["id"] if nodes else None
+        nodes.append({"id": identity, "objective": objective, "owner_id": "unassigned", "capability": identity,
+            "dependencies": [previous] if previous else [],
+            "inputs": [{"node_id": previous, "output_id": "result"}] if previous else [], "outputs": ["result"],
+            "completion": "Return the exact result and required evidence.", "proof_classes": ["HUMAN" if identity == "accept" else "SOURCE_STATIC"]})
+    return {"id": "create", "version": 1, "objective": "Create a useful, verified result", "nodes": nodes}
+
+
+def validate_flow_definition(value: Any) -> dict[str, Any]:
+    """Validate project-owned planning data, never execution or acceptance authority."""
+    fields = {"id", "version", "objective", "nodes", "digest"}
+    node_fields = {"id", "objective", "owner_id", "capability", "dependencies", "inputs", "outputs", "completion", "proof_classes"}
+
+    def token(item: Any) -> bool:
+        return isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", item) is not None
+
+    def text(item: Any) -> bool:
+        return isinstance(item, str) and 0 < len(item.strip()) <= 2048 and not any(ord(char) < 32 and char not in "\n\t" for char in item)
+
+    def tokens(items: Any) -> bool:
+        return isinstance(items, list) and len(items) <= 64 and all(token(item) for item in items) and len(set(items)) == len(items)
+
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ProjectModelError("Flow requires exact id, version, objective, nodes and digest fields")
+    if not token(value["id"]) or type(value["version"]) is not int or value["version"] < 1 or not text(value["objective"]):
+        raise ProjectModelError("Flow identity, version or objective is invalid")
+    nodes = value["nodes"]
+    if not isinstance(nodes, list) or not 1 <= len(nodes) <= 64:
+        raise ProjectModelError("Flow requires 1 to 64 nodes")
+    indexed: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        if not isinstance(node, dict) or set(node) != node_fields:
+            raise ProjectModelError("Flow node fields are invalid")
+        if not all(token(node[key]) for key in ("id", "owner_id", "capability")) or not all(text(node[key]) for key in ("objective", "completion")):
+            raise ProjectModelError("Flow node identity, owner, capability or instructions are invalid")
+        if node["id"] in indexed:
+            raise ProjectModelError("Flow node IDs must be unique")
+        if not tokens(node["dependencies"]) or not tokens(node["outputs"]) or not node["outputs"]:
+            raise ProjectModelError("Flow dependencies and output references are invalid")
+        classes = node["proof_classes"]
+        if not tokens(classes) or not classes or not set(classes) <= {item.value for item in ProofClass}:
+            raise ProjectModelError("Flow proof classes must use the existing proof taxonomy")
+        if not isinstance(node["inputs"], list) or len(node["inputs"]) > 64:
+            raise ProjectModelError("Flow input references are invalid")
+        input_keys = set()
+        for ref in node["inputs"]:
+            if not isinstance(ref, dict) or set(ref) != {"node_id", "output_id"} or not all(token(item) for item in ref.values()):
+                raise ProjectModelError("Flow input requires a node and output reference")
+            key = (ref["node_id"], ref["output_id"])
+            if key in input_keys:
+                raise ProjectModelError("Flow input references must be unique")
+            input_keys.add(key)
+        indexed[node["id"]] = node
+
+    ancestors: dict[str, set[str]] = {}
+    visiting: set[str] = set()
+
+    def visit(node_id: str) -> set[str]:
+        if node_id in visiting:
+            raise ProjectModelError("Flow dependencies contain a cycle")
+        if node_id not in indexed:
+            raise ProjectModelError("Flow dependency references a missing node")
+        if node_id not in ancestors:
+            visiting.add(node_id)
+            result: set[str] = set()
+            for parent in indexed[node_id]["dependencies"]:
+                result.add(parent)
+                result.update(visit(parent))
+            visiting.remove(node_id)
+            ancestors[node_id] = result
+        return ancestors[node_id]
+
+    for node_id, node in indexed.items():
+        upstream = visit(node_id)
+        for ref in node["inputs"]:
+            if ref["node_id"] not in upstream or ref["output_id"] not in indexed[ref["node_id"]]["outputs"]:
+                raise ProjectModelError("Flow inputs must reference declared upstream outputs")
+    # Layout is intentionally not a definition field: graph geometry is a projection.
+    semantic = {key: value[key] for key in ("id", "version", "objective", "nodes")}
+    digest = f"sha256:{_digest(semantic)}"
+    if value["digest"] != digest:
+        raise ProjectModelError("Flow definition digest mismatch")
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
 def _reject_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant: {value}")
 
@@ -108,6 +198,16 @@ def parse_project_brief_markdown(text: str, *, project_id: str | None = None) ->
             not isinstance(document[field], list) or any(not isinstance(item, dict) for item in document[field])
         ):
             raise ProjectModelError(f"project brief field {field} is invalid")
+    definitions = document.get("flow_definitions", [])
+    if not isinstance(definitions, list) or len(definitions) > 128:
+        raise ProjectModelError("project brief Flow definitions are invalid")
+    identities = set()
+    for definition in definitions:
+        checked = validate_flow_definition(definition)
+        identity = (checked["id"], checked["version"])
+        if identity in identities:
+            raise ProjectModelError("project brief contains a duplicate Flow version")
+        identities.add(identity)
     lens_ids = document.get("proposed_lens_ids", [])
     if (
         not isinstance(lens_ids, list)
@@ -200,6 +300,16 @@ def _mutate_project_brief(
     document, digest = parse_project_brief_markdown(text)
     if digest != expected_digest:
         raise ProjectModelError("project brief digest conflict")
+    if collection == "flow_definitions":
+        if operation != "create" or not isinstance(changes, Mapping) or "id" in changes:
+            raise ProjectModelError("Flow versions are append-only; edit a new draft version")
+        definition = validate_flow_definition({"id": record_id, **changes})
+        retained = document.setdefault("flow_definitions", [])
+        versions = [item["version"] for item in retained if item["id"] == record_id]
+        if definition["version"] != max(versions, default=0) + 1:
+            raise ProjectModelError("Flow version must follow the last retained version")
+        retained.append(definition)
+        return _write_project_brief(path, text, document, updated_at)
     if collection not in _LIFECYCLE_COLLECTIONS:
         raise ProjectModelError("project brief collection is not editable")
     if (
@@ -269,6 +379,12 @@ def _mutate_project_brief(
             ):
                 raise ProjectModelError("project brief reopen requires a terminal record and nonterminal target state")
         matches[0].update(patch)
+    return _write_project_brief(path, text, document, updated_at)
+
+
+def _write_project_brief(path: Path, text: str, document: dict[str, Any], updated_at: str) -> str:
+    if not isinstance(updated_at, str) or not updated_at.strip():
+        raise ProjectModelError("project brief timestamp is invalid")
     document["updated_at"] = updated_at.strip()
     updated = render_project_brief_markdown(text, document)
     _, new_digest = parse_project_brief_markdown(updated)

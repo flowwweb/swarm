@@ -26,6 +26,7 @@ import tempfile
 import threading
 import time
 import tomllib
+import unicodedata
 import webbrowser
 import uuid
 from collections import Counter
@@ -84,6 +85,9 @@ from project_model_views import (  # noqa: E402
     ProjectModelError,
     parse_project_brief_markdown,
     project_schema1_views,
+    validate_flow_definition,
+    mutate_project_brief,
+    create_flow_draft,
 )
 
 INSTANCE_ID = hashlib.sha256(str(CONSOLE_ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:16]
@@ -14666,6 +14670,74 @@ class App:
             instances.append({"outcome_acceptance": "UNKNOWN", "task_id": task_id, "name": manifest["task_name"], "project_id": manifest["project_id"], "ctrl_id": manifest["ctrl_id"], "coordinator_id": task_id, "role_scope": manifest["role_scope"], "work_unit": unit, "blocks": blocks, "child_task_ids": children})
         return {"ok": True, "schema_version": 1, "unit_kind": kind, "manifest_contract": contract, collection: labs, "instances": instances, "read_only": True}
 
+    def project_flow_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Edit project definitions or inspect a next-task preview, never dispatch."""
+        operation = payload.get("operation") if isinstance(payload, dict) else None
+        fields = {"operation", "project_id"}
+        if operation == "save":
+            fields |= {"expected_digest", "definition", "acknowledge"}
+        elif operation == "preview":
+            fields |= {"expected_digest", "flow_id", "version", "flow_digest"}
+        elif operation != "read":
+            raise ConsoleError("unknown Flow operation")
+        if set(payload) != fields:
+            raise ConsoleError("Flow request fields are invalid")
+        project_id = _auto_id(payload["project_id"], "project_id")
+        root = self._canonical_project_root(project_id, "Flow")
+        path = root / "SWARM.md"
+        # Reuse the project source resolver's path boundary; no browser-supplied path.
+        if _is_reparse_point(root) or _is_reparse_point(path) or not path.is_file() or path.stat().st_size > 512 * 1024:
+            raise ConsoleError("Flow requires a bounded regular project brief")
+        try:
+            document, digest = parse_project_brief_markdown(path.read_text(encoding="utf-8"))
+            if document["project"]["id"] not in self._canonical_project_identities(project_id):
+                raise ConsoleError("Flow brief belongs to another project")
+            if operation != "read" and payload["expected_digest"] != digest:
+                raise ConsoleConflict("Flow changed; reload before saving or previewing")
+            if operation == "save":
+                if payload["acknowledge"] is not True:
+                    raise ConsoleError("saving a Flow requires acknowledgement")
+                draft = payload["definition"]
+                if not isinstance(draft, dict) or set(draft) != {"id", "version", "objective", "nodes"}:
+                    raise ConsoleError("Flow draft fields are invalid")
+                definition = validate_flow_definition({**draft, "digest": "sha256:" + _auto_digest(draft)})
+                digest = mutate_project_brief(path, expected_digest=digest, operation="create", collection="flow_definitions",
+                    record_id=definition["id"], changes={key: value for key, value in definition.items() if key != "id"},
+                    updated_at=datetime.now(UTC).isoformat())
+                document, current_digest = parse_project_brief_markdown(path.read_text(encoding="utf-8"))
+                if current_digest != digest:
+                    raise ConsoleConflict("Flow changed after saving; reload to reconcile")
+            result = {"ok": True, "project_id": project_id, "source_digest": digest,
+                "definitions": document.get("flow_definitions", []), "starter": create_flow_draft(), "claim_limit": "Saved project definitions and previews only; no task dispatch or runtime run pinning."}
+            if operation == "preview":
+                definition = next((item for item in result["definitions"] if item["id"] == payload["flow_id"] and type(payload["version"]) is int and item["version"] == payload["version"]), None)
+                if definition is None or definition["digest"] != payload["flow_digest"]:
+                    raise ConsoleConflict("Pinned Flow version does not match the retained definition")
+                # No retained Flow-to-task binding exists yet. Never infer completed
+                # prerequisites from titles, model text, or arbitrary proof-feed rows.
+                roots = sorted((node for node in definition["nodes"] if not node["dependencies"]), key=lambda node: node["id"])
+                node = roots[0]
+                _, agents, _, _ = self._observed_scope(project_id=project_id)
+                owner = next((agent for agent in agents if agent.get("id") == node["owner_id"] and agent.get("project_id") == project_id and agent.get("archived") is not True), None)
+                external = bool(set(node["proof_classes"]) & {"HUMAN", "AUTH", "PROVIDER", "PAYMENT", "DEPLOYED", "DEVICE", "BROWSER_AUTHENTICATED"})
+                ready = owner is not None and not external
+                labels = {key: unicodedata.normalize("NFC", " ".join(node[key].split()))[:160].rstrip() for key in ("objective", "completion")}
+                result["preview"] = {"status": "PREVIEW", "readiness": "READY" if ready else "WAITING", "node_id": node["id"],
+                    "flow_digest": definition["digest"], "node_digest": "sha256:" + _auto_digest(node), "source_digest": digest, "dispatch_available": False,
+                    "owner_id": node["owner_id"], "required_proof_classes": node["proof_classes"], "input_refs": node["inputs"], "output_refs": node["outputs"],
+                    "reason": "Initial-node plan only. Runtime binding is not available; existing work must be reconciled before dispatch." if ready else "Waiting for an observed project owner or the required human/external accepting route.",
+                    "waiting_node_ids": [item["id"] for item in definition["nodes"] if item["dependencies"]],
+                    "instruction": "\n".join((definition["objective"], node["objective"], "Required capability: " + node["capability"], "Completion: " + node["completion"], "Proof: " + ", ".join(node["proof_classes"]))),
+                    "task_manifest_draft": build_task_manifest(manifest_id="flow-preview", task_id="draft-only", task_name=labels["objective"],
+                        project_id=project_id, ctrl_id=document["authority"].get("ctrl_id") or node["owner_id"], role_scope="DOER_SINGLE",
+                        milestones=[{"milestone_id": node["id"], "order": 0, "title": labels["objective"], "verification_policy": "flow-required-proof", "supersedes_milestone_id": None}],
+                        blocks=[{"block_id": "flow-output", "milestone_id": node["id"], "order": 0, "title": labels["completion"], "verification_policy": "flow-required-proof", "estimate_minutes": None, "weight": None, "supersedes_block_id": None}]) if ready else None}
+                if parse_project_brief_markdown(path.read_text(encoding="utf-8"))[1] != digest:
+                    raise ConsoleConflict("Flow changed while preparing the preview; reload")
+            return result
+        except ProjectModelError as exc:
+            raise ConsoleError(str(exc)) from exc
+
     def prepare_work_unit(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Prepare the existing task-creation envelope; dispatch owns confirmation."""
         if not isinstance(payload, dict) or set(payload) != {"kind", "template_id", "name", "objective", "project_id", "ctrl_id", "parent_goal_id", "request_id"}:
@@ -17107,6 +17179,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.FORBIDDEN, "unit preparation requires strict loopback authorization")
                     return
                 self._json(HTTPStatus.OK, self.server.app.prepare_work_unit(self._payload()))
+                return
+            if path == "/api/project-flow":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "Flow editing requires strict loopback authorization")
+                    return
+                self._json(HTTPStatus.OK, self.server.app.project_flow_command(self._payload()))
                 return
             if path in {"/api/tasks/create", "/api/tasks/message"}:
                 if not self._authorized_auto():

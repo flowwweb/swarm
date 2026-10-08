@@ -3018,18 +3018,18 @@ function projectViewMapModel(projection, selectedGroupId = "") {
   return { nodes, nodesById, edges: visibleEdges, layers: layers.filter(Boolean), selectedGroup };
 }
 
-function projectViewMapNodeMarkup(node, model) {
+function projectViewMapNodeMarkup(node, model, editFlow = false) {
   const hasChildren = model.nodes.some((candidate) => candidate.groupId === node.id && candidate.visibility !== "hidden" && !["runtime", "data", "state"].includes(candidate.type));
   const hasEvidence = Boolean(node.screen_key && projectViewEvidence(node.screen_key).length);
   const requirementSummary = projectViewRequirementText([node.id, node.screen_key]);
-  const action = hasChildren ? ' data-project-map-group="' + escapeHTML(node.id) + '"' : hasEvidence ? ' data-project-view-evidence="' + escapeHTML(node.screen_key) + '"' : ' aria-disabled="true"';
-  const actionLabel = hasChildren ? "Open " + node.label + " group" : hasEvidence ? "Open evidence for " + node.label : node.label + ", evidence unavailable";
+  const action = editFlow ? ' data-flow-node="' + escapeHTML(node.id) + '"' : hasChildren ? ' data-project-map-group="' + escapeHTML(node.id) + '"' : hasEvidence ? ' data-project-view-evidence="' + escapeHTML(node.screen_key) + '"' : ' aria-disabled="true"';
+  const actionLabel = editFlow ? "Inspect " + node.label : hasChildren ? "Open " + node.label + " group" : hasEvidence ? "Open evidence for " + node.label : node.label + ", evidence unavailable";
   const kind = hasChildren ? '<span class="project-ui-node-kind">Group</span>' : node.visibility === "conditional" ? '<span class="project-ui-node-kind">Conditional</span>' : "";
   return '<button class="project-ui-flowchart-node' + (hasChildren ? " is-group" : "") + '" type="button" data-project-map-node="' + escapeHTML(node.id) + '"' + action + ' aria-label="' + escapeHTML(actionLabel) + '"><span>' + escapeHTML(node.label) + '</span><small>' + escapeHTML(node.id) + '</small>' + kind + (requirementSummary ? '<small class="project-ui-requirements">' + escapeHTML(requirementSummary) + '</small>' : '') + '</button>';
 }
 
-function projectViewMapMarkup(projection) {
-  const model = projectViewMapModel(projection, state.projectUiGroupId);
+function projectViewMapMarkup(projection, editFlow = false) {
+  const model = projectViewMapModel(projection, editFlow ? "" : state.projectUiGroupId);
   if (!model) return '<section class="project-ui-map is-unavailable" aria-label="App Map"><p class="empty-state" role="status">Flowchart unavailable. The accepted map projection could not be rendered safely.</p></section>';
   const parentGroupId = model.selectedGroup?.groupId || "";
   const heading = model.selectedGroup
@@ -3039,12 +3039,12 @@ function projectViewMapMarkup(projection) {
     ? model.edges.map((edge) => '<li>' + escapeHTML((model.nodesById.get(edge.source)?.label || edge.source) + " to " + (model.nodesById.get(edge.target)?.label || edge.target) + (edge.label ? ": " + edge.label : "")) + '</li>').join("")
     : '<li>No graph connections</li>';
   const paths = model.edges.map((edge) => '<path data-project-map-edge="' + escapeHTML(edge.id) + '" data-source="' + escapeHTML(edge.source) + '" data-target="' + escapeHTML(edge.target) + '" marker-end="url(#project-map-arrow)"></path>').join("");
-  const layers = model.layers.map((layer, index) => '<div class="project-ui-flowchart-layer" data-flow-layer="' + index + '">' + layer.map((node) => projectViewMapNodeMarkup(node, model)).join("") + '</div>').join("");
+  const layers = model.layers.map((layer, index) => '<div class="project-ui-flowchart-layer" data-flow-layer="' + index + '">' + layer.map((node) => projectViewMapNodeMarkup(node, model, editFlow)).join("") + '</div>').join("");
   return '<section class="project-ui-map" aria-label="App Map">' + heading + '<div class="project-ui-flowchart"><svg class="project-ui-flowchart-connectors" aria-hidden="true" focusable="false"><defs><marker id="project-map-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker></defs>' + paths + '</svg><div class="project-ui-flowchart-layers">' + layers + '</div><ul class="sr-only" aria-label="Map connections">' + connectionList + '</ul></div></section>';
 }
 
-function drawProjectViewConnectors() {
-  const stage = $(".project-ui-flowchart");
+function drawProjectViewConnectors(container = document) {
+  const stage = $(".project-ui-flowchart", container);
   if (!stage) return;
   const svg = $(".project-ui-flowchart-connectors", stage);
   if (!svg) return;
@@ -3114,6 +3114,140 @@ function projectWorkspaceModeView(projection, modeId, views = projectWorkspaceVi
   const viewId = typeof mode?.view_id === "string" && mode.view_id.trim() ? mode.view_id.trim() : mode?.id;
   return views.find((view) => view.id === viewId) || null;
 }
+
+// Ephemeral editor state only. Definitions and version history live in SWARM.md.
+const flowEditor = { projectId: "", projection: null, draft: null, saved: null, nodeId: "", pending: false, dirty: false, invalidInputs: new Map(), message: "", preview: null, trigger: null, generation: 0 };
+
+function selectFlowDefinition(definition) {
+  flowEditor.saved = definition || null;
+  flowEditor.draft = structuredClone(definition || flowEditor.projection.starter);
+  delete flowEditor.draft.digest;
+  if (definition) flowEditor.draft.version = Math.max(...flowEditor.projection.definitions.filter((item) => item.id === definition.id).map((item) => item.version)) + 1;
+  flowEditor.nodeId = flowEditor.draft.nodes[0]?.id || "";
+  flowEditor.dirty = !definition;
+  flowEditor.preview = null;
+  flowEditor.invalidInputs.clear();
+}
+
+function renderFlowEditor() {
+  const host = $("#flow-editor-content");
+  const focusedField = host.contains(document.activeElement) ? document.activeElement?.dataset?.flowField : "";
+  const draft = flowEditor.draft;
+  const invalid = flowEditor.invalidInputs.size > 0;
+  $("#flow-editor-status").textContent = invalid ? "Fix input references for " + [...flowEditor.invalidInputs.keys()].join(", ") + ": enter a valid JSON array, or Reload to discard the draft. Your text is retained." : flowEditor.message;
+  $("#flow-save").disabled = flowEditor.pending || invalid || !draft || !flowEditor.dirty;
+  $("#flow-preview").disabled = flowEditor.pending || invalid || !flowEditor.saved || flowEditor.dirty;
+  if (!draft) { host.innerHTML = '<p class="empty-state">' + escapeHTML(flowEditor.pending ? "Loading Flow…" : "No project Flow could be loaded.") + '</p>'; return; }
+  const node = draft.nodes.find((item) => item.id === flowEditor.nodeId);
+  const field = (name, label, value, multiline = false) => '<label class="profile-field"><span>' + label + '</span>' + (multiline ? '<textarea rows="3"' : '<input') + ' aria-label="' + escapeHTML(label) + '" data-flow-field="' + name + '"' + (flowEditor.pending ? ' disabled' : '') + (multiline ? '>' + escapeHTML(value) + '</textarea>' : ' value="' + escapeHTML(value) + '">') + '</label>';
+  const definitions = flowEditor.projection.definitions;
+  const options = definitions.map((item, index) => '<option value="' + index + '"' + (item.id === flowEditor.saved?.id && item.version === flowEditor.saved?.version ? ' selected' : '') + '>' + escapeHTML(item.id + " · v" + item.version) + '</option>').join("");
+  const graph = { nodes: draft.nodes.map((item) => ({id:item.id,label:item.id,type:"flow",visibility:"visible"})), edges: draft.nodes.flatMap((item) => item.dependencies.map((id) => ({source:id,target:item.id}))) };
+  host.innerHTML = '<div class="review-actions"><label class="profile-field">Saved versions <select data-flow-version' + (flowEditor.pending ? ' disabled' : '') + '><option value="">Choose a version</option>' + options + '</select></label><button type="button" class="quiet-button" data-flow-action="duplicate">Duplicate</button><button type="button" class="quiet-button" data-flow-action="blank">Blank Flow</button><button type="button" class="quiet-button" data-flow-action="reload">Reload</button></div>' +
+    '<p>Draft v' + draft.version + ' · Saving adds a version; retained versions stay unchanged.</p>' + field("flow-objective", "Flow objective", draft.objective) +
+    '<div class="flow-editor-grid"><div>' + projectViewMapMarkup({map:graph}, true).replaceAll('project-map-arrow', 'flow-editor-arrow') + '</div><fieldset' + (flowEditor.pending ? ' disabled' : '') + '><legend>Node ' + escapeHTML(node?.id || "") + '</legend>' + (node ? field("objective", "Objective", node.objective, true) + field("owner_id", "Accountable owner ID", node.owner_id) + field("capability", "Required capability", node.capability) + field("completion", "Completion requirement", node.completion, true) + '<details' + (flowEditor.invalidInputs.has(node.id) ? ' open' : '') + '><summary>Inputs, outputs and proof</summary>' + field("dependencies", "Prerequisite node IDs (comma separated)", node.dependencies.join(", ")) + field("inputs", "Input references (JSON)", flowEditor.invalidInputs.get(node.id) ?? JSON.stringify(node.inputs), true) + field("outputs", "Output references (comma separated)", node.outputs.join(", ")) + field("proof_classes", "Proof classes (comma separated)", node.proof_classes.join(", ")) + '</details>' : '') + '<button class="quiet-button" type="button" data-flow-action="add">Add node</button></fieldset></div>' +
+    (flowEditor.preview ? '<section class="panel" aria-label="Next task preview"><h3>' + escapeHTML(flowEditor.preview.readiness + " · " + flowEditor.preview.node_id) + '</h3><p>' + escapeHTML(flowEditor.preview.reason) + '</p><pre>' + escapeHTML(flowEditor.preview.instruction) + '</pre></section>' : '') + '<p>No tasks are dispatched from this preview.</p>';
+  requestAnimationFrame(() => drawProjectViewConnectors($("#flow-editor-dialog")));
+  if (focusedField) $$('[data-flow-field]', host).find((item) => item.dataset.flowField === focusedField)?.focus({preventScroll:true});
+}
+
+async function loadFlowEditor(trigger, reload = false) {
+  const projectId = selectedProgressProjectId();
+  if (!projectId) return;
+  flowEditor.trigger = trigger || flowEditor.trigger;
+  const dialog = $("#flow-editor-dialog");
+  if (!dialog.open) dialog.showModal();
+  if (!reload && flowEditor.projectId === projectId && flowEditor.draft) { renderFlowEditor(); return; }
+  const generation = ++flowEditor.generation;
+  Object.assign(flowEditor, {projectId, pending:true, projection:null, draft:null, saved:null, preview:null, message:"Loading Flow…"});
+  renderFlowEditor();
+  try {
+    const result = await api("/api/project-flow", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({operation:"read",project_id:projectId}),timeoutMs:15000});
+    if (generation !== flowEditor.generation || projectId !== selectedProgressProjectId()) return;
+    if (result?.ok !== true || result.project_id !== projectId || !Array.isArray(result.definitions) || !result.starter) throw new Error("Flow response does not match this project.");
+    flowEditor.projection = result;
+    selectFlowDefinition(result.definitions.at(-1));
+    flowEditor.message = result.definitions.length ? "Choose a node to inspect or edit." : "Start with Create. Assign an owner before previewing.";
+  } catch (error) { if (generation === flowEditor.generation && projectId === selectedProgressProjectId()) flowEditor.message = error.message; }
+  finally { if (generation === flowEditor.generation) { flowEditor.pending = false; renderFlowEditor(); } }
+}
+
+async function submitFlowEditor(operation) {
+  if (flowEditor.pending || flowEditor.invalidInputs.size || !flowEditor.projection || flowEditor.projectId !== selectedProgressProjectId()) return;
+  const generation = ++flowEditor.generation, projectId = flowEditor.projectId;
+  const payload = {operation, project_id:projectId, expected_digest:flowEditor.projection.source_digest};
+  if (operation === "save") Object.assign(payload, {definition:structuredClone(flowEditor.draft),acknowledge:true});
+  else {
+    if (!flowEditor.saved || flowEditor.dirty) return;
+    Object.assign(payload, {flow_id:flowEditor.saved.id,version:flowEditor.saved.version,flow_digest:flowEditor.saved.digest});
+  }
+  flowEditor.pending = true; flowEditor.message = operation === "save" ? "Saving version…" : "Checking preview…"; renderFlowEditor();
+  try {
+    const result = await api("/api/project-flow", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),timeoutMs:15000});
+    if (generation !== flowEditor.generation || projectId !== selectedProgressProjectId()) return;
+    if (result?.ok !== true || result.project_id !== projectId || !Array.isArray(result.definitions)) throw new Error("Flow response does not match this project. Draft retained.");
+    flowEditor.projection = result;
+    if (operation === "save") {
+      const saved = result.definitions.find((item) => item.id === payload.definition.id && item.version === payload.definition.version);
+      if (!saved) throw new Error("Save was not confirmed. Draft retained; reload before retrying.");
+      selectFlowDefinition(saved); flowEditor.message = "Version " + saved.version + " saved.";
+    } else { flowEditor.preview = result.preview; flowEditor.message = "Preview only. Nothing has been dispatched."; }
+  } catch (error) { if (generation === flowEditor.generation && projectId === selectedProgressProjectId()) flowEditor.message = error.message + " Your draft is retained."; }
+  finally { if (generation === flowEditor.generation) { flowEditor.pending = false; renderFlowEditor(); } }
+}
+
+function flowEditorAction(action, trigger) {
+  if (flowEditor.pending) return;
+  if (action === "open") return loadFlowEditor(trigger);
+  if (action === "close") return $("#flow-editor-dialog").close();
+  if (action === "reload") {
+    if (!flowEditor.dirty || window.confirm("Discard this draft and reload saved versions?")) return loadFlowEditor(null, true);
+    return;
+  }
+  if (!flowEditor.draft) return;
+  if (action === "save" || action === "preview") return submitFlowEditor(action);
+  if (action === "duplicate" || action === "blank") {
+    if (flowEditor.invalidInputs.size && !window.confirm("Discard invalid input text before creating a new draft?")) return;
+    flowEditor.invalidInputs.clear();
+    const draft = structuredClone(action === "blank" ? flowEditor.projection.starter : flowEditor.draft);
+    draft.id = assetOperationId("flow"); draft.version = 1;
+    if (action === "blank") { draft.objective = "Define the outcome"; draft.nodes = draft.nodes.slice(0, 1); }
+    Object.assign(flowEditor, {draft,saved:null,nodeId:draft.nodes[0].id,dirty:true,preview:null,message:"New draft. No acceptance or run history is copied."});
+  } else if (action === "add") {
+    const node = structuredClone(flowEditor.projection.starter.nodes[0]);
+    node.id = assetOperationId("node"); node.objective = "Define this step";
+    flowEditor.draft.nodes.push(node); flowEditor.nodeId = node.id; flowEditor.dirty = true; flowEditor.preview = null;
+  }
+  renderFlowEditor();
+}
+
+$("#flow-editor-dialog").addEventListener("cancel", (event) => { if (flowEditor.pending) event.preventDefault(); });
+$("#flow-editor-dialog").addEventListener("close", () => { flowEditor.generation++; flowEditor.trigger?.isConnected && flowEditor.trigger.focus(); });
+$("#flow-editor-content").addEventListener("change", (event) => {
+  if (flowEditor.pending || !flowEditor.draft) return;
+  if (event.target.matches('[data-flow-version]')) {
+    const selected = flowEditor.projection.definitions[Number(event.target.value)];
+    if (event.target.value !== "" && selected && (!flowEditor.dirty || window.confirm("Discard this draft and inspect the selected version?"))) { selectFlowDefinition(selected); flowEditor.message = "Retained version loaded. Edits create a new version."; renderFlowEditor(); }
+    return;
+  }
+  const field = event.target.dataset.flowField;
+  if (!field) return;
+  flowEditor.dirty = true; flowEditor.preview = null;
+  try {
+    const node = flowEditor.draft.nodes.find((item) => item.id === flowEditor.nodeId);
+    if (field === "inputs") flowEditor.invalidInputs.set(node.id, event.target.value);
+    const value = field === "inputs" ? JSON.parse(event.target.value) : ["dependencies", "outputs", "proof_classes"].includes(field) ? event.target.value.split(",").map((item) => item.trim()).filter(Boolean) : event.target.value;
+    if (field === "inputs") {
+      if (!Array.isArray(value)) throw new Error("Input references require an array");
+      flowEditor.invalidInputs.delete(node.id);
+    }
+    if (field === "flow-objective") flowEditor.draft.objective = value;
+    else if (node && Object.hasOwn(node, field)) node[field] = value;
+    flowEditor.dirty = true; flowEditor.preview = null; flowEditor.message = "Unsaved draft. Save a version before previewing.";
+    renderFlowEditor();
+  } catch { renderFlowEditor(); }
+});
+window.addEventListener("resize", () => { if ($("#flow-editor-dialog").open) requestAnimationFrame(() => drawProjectViewConnectors($("#flow-editor-dialog"))); });
 
 function projectWorkspaceFlowMarkup(view) {
   const graph = view?.content?.graph || (Array.isArray(view?.content?.nodes) && Array.isArray(view?.content?.edges)
@@ -6474,6 +6608,10 @@ document.addEventListener("click", async (event) => {
     requestAnimationFrame(() => $("[data-project-map-node]")?.focus({ preventScroll: true }));
     return;
   }
+  const flowAction = event.target.closest("[data-flow-action]");
+  if (flowAction) { flowEditorAction(flowAction.dataset.flowAction, flowAction); return; }
+  const flowNode = event.target.closest("[data-flow-node]");
+  if (flowNode && !flowEditor.pending) { flowEditor.nodeId = flowNode.dataset.flowNode; renderFlowEditor(); $('[data-flow-field="objective"]', $("#flow-editor-content"))?.focus(); return; }
   const projectViewEvidenceTrigger = event.target.closest("[data-project-view-evidence]");
   if (projectViewEvidenceTrigger) {
     openProjectViewEvidence(projectViewEvidenceTrigger.dataset.projectViewEvidence, projectViewEvidenceTrigger);

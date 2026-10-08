@@ -6,6 +6,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 
@@ -481,6 +482,146 @@ class ProjectModelViewsTests(unittest.TestCase):
     def test_plugin_module_is_exact_mirror(self):
         plugin = CONSOLE_ROOT.parent / "plugins" / "swarm" / "console" / "project_model_views.py"
         self.assertEqual((CONSOLE_ROOT / "project_model_views.py").read_bytes(), plugin.read_bytes())
+
+
+class FlowDefinitionTests(unittest.TestCase):
+    def definition(self, identity="create", version=1):
+        nodes = []
+        for index, name in enumerate(("brief", "approach", "produce", "check", "accept")):
+            previous = nodes[-1]["id"] if nodes else None
+            nodes.append({
+                "id": name, "objective": f"SWARM {name}", "owner_id": "owner-" + name,
+                "capability": name, "dependencies": [previous] if previous else [],
+                "inputs": [{"node_id": previous, "output_id": "result"}] if previous else [],
+                "outputs": ["result"], "completion": "Return the bound artifact and required proof",
+                "proof_classes": ["HUMAN" if name == "accept" else "SOURCE_STATIC"],
+            })
+        return self.seal({"id": identity, "version": version, "objective": "Create a bounded SWARM increment", "nodes": nodes})
+
+    def seal(self, definition):
+        definition["digest"] = "sha256:" + views._digest({key: value for key, value in definition.items() if key != "digest"})
+        return definition
+
+    def test_valid_definition_is_detached_and_not_acceptance(self):
+        definition = self.definition()
+        result = views.validate_flow_definition(definition)
+        result["nodes"][0]["objective"] = "edited draft"
+        self.assertNotEqual(result, definition)
+        self.assertNotIn("accepted", definition)
+        self.assertNotIn("run", definition)
+
+    def test_invalid_graph_and_unknown_proof_are_rejected(self):
+        mutations = (
+            lambda d: d["nodes"].append(copy.deepcopy(d["nodes"][0])),
+            lambda d: d["nodes"][0].update(dependencies=["accept"]),
+            lambda d: d["nodes"][1].update(dependencies=["missing"]),
+            lambda d: d["nodes"][1].update(inputs=[{"node_id": "accept", "output_id": "result"}]),
+            lambda d: d["nodes"][1].update(inputs=[{"node_id": "brief", "output_id": "missing"}]),
+            lambda d: d["nodes"][0].update(owner_id=""),
+            lambda d: d["nodes"][0].update(proof_classes=["MODEL_SAYS_HUMAN_APPROVED"]),
+            lambda d: d["nodes"][0].update(accepted=True),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                definition = self.definition()
+                mutate(definition)
+                with self.assertRaises(views.ProjectModelError):
+                    views.validate_flow_definition(self.seal(definition))
+
+    def test_tampered_pinned_bytes_fail_on_reload(self):
+        definition = self.definition()
+        definition["nodes"][0]["objective"] = "mutated after pin"
+        with self.assertRaisesRegex(views.ProjectModelError, "digest mismatch"):
+            views.parse_project_brief_markdown(markdown_fixture(project_fixture("swarm", flow_definitions=[definition])))
+
+    def test_versions_append_through_existing_writer_and_keep_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "SWARM.md"
+            path.write_text(markdown_fixture(project_fixture("swarm")), encoding="utf-8")
+            first = self.definition()
+            _, digest = views.parse_project_brief_markdown(path.read_text(encoding="utf-8"))
+
+            def append(definition, expected):
+                return views.mutate_project_brief(path, expected_digest=expected, operation="create", collection="flow_definitions",
+                    record_id=definition["id"], changes={key: value for key, value in definition.items() if key != "id"}, updated_at="2026-10-08T00:00:00Z")
+
+            next_digest = append(first, digest)
+            with self.assertRaisesRegex(views.ProjectModelError, "digest conflict"):
+                append(self.definition(version=2), digest)
+            with self.assertRaisesRegex(views.ProjectModelError, "last retained"):
+                append(first, next_digest)
+            second = self.definition(version=2)
+            second["nodes"][0]["objective"] = "Revised brief"
+            next_digest = append(self.seal(second), next_digest)
+            next_digest = append(self.definition(identity="create-copy"), next_digest)
+            restarted, actual_digest = views.parse_project_brief_markdown(path.read_text(encoding="utf-8"))
+            self.assertEqual(actual_digest, next_digest)
+            self.assertEqual(restarted["flow_definitions"][0], first)
+            self.assertEqual([(item["id"], item["version"]) for item in restarted["flow_definitions"]], [("create", 1), ("create", 2), ("create-copy", 1)])
+            with self.assertRaisesRegex(views.ProjectModelError, "append-only"):
+                views.mutate_project_brief(path, expected_digest=next_digest, operation="update", collection="flow_definitions", record_id="create", changes={"objective": "rewrite"}, updated_at="today")
+
+    def test_api_saved_versions_preview_and_restart_use_real_brief_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "SWARM.md"
+            path.write_text(markdown_fixture(project_fixture("swarm")), encoding="utf-8")
+            agents = [{"id": "owner-brief", "project_id": "swarm", "archived": False}]
+            def app():
+                return SimpleNamespace(_canonical_project_root=lambda *args: root,
+                    _canonical_project_identities=lambda project: frozenset({project}),
+                    _observed_scope=lambda **kwargs: ({}, agents, {}, {}))
+            def call(payload):
+                return server.App.project_flow_command(app(), {"project_id": "swarm", **payload})
+            original = call({"operation": "read"})
+            self.assertEqual(original["definitions"], [])
+            definition = self.definition()
+            definition["nodes"][0]["objective"] = "  Frame the cafe\u0301 outcome\nKeep the bound scope  "
+            definition["nodes"][0]["completion"] = "  Return the artifact\nInclude its proof\tand identity  "
+            self.seal(definition)
+            draft = {key: value for key, value in definition.items() if key != "digest"}
+            save = {"operation": "save", "expected_digest": original["source_digest"], "definition": draft, "acknowledge": True}
+            with self.assertRaises(server.ConsoleError):
+                call({**save, "acknowledge": False})
+            saved = call(save)
+            self.assertEqual(saved["definitions"], [definition])
+            self.assertEqual(call({"operation": "read"})["definitions"], [definition])
+            request = {"operation": "preview", "expected_digest": saved["source_digest"], "flow_id": "create", "version": 1, "flow_digest": definition["digest"]}
+            preview = call(request)["preview"]
+            self.assertEqual(preview["readiness"], "READY")
+            self.assertEqual(preview["node_id"], "brief")
+            self.assertFalse(preview["dispatch_available"])
+            self.assertEqual(preview["waiting_node_ids"], ["approach", "produce", "check", "accept"])
+            self.assertEqual(preview["task_manifest_draft"]["task_id"], "draft-only")
+            self.assertEqual(preview["task_manifest_draft"]["task_name"], "Frame the café outcome Keep the bound scope")
+            self.assertEqual(preview["task_manifest_draft"]["milestones"][0]["title"], "Frame the café outcome Keep the bound scope")
+            self.assertEqual(preview["task_manifest_draft"]["blocks"][0]["title"], "Return the artifact Include its proof and identity")
+            self.assertIn(definition["nodes"][0]["objective"], preview["instruction"])
+            self.assertIn(definition["nodes"][0]["completion"], preview["instruction"])
+            self.assertEqual(preview, call(request)["preview"])
+            for field, value in (("flow_digest", "sha256:" + "a" * 64), ("expected_digest", original["source_digest"]), ("version", 2)):
+                with self.subTest(field=field), self.assertRaises(server.ConsoleConflict):
+                    call({**request, field: value})
+            for forged in ({"accepted": True}, {"receipts": ["user approved", "deployed"]}, {"node_id": "accept"}):
+                with self.assertRaises(server.ConsoleError):
+                    call({**request, **forged})
+            agents[0]["project_id"] = "another-project"
+            self.assertEqual(call(request)["preview"]["readiness"], "WAITING")
+            agents[0]["project_id"] = "swarm"
+            agents[0]["id"] = "wrong-owner"
+            self.assertEqual(call(request)["preview"]["readiness"], "WAITING")
+            with self.assertRaises(server.ConsoleError):
+                server.App.project_flow_command(app(), {"operation": "read", "project_id": "foreign"})
+            next_draft = copy.deepcopy(draft)
+            next_draft["version"] = 2
+            next_draft["nodes"][0]["proof_classes"] = ["HUMAN"]
+            current = call({**save, "expected_digest": saved["source_digest"], "definition": next_draft})
+            with self.assertRaises(server.ConsoleConflict):
+                call(request)
+            pinned = call({**request, "expected_digest": current["source_digest"]})
+            self.assertEqual(pinned["definitions"][0], definition)
+            human_request = {**request, "expected_digest": current["source_digest"], "version": 2, "flow_digest": current["definitions"][-1]["digest"]}
+            self.assertEqual(call(human_request)["preview"]["readiness"], "WAITING")
 
 
 if __name__ == "__main__":

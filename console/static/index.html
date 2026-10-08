@@ -133,7 +133,7 @@
             <section class="panel run-log" id="run-log-overview" data-run-log-surface="overview" aria-label="Current CTRL run log" hidden></section>
             <section class="overview-section project-progress-section panel" id="project-progress-section" aria-labelledby="project-progress-heading" hidden><header class="overview-section-head"><div><p class="eyebrow">Material progress</p><h2 id="project-progress-heading">Latest updates</h2></div><p id="project-progress-status" aria-live="polite">No material updates yet</p></header><ol class="project-progress-feed" id="project-progress-feed"></ol></section>
             </div>
-            <section class="project-detail" id="project-detail" hidden aria-labelledby="project-detail-title"><header class="project-detail-head panel"><div><p class="eyebrow">Project</p><h2 id="project-detail-title">Project</h2><p id="project-detail-status">Waiting for project receipts</p></div><div class="project-detail-summary" id="project-detail-summary"></div></header><div class="project-tab-panel" id="project-tab-panel" role="region" aria-label="Project overview" tabindex="0"></div></section>
+            <section class="project-detail" id="project-detail" hidden aria-labelledby="project-detail-title"><header class="project-detail-head panel"><div><p class="eyebrow">Project</p><h2 id="project-detail-title">Project</h2><p id="project-detail-status">Waiting for project receipts</p><button class="quiet-button" type="button" data-flow-action="open">Edit Flow</button></div><div class="project-detail-summary" id="project-detail-summary"></div></header><div class="project-tab-panel" id="project-tab-panel" role="region" aria-label="Project overview" tabindex="0"></div></section>
           </div>
         </section>
         <section class="view agents-view" id="view-agents" data-view-panel="agents" role="tabpanel" aria-labelledby="tab-agents" tabindex="0" hidden>
@@ -273,6 +273,13 @@
         <header class="dialog-header repair-dialog-header"><div><p class="eyebrow">Repair with Codex</p><h2 id="repair-dialog-title">Review the repair request</h2></div><button class="icon-button" id="repair-close" type="button" aria-label="Close repair preview"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
         <div class="dialog-body edge-scroll repair-dialog-body"><div class="dialog-body-content repair-dialog-content"><div id="repair-preview"></div><label class="repair-acknowledgement"><input id="repair-acknowledge" type="checkbox"><span>I understand this prepares a repair request for the selected checks.</span></label><aside id="repair-dispatch-note"></aside></div></div>
         <footer class="dialog-footer repair-dialog-footer"><p id="repair-status" role="status">Preview the selected checks before preparing a request.</p><div><button class="quiet-button" id="repair-cancel" type="button">Cancel</button><button class="primary-action" id="repair-confirm" type="button" disabled>Prepare repair request</button></div></footer>
+      </div>
+    </dialog>
+    <dialog class="config-editor-dialog" id="flow-editor-dialog" aria-labelledby="flow-editor-title" aria-describedby="flow-editor-status">
+      <div class="dialog-shell config-editor-shell">
+        <header class="dialog-header config-editor-header"><h2 id="flow-editor-title">Create Flow</h2><button class="icon-button" type="button" data-flow-action="close" aria-label="Close Flow editor"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
+        <div class="dialog-body edge-scroll config-editor-body"><div class="dialog-body-content config-editor-content" id="flow-editor-content"></div></div>
+        <footer class="dialog-footer config-editor-footer"><p id="flow-editor-status" role="status"></p><div class="review-actions"><button class="quiet-button" type="button" id="flow-preview" data-flow-action="preview" disabled>Preview next task</button><button class="primary-action" type="button" id="flow-save" data-flow-action="save" disabled>Save version</button></div></footer>
       </div>
     </dialog>
     <dialog class="config-editor-dialog" id="config-editor-dialog" aria-labelledby="config-editor-title" aria-describedby="config-editor-status">
