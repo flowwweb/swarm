@@ -4383,6 +4383,13 @@ class Ledger:
             "effective_at_ms": effective,
             "projection_digest": "",
             "nodes": sorted(nodes, key=lambda item: (item["node_kind"], item["node_id"])),
+            "accepted_block_points": sum(
+                event.topology_node_kind == "BLOCK"
+                and event.event_kind is ProgressEventKind.ACCEPTED
+                and event.lifecycle_state is ProgressLifecycle.ACCEPTED
+                and bool(event.release_receipt_ids)
+                for _, event in latest_by_block.values()
+            ),
             "edges": edges,
             "ready_waves": ready_waves,
             "critical_path": {

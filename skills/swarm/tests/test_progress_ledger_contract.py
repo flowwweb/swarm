@@ -2235,6 +2235,60 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(projection["critical_path"]["node_ids"], ["a", "b", "c"])
         self.assertFalse(projection["critical_path"]["partial"])
 
+    def test_accepted_block_points_deduplicate_acceptance_and_replay(self) -> None:
+        accepted = self.topology_event(
+            "block-accepted", "work", kind="ACCEPTED", lifecycle="ACCEPTED",
+            release_receipts=["lead-review-1"],
+        )
+        self.ledger.append(accepted)
+        self.assertEqual(self.ledger.append(accepted)["status"], "unchanged")
+        self.ledger.append({**accepted, "event_id": "acceptance-delivery-again"})
+        self.ledger.append(self.topology_event(
+            "block-accepted-again", "work", kind="ACCEPTED", lifecycle="ACCEPTED",
+            release_receipts=["lead-review-1"], observed_at_ms=2,
+        ))
+        projection = Ledger(self.root).project_topology("project-alpha", "ctrl-alpha")
+        self.assertEqual(projection["accepted_block_points"], 1)
+        self.assertEqual(projection, self.ledger.project_topology("project-alpha", "ctrl-alpha"))
+
+    def test_accepted_block_points_withdraw_on_rework_and_restore_once(self) -> None:
+        accepted = self.topology_event(
+            "accepted", "work", kind="ACCEPTED", lifecycle="ACCEPTED",
+            release_receipts=["lead-review-1"],
+        )
+        self.ledger.append(accepted)
+        self.assertEqual(self.ledger.project_topology("project-alpha", "ctrl-alpha")["accepted_block_points"], 1)
+        for index, (kind, lifecycle) in enumerate([
+            ("PROOF_INVALIDATED", "INVALIDATED_REWORK"),
+            ("STATE_CHANGED", "ACTIVE"),
+            ("PROOF_ADMITTED", "VERIFIED"),
+        ], 2):
+            self.ledger.append(self.topology_event(
+                f"rework-{index}", "work", kind=kind, lifecycle=lifecycle,
+                release_receipts=["lead-review-1"], observed_at_ms=index,
+            ))
+            self.assertEqual(self.ledger.project_topology("project-alpha", "ctrl-alpha")["accepted_block_points"], 0)
+        reaccepted = self.topology_event(
+            "reaccepted", "work", kind="ACCEPTED", lifecycle="ACCEPTED",
+            release_receipts=["lead-review-2"], observed_at_ms=5,
+        )
+        self.ledger.append(reaccepted)
+        self.ledger.append(reaccepted)
+        self.assertEqual(Ledger(self.root).project_topology("project-alpha", "ctrl-alpha")["accepted_block_points"], 1)
+        self.assertEqual(self.ledger.project_topology("project-alpha", "ctrl-alpha", through_cursor=2)["accepted_block_points"], 0)
+
+    def test_accepted_block_points_require_block_acceptance_receipt(self) -> None:
+        for event in [
+            self.topology_event("ready", "ready", lifecycle="READY"),
+            self.topology_event("proof", "proof", kind="PROOF_ADMITTED", lifecycle="VERIFIED", proof_receipts=["proof-1"]),
+            self.topology_event("missing-review", "missing-review", kind="ACCEPTED", lifecycle="ACCEPTED"),
+            self.topology_event("state-only", "state-only", kind="STATE_CHANGED", lifecycle="ACCEPTED", release_receipts=["lead-review-1"]),
+            self.topology_event("task-accepted", "task", node_kind="TASK", kind="ACCEPTED", lifecycle="ACCEPTED", release_receipts=["lead-review-task"]),
+            self.topology_event("lead-accepted", "lead", node_kind="LEAD", kind="ACCEPTED", lifecycle="ACCEPTED", release_receipts=["lead-review-lead"]),
+        ]:
+            self.ledger.append(event)
+        self.assertEqual(self.ledger.project_topology("project-alpha", "ctrl-alpha")["accepted_block_points"], 0)
+
     def test_empty_retry_handoff_proof_acceptance_timeline(self) -> None:
         events = [
             self.topology_event("create", "work", lifecycle="ACTIVE", dispatch_receipt="dispatch-1"),
