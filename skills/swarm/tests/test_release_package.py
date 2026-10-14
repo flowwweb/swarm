@@ -164,6 +164,26 @@ class ReleasePackageTests(unittest.TestCase):
             with zipfile.ZipFile(io.BytesIO(payload)) as archive:
                 self.assertTrue(set(development_files).isdisjoint(archive.namelist()))
 
+    def test_local_test_results_do_not_enter_packages_but_installed_extras_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = self.make_plugin(Path(temporary) / "source")
+            (source / ".git/info/exclude").write_text("test-results/\n", encoding="utf-8")
+            installed = Path(temporary) / "installed"
+            shutil.copytree(source, installed, ignore=shutil.ignore_patterns(".git"))
+            expected = source_file_hashes(source)
+            result = source / "test-results" / "report.json"
+            result.parent.mkdir()
+            result.write_text('{"local": true}\n', encoding="utf-8")
+            self.assertEqual(source_file_hashes(source), expected)
+            _, metadata = build_package_bytes(source)
+            self.assertEqual(metadata["files"], expected)
+            self.assertEqual(verifier.verify(source, installed), len(expected))
+            installed_result = installed / "test-results" / "report.json"
+            installed_result.parent.mkdir()
+            shutil.copy2(result, installed_result)
+            with self.assertRaisesRegex(ValueError, "extra=.*test-results/report.json"):
+                verifier.verify(source, installed)
+
     def test_source_hashes_ignore_a_worktree_git_pointer_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "worktree"

@@ -70,6 +70,7 @@ DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
         "plugins",
         "skills/swarm/evals",
         "skills/swarm/tests",
+        "test-results",
     }
 )
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
