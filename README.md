@@ -178,6 +178,20 @@ codex plugin add swarm@flowwweb
 
 Start a new task after reinstalling.
 
+## Initialize one project
+
+From the SWARM source or plugin root, select an existing project directory:
+
+```text
+python skills/swarm/scripts/swarm_init.py --root <exact-project-root>
+```
+
+This creates or adopts `SWARM.md` and a digest-bound `project.md` snapshot
+without overwriting existing documents. Missing metadata stays explicitly
+unknown. It does not create tasks, verify host bindings or initialize global
+configuration. See [project brief](skills/swarm/references/project-brief.md)
+for adoption, partial initialization and conflict handling.
+
 ## Configure SWARM
 
 SWARM uses one global TOML file: `~/.agents/swarm/config.toml`. Initialize it

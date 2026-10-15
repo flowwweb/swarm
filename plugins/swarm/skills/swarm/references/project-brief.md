@@ -6,6 +6,30 @@ README duplicate, PRD, prompt archive, or acceptance authority. A project may
 have deeper sources, but only this file is the intake brief bound to its first
 topology plan.
 
+## Initialize or adopt one project
+
+Run `python skills/swarm/scripts/swarm_init.py --root <exact-existing-root>`
+only for an explicitly selected project. This is separate from global config
+initialization. It creates missing `SWARM.md` and `project.md` exclusively,
+brief first. An interruption after brief creation can resume with the same ID.
+An interrupted, incomplete file remains visible and requires explicit recovery.
+
+`project.md` is a readable manifest snapshot/index: identity, purpose, scope,
+bindings, owners, milestone ID references and proof expectations. Its one-way
+provenance names the canonical brief digest and JSON pointers. It is not a
+second backlog or runtime authority; stale snapshots never override `SWARM.md`.
+Initialization creates no goals, claims, owners or host bindings. Missing
+metadata remains UNKNOWN with reasons; observed local Git facts do not verify
+a remote or app. A newly generated local project ID is not a host project ID.
+
+Adopt existing filename casing, content and timestamps unchanged. Reject
+case-insensitive collisions, invalid or ambiguous documents, conflicting IDs,
+symlinks/reparse paths and non-regular targets before creating either file.
+Existing valid briefs supply identity; a missing manifest is derived from that
+brief. Report stale provenance or a missing `project.md` link without editing
+the brief. An existing manifest alone cannot reconstruct a missing authoritative
+brief. User notes outside recognized document fences remain untouched.
+
 ## Required shape
 
 The file has a `swarm-project-brief:schema=1` marker and one JSON object in a
