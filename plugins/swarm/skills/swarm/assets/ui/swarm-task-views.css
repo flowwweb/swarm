@@ -1,0 +1,710 @@
+/* SWARM task views: Task Inspector and Milestone Groups.
+   Scoped to .stv and the classes rendered by swarm-task-views.js. Tokens use
+   the --sw-* vocabulary inherited from the host, with standalone fallbacks.
+   Recognized state labels receive presentation colors only; all other labels
+   remain neutral. No status, owner, progress or acceptance is inferred. */
+
+.stv {
+  --stv-bg: var(--sw-bg, #091321);
+  --stv-surface: var(--sw-surface, #102132);
+  --stv-raised: var(--sw-raised, #183047);
+  --stv-ink: var(--sw-ink, #f4f8ff);
+  --stv-muted: var(--sw-muted, #a9bace);
+  --stv-line: var(--sw-line, #455d75);
+  --stv-accent: var(--sw-accent, var(--sw-orange, #ff7a18));
+  --stv-red-orange: var(--sw-red-orange, #ff3d32);
+  --stv-cyan: var(--sw-cyan, #79d8de);
+  --stv-blue: var(--sw-blue, #86b8ff);
+  --stv-red: var(--sw-red, #ff9b9b);
+  --stv-radius: var(--sw-radius, 12px);
+  --stv-space: var(--sw-space, 4px);
+  --stv-accordion-ms: var(--sw-accordion-ms, 220ms);
+  --stv-update-ms: var(--sw-update-ms, 260ms);
+  --stv-target: 44px;
+  --stv-inner-radius: calc(var(--stv-radius) - 4px);
+  --stv-selected-bg: rgba(134, 184, 255, 0.16);
+  --stv-mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
+
+  position: relative;
+  display: grid;
+  gap: calc(var(--stv-space) * 3);
+  min-width: 0;
+  padding: calc(var(--stv-space) * 4);
+  border-radius: var(--stv-radius);
+  background: var(--stv-bg);
+  color: var(--stv-ink);
+  font: 400 0.9375rem/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+@supports (background: color-mix(in srgb, red 10%, blue)) {
+  .stv {
+    --stv-selected-bg: color-mix(in srgb, var(--stv-blue) 18%, var(--stv-surface));
+  }
+}
+
+.stv *,
+.stv *::before,
+.stv *::after {
+  box-sizing: border-box;
+}
+
+.stv [hidden] {
+  display: none !important;
+}
+
+.stv :focus-visible {
+  outline: 2px solid var(--stv-cyan);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------ status */
+
+.stv-status {
+  display: grid;
+  gap: var(--stv-space);
+  min-width: 0;
+}
+
+.stv-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-bottom: calc(var(--stv-space) * 4);
+  border-bottom: 1px solid var(--stv-line);
+}
+
+.stv-toolbar h1 { margin: 4px 0 0; font-size: 1.5rem; line-height: 1.2; }
+.stv-breadcrumb, .stv-record-kind, .stv-record-context { color: var(--stv-muted); font-size: 0.8125rem; }
+.stv-record-kind { margin: 0 0 8px; }
+.stv-record-context { margin: 12px 0; overflow-wrap: anywhere; }
+.stv-dependencies li { overflow-wrap: anywhere; }
+.stv-secondary-preview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.stv-secondary summary { display: flex; align-items: center; min-height: var(--stv-target); cursor: pointer; color: var(--stv-blue); list-style: none; }
+.stv-secondary summary::-webkit-details-marker { display: none; }
+.stv-secondary summary:hover { text-decoration: underline; }
+.stv-secondary-full { margin: 0; }
+.stv-secondary:has(> details[open]) > .stv-secondary-preview,
+.stv-secondary details[open] .stv-secondary-more,
+.stv-secondary details:not([open]) .stv-secondary-less { display: none; }
+.stv-filter { min-height: 44px; max-width: 100%; padding: 8px 12px; border: 1px solid var(--stv-line); border-radius: var(--stv-inner-radius); background: var(--stv-surface); color: var(--stv-ink); font: inherit; }
+.stv-filter::placeholder { color: var(--stv-muted); opacity: 1; }
+.stv-source, .stv-technical { min-width: 0; color: var(--stv-muted); font-size: 0.8125rem; }
+.stv-source summary, .stv-technical summary { cursor: pointer; min-height: 44px; display: list-item; align-content: center; }
+.stv-technical { margin-top: 24px; padding-top: 8px; border-top: 1px solid var(--stv-line); }
+.stv-technical .stv-fields { color: var(--stv-ink); }
+
+.stv-provenance,
+.stv-notice {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.stv-provenance {
+  color: var(--stv-muted);
+  font-size: 0.8125rem;
+}
+
+.stv-notice {
+  padding: 8px 12px;
+  border: 1px solid var(--stv-line);
+  border-radius: var(--stv-inner-radius);
+  background: var(--stv-surface);
+}
+
+.stv-notice:empty {
+  display: none;
+}
+
+.stv[data-stv-state="stale"] .stv-notice {
+  border-left-color: var(--stv-accent);
+}
+
+.stv[data-stv-state="error"] .stv-notice {
+  border-left-color: var(--stv-red-orange);
+  color: var(--stv-red);
+}
+
+.stv-view {
+  min-width: 0;
+  border-radius: var(--stv-inner-radius);
+}
+
+.stv-view:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* -------------------------------------------------- shared primitives */
+
+.stv-group-toggle,
+.stv-row-toggle,
+.stv-record-title,
+.stv-page-button,
+.stv-sheet-close {
+  appearance: none;
+  margin: 0;
+  min-height: var(--stv-target);
+  border: 1px solid var(--stv-line);
+  border-radius: var(--stv-inner-radius);
+  background: var(--stv-surface);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background-color var(--stv-update-ms) ease,
+    border-color var(--stv-update-ms) ease;
+}
+
+.stv-page-button,
+.stv-sheet-close {
+  padding: 0 16px;
+}
+
+.stv-page-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.stv-task-id,
+.stv-group-id,
+.stv-row-id {
+  min-width: 0;
+  color: var(--stv-muted);
+  font-family: var(--stv-mono);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.stv-state {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid var(--stv-line);
+  border-radius: 999px;
+  background: var(--stv-raised);
+  color: var(--stv-ink);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.stv-state[data-state="accepted"], .stv-state[data-state="completed"],
+.stv-state-mark[data-state="accepted"], .stv-state-mark[data-state="completed"] { color: var(--sw-green, #84d9a6); }
+.stv-state[data-state="active"], .stv-state[data-state="in_progress"],
+.stv-state-mark[data-state="active"], .stv-state-mark[data-state="in_progress"] { color: var(--stv-blue); }
+.stv-state[data-state="waiting"], .stv-state-mark[data-state="waiting"] { color: var(--stv-accent); }
+
+.stv-state-mark {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  color: var(--stv-muted);
+  background: transparent;
+}
+
+.stv-state-mark[data-state="unknown"] { border-style: dashed; }
+.stv-state[data-state="unknown"] { color: var(--stv-muted); }
+.stv-option-chevron { display: grid; place-items: center; color: var(--stv-muted); }
+
+.stv-empty,
+.stv-undeclared {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--stv-line);
+  border-radius: var(--stv-inner-radius);
+  color: var(--stv-muted);
+  overflow-wrap: anywhere;
+}
+
+.stv-undeclared {
+  border-style: dashed;
+  border-color: var(--stv-blue);
+}
+
+.stv-unbound-note {
+  margin: 0;
+  color: var(--stv-muted);
+  font-size: 0.8125rem;
+}
+
+.stv-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.stv-page-range {
+  color: var(--stv-muted);
+  font-size: 0.8125rem;
+}
+
+/* ------------------------------------------------------------ fields */
+
+.stv-fields {
+  display: grid;
+  margin: 0;
+  min-width: 0;
+}
+
+.stv-field {
+  display: grid;
+  grid-template-columns: minmax(0, 10rem) minmax(0, 1fr);
+  gap: 2px 12px;
+  min-width: 0;
+  padding: 6px 0;
+  border-top: 1px solid var(--stv-line);
+}
+
+.stv-field:first-child {
+  border-top: 0;
+}
+
+.stv-field dt {
+  color: var(--stv-muted);
+  font-size: 0.8125rem;
+}
+
+.stv-field dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.stv-field.is-unavailable dd {
+  color: var(--stv-muted);
+  font-style: italic;
+}
+
+.stv-field[data-field="id"] dd,
+.stv-field[data-field="source-pointer"] dd,
+.stv-field[data-field="record-digest"] dd {
+  font-family: var(--stv-mono);
+  font-size: 0.8125rem;
+}
+
+.stv-dependency-list {
+  margin: 0;
+  padding-left: 1.1em;
+}
+
+.stv-dependency-list [data-record="missing"] {
+  color: var(--stv-muted);
+}
+
+/* --------------------------------------------------------- inspector */
+
+.stv-inspector {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+
+.stv-inspector-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--stv-line);
+  border-radius: var(--stv-radius);
+  background: var(--stv-surface);
+}
+
+.stv-task-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stv-task-option {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 0;
+  min-height: var(--stv-target);
+  padding: 8px 12px 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--stv-inner-radius);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background-color var(--stv-update-ms) ease,
+    border-color var(--stv-update-ms) ease;
+}
+
+.stv-task-option:focus-visible {
+  outline-offset: -2px;
+}
+
+.stv-task-title {
+  grid-column: 2;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.stv-task-option > .stv-state-mark { grid-column: 1; grid-row: 1 / span 2; }
+.stv-task-option > .stv-state { grid-column: 2; justify-self: start; }
+.stv-task-option > .stv-option-chevron { grid-column: 3; grid-row: 1 / span 2; }
+
+.stv-task-option.is-selected {
+  border-color: var(--stv-blue);
+  background: var(--stv-selected-bg);
+}
+
+.stv-detail {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--stv-line);
+  border-radius: var(--stv-radius);
+  background: var(--stv-surface);
+}
+
+.stv-detail-title {
+  margin: 0 0 8px;
+  font-size: 1.5rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.stv-detail-placeholder {
+  margin: 0;
+  color: var(--stv-muted);
+}
+
+.stv-task-detail {
+  min-width: 0;
+}
+
+/* -------------------------------------------------------- milestones */
+
+.stv-milestones {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.stv-group {
+  min-width: 0;
+  border: 1px solid var(--stv-line);
+  border-radius: var(--stv-radius);
+  overflow: hidden;
+  background: var(--stv-surface);
+}
+
+.stv-group--unbound { border-style: dashed; }
+
+.stv-group-heading {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto var(--stv-target);
+  align-items: center;
+  gap: 4px 12px;
+  padding: 8px 12px;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: inherit;
+}
+
+.stv-group-toggle {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--stv-inner-radius);
+  background: transparent;
+  text-align: left;
+}
+
+.stv-group-toggle:focus-visible {
+  outline-offset: -2px;
+}
+
+.stv-chevron {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform var(--stv-accordion-ms) ease;
+}
+
+.stv-group-toggle[aria-expanded="true"] svg, .stv-row-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+.stv-group.is-expanded > .stv-group-heading { background: var(--stv-raised); }
+
+.stv-group-title {
+  margin: 0;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.stv-record-title { padding: 4px 0; border-color: transparent; background: transparent; text-align: left; font-weight: 600; }
+.stv-record-title:hover { color: var(--stv-blue); }
+.stv-group-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+
+.stv-group-count {
+  color: var(--stv-muted);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.stv-group-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--stv-line);
+  background: var(--stv-bg);
+}
+
+.stv-rows {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stv-row {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.stv-row-head {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto var(--stv-target);
+  align-items: center;
+  gap: 2px 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--stv-target);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.stv-row-toggle {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.stv-row.is-expanded > .stv-row-head {
+  outline: 1px solid var(--stv-blue);
+  outline-offset: -1px;
+  background: var(--stv-selected-bg);
+}
+
+.stv-row-head {
+  border-radius: var(--stv-inner-radius);
+  color: var(--stv-ink);
+}
+
+.stv-row[data-membership="conflict"] > .stv-row-toggle,
+.stv-row[data-membership="conflict"] > .stv-row-head {
+  border-color: var(--stv-accent);
+}
+
+.stv-row-title {
+  flex: 1 1 10rem;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.stv-row-note {
+  margin: 0;
+  padding: 0 12px;
+  color: var(--stv-muted);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.stv-row-detail {
+  min-width: 0;
+  margin-left: 16px;
+  padding: 4px 0 4px 12px;
+  border-left: 1px solid var(--stv-blue);
+}
+
+.stv-row-detail .stv-record-kind,
+.stv-row-detail > .stv-task-detail > .stv-state { display: none; }
+.stv-row-detail .stv-record-context { margin: 8px 0; }
+.stv-row-detail .stv-technical { margin-top: 12px; }
+
+/* ------------------------------------------------------------- hover */
+
+@media (hover: hover) {
+  .stv-task-option:hover,
+  .stv-group-toggle:hover,
+  .stv-row-toggle:hover,
+  .stv-sheet-close:hover,
+  .stv-page-button:hover:not(:disabled) {
+    background: var(--stv-raised);
+  }
+
+  .stv-task-option:not(.is-selected):hover,
+  .stv-row-toggle:hover,
+  .stv-page-button:hover:not(:disabled) {
+    border-color: var(--stv-line);
+  }
+
+  .stv-task-option.is-selected:hover {
+    background: var(--stv-selected-bg);
+  }
+}
+
+/* ------------------------------------------- narrow + bottom sheet */
+
+@media (max-width: 720px) {
+  .stv {
+    padding: 12px;
+  }
+
+  .stv-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stv-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stv-group-body {
+    padding-inline: 10px;
+  }
+
+  .stv-row-detail {
+    margin-left: 4px;
+  }
+
+  .stv-group-heading,
+  .stv-row-head { grid-template-columns: 16px minmax(0, 1fr) var(--stv-target); gap: 4px 8px; }
+  .stv-group-title, .stv-row-title { grid-column: 2; grid-row: 1; }
+  .stv-group-meta, .stv-row-head > .stv-state { grid-column: 2; grid-row: 2; justify-self: start; }
+  .stv-group-toggle, .stv-row-toggle { grid-column: 3; grid-row: 1 / span 2; }
+  .stv-group-heading > .stv-state-mark, .stv-row-head > .stv-state-mark { grid-column: 1; grid-row: 1 / span 2; }
+}
+
+/* The module only renders .stv-detail--sheet below the 720px boundary. */
+.stv-detail--sheet {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 85vh;
+  max-height: 85dvh;
+  padding:
+    8px
+    max(16px, env(safe-area-inset-right, 0px))
+    max(16px, env(safe-area-inset-bottom, 0px))
+    max(16px, env(safe-area-inset-left, 0px));
+  border: 1px solid var(--stv-line);
+  border-bottom: 0;
+  border-radius: var(--stv-radius) var(--stv-radius) 0 0;
+  background: var(--stv-raised);
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.stv-detail--sheet > .stv-sheet-close {
+  flex: none;
+  align-self: flex-start;
+  min-width: var(--stv-target);
+}
+
+.stv-detail--sheet > .stv-sheet-title {
+  flex: none;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+/* The one scroll owner inside the sheet. */
+.stv-detail--sheet > .stv-task-detail,
+.stv-detail--sheet > .stv-detail-placeholder {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.stv.stv--narrow.stv--sheet-open::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(4, 9, 16, 0.48);
+}
+
+/* Scoped to mounted open sheets; removing/closing the last sheet restores the
+   host's own overflow rules without writing host inline styles. */
+html:has(.stv.stv--narrow.stv--sheet-open) { overflow: hidden; }
+
+/* ------------------------------------------------- user preferences */
+
+@media (prefers-reduced-motion: reduce) {
+  .stv,
+  .stv::before,
+  .stv *,
+  .stv *::before,
+  .stv *::after {
+    transition-duration: 0s !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .stv :focus-visible {
+    outline: 3px solid Highlight;
+  }
+
+  .stv-task-option.is-selected {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .stv-task-option.is-selected .stv-task-id,
+  .stv-task-option.is-selected .stv-state {
+    color: HighlightText;
+  }
+
+  .stv-row.is-expanded > .stv-row-toggle,
+  .stv-detail--sheet {
+    border: 2px solid CanvasText;
+  }
+
+  .stv-page-button:disabled {
+    color: GrayText;
+    opacity: 1;
+  }
+}

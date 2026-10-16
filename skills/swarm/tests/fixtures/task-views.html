@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'none'; img-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>SWARM task views fixture</title>
+  <link rel="stylesheet" href="../../assets/ui/swarm-task-views.css">
+  <style>
+    .stv-fixture-page {
+      margin: 0;
+      background: #091321;
+    }
+
+    .stv-fixture {
+      --sw-bg: #091321;
+      --sw-surface: #102132;
+      --sw-raised: #183047;
+      --sw-ink: #f4f8ff;
+      --sw-muted: #a9bace;
+      --sw-line: #455d75;
+      --sw-orange: #ff7a18;
+      --sw-accent: #ff7a18;
+      --sw-red-orange: #ff3d32;
+      --sw-cyan: #79d8de;
+      --sw-blue: #86b8ff;
+      --sw-green: #84d9a6;
+      --sw-red: #ff9b9b;
+      --sw-radius: 12px;
+      --sw-space: 4px;
+      --sw-accordion-ms: 220ms;
+      --sw-update-ms: 260ms;
+
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 16px;
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 16px max(16px, env(safe-area-inset-right, 0px)) 32px max(16px, env(safe-area-inset-left, 0px));
+      color: var(--sw-ink);
+      font: 400 0.9375rem/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    .stv-fixture > details { min-width: 0; overflow-wrap: anywhere; }
+
+    .stv-fixture-limit,
+    .stv-fixture-result {
+      margin: 0;
+      color: var(--sw-muted);
+      font-size: 0.8125rem;
+      overflow-wrap: anywhere;
+    }
+
+    .stv-fixture-controls {
+      display: grid;
+      gap: 12px;
+    }
+
+    .stv-fixture-controls fieldset {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 16px;
+      margin: 0;
+      padding: 8px 12px 12px;
+      border: 1px solid var(--sw-line);
+      border-radius: 8px;
+    }
+
+    .stv-fixture-controls legend {
+      padding: 0 4px;
+      color: var(--sw-muted);
+      font-size: 0.8125rem;
+    }
+
+    .stv-fixture-controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+    }
+
+    .stv-fixture-controls button {
+      min-height: 44px;
+      padding: 0 12px;
+      border: 1px dashed var(--sw-accent);
+      border-radius: 8px;
+      background: var(--sw-surface);
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .stv-fixture-controls :focus-visible {
+      outline: 2px solid var(--sw-cyan);
+      outline-offset: 2px;
+    }
+
+    .stv-fixture-result output {
+      font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
+    }
+  </style>
+</head>
+<body class="stv-fixture-page">
+  <main class="stv-fixture" data-fixture="task-views">
+    <div id="stv-fixture-mount" data-fixture-mount></div>
+    <details data-fixture-debug>
+      <summary>Fixture tools · synthetic data, not live work</summary>
+      <p class="stv-fixture-limit" data-fixture-limit>No real project, host, Ledger or accepted source binding.</p>
+    <form id="stv-fixture-controls" class="stv-fixture-controls" aria-label="Fixture controls">
+      <fieldset>
+        <legend>Layout</legend>
+        <label><input type="radio" name="stv-fixture-layout" value="inspector" checked> Task Inspector</label>
+        <label><input type="radio" name="stv-fixture-layout" value="milestones"> Milestone Groups</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Scenario</legend>
+        <label><input type="radio" name="stv-fixture-scenario" value="normal" checked> Normal</label>
+        <label><input type="radio" name="stv-fixture-scenario" value="undeclared"> Tasks undeclared (records.tasks = null)</label>
+        <label><input type="radio" name="stv-fixture-scenario" value="empty"> Observed empty arrays</label>
+        <label><input type="radio" name="stv-fixture-scenario" value="long"> Long text and edge references</label>
+        <label><input type="radio" name="stv-fixture-scenario" value="large"> Large list (300 tasks, paginated)</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Rejection tests: deliberately invalid input, never accepted records</legend>
+        <button type="button" data-fixture-test="malformed-update" data-expect="stale">Malformed update</button>
+        <button type="button" data-fixture-test="contradictory-reuse" data-expect="stale">Contradictory identity reuse</button>
+        <button type="button" data-fixture-test="foreign-pointer" data-expect="stale">Foreign source pointer</button>
+        <button type="button" data-fixture-test="malformed-mount" data-expect="error">Malformed initial mount</button>
+      </fieldset>
+    </form>
+
+    <p class="stv-fixture-result">Last result: <output id="stv-fixture-result" data-fixture-result></output></p>
+    </details>
+  </main>
+
+  <script type="module">
+    import { mountTaskViews } from "../../assets/ui/swarm-task-views.js";
+
+    const PROJECT_ID = "synthetic-fixture-project";
+    const fixture = document.querySelector("[data-fixture]");
+    const controls = document.getElementById("stv-fixture-controls");
+    const mountEl = document.getElementById("stv-fixture-mount");
+    const resultEl = document.getElementById("stv-fixture-result");
+
+    let view = null;
+    let layout = "inspector";
+    let lastValid = null;
+    let seq = 0;
+
+    // ------------------------------------------------- synthetic records
+
+    const NORMAL_MILESTONES = [
+      { id: "m-draft", title: "Complete first draft", state: "accepted", roadmap_order: 1,
+        planning_status: "planned", execution_status: "accepted", task_ids: ["t-outline", "t-chapters"] },
+      { id: "m-review", title: "Editorial review", state: "in_progress", roadmap_order: 2,
+        planning_status: "planned", execution_status: "running", dependency_ids: ["m-draft"] },
+      { id: "m-launch", title: "Launch announcement", state: "waiting", roadmap_order: 3,
+        planning_status: "planned", task_ids: ["t-press-kit"] },
+    ];
+
+    const NORMAL_TASKS = [
+      { id: "t-outline", title: "Outline chapters", state: "accepted", milestone_id: "m-draft", roadmap_order: 1,
+        planning_status: "planned", execution_status: "accepted" },
+      { id: "t-chapters", title: "Write chapters 1–6", state: "completed", milestone_id: "m-draft", roadmap_order: 2,
+        dependency_ids: ["t-outline"], planning_status: "planned", execution_status: "completed" },
+      { id: "t-copyedit", title: "Copyedit manuscript", state: "in_progress", milestone_id: "m-review", roadmap_order: 3,
+        dependency_ids: ["t-chapters"], planning_status: "planned", execution_status: "running" },
+      { id: "t-fact-check", title: "Check cited sources", state: "waiting", milestone_id: "m-review", roadmap_order: 4,
+        dependency_ids: ["t-chapters"], planning_status: "planned", execution_status: "waiting" },
+      { id: "t-press-kit", title: "Assemble press kit", state: "waiting", milestone_id: "m-launch", roadmap_order: 5,
+        dependency_ids: ["t-copyedit"] },
+      { id: "t-sparse-note" },
+    ];
+
+    const LONG_WORD = "Unbrokenlongwordwithoutanyspaces".repeat(6);
+    const LONG_STATE = "waiting_for_external_review_of_the_entire_second_draft";
+    const LONG_MILESTONE_ID = "m-" + "long-milestone-identifier-".repeat(5) + "end";
+    const LONG_TASK_ID = "t-" + "very-long-task-identifier-segment-".repeat(5) + "end";
+
+    const LONG_MILESTONES = [
+      { id: LONG_MILESTONE_ID,
+        title: `A milestone title that keeps going ${LONG_WORD} so wrapping cannot displace the count or chevron`,
+        state: LONG_STATE, roadmap_order: 1, planning_status: LONG_STATE,
+        task_ids: [LONG_TASK_ID, "t-not-in-source", "t-shared"] },
+      { id: "m-short", title: "Short milestone", state: "accepted", roadmap_order: 2 },
+    ];
+
+    const LONG_TASKS = [
+      { id: LONG_TASK_ID, title: `${LONG_WORD} ${"long title words ".repeat(12).trim()}`, state: LONG_STATE,
+        milestone_id: LONG_MILESTONE_ID, roadmap_order: 1, planning_status: LONG_STATE, execution_status: LONG_STATE,
+        dependency_ids: ["t-shared", "t-dependency-not-in-source"] },
+      { id: "t-shared", title: "Listed by one milestone, declares another", state: "completed",
+        milestone_id: "m-short", roadmap_order: 2 },
+      { id: "t-dangling", title: "Declares a milestone with no record", state: "accepted",
+        milestone_id: "m-not-in-source", roadmap_order: 3 },
+    ];
+
+    function largeRecords() {
+      const states = ["accepted", "completed", "waiting", "in_progress"];
+      const milestones = Array.from({ length: 6 }, (_, m) => ({
+        id: `m-batch-${m + 1}`, title: `Batch ${m + 1}`, state: states[m % 4], roadmap_order: m + 1,
+      }));
+      const tasks = Array.from({ length: 300 }, (_, i) => {
+        const n = i + 1;
+        const task = { id: `t-${String(n).padStart(3, "0")}`, title: `Synthetic task ${n}`, roadmap_order: n };
+        // 45 tasks per batch exceeds the 40-row page; the last 30 stay unbound.
+        if (i < 270) task.milestone_id = `m-batch-${(i % 6) + 1}`;
+        // Every seventh task stays sparse.
+        if (n % 7 !== 0) {
+          task.state = states[i % 4];
+          task.execution_status = task.state;
+        }
+        return task;
+      });
+      return [milestones, tasks];
+    }
+
+    // --------------------------------------------- local digests only
+
+    async function sha256Hex(text) {
+      if (!globalThis.crypto?.subtle) throw new Error("WebCrypto is unavailable in this origin");
+      const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+      return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    async function buildSnapshot(name, milestones, tasks) {
+      const record = async (kind, value, index) => ({
+        source_pointer: `/${kind}/${index}`,
+        source_record_digest: await sha256Hex(JSON.stringify([kind, value])),
+        value,
+      });
+      const body = JSON.stringify({ milestones, tasks });
+      const canonical = await sha256Hex(`synthetic canonical\n${body}`);
+      return {
+        project_id: PROJECT_ID,
+        source_version: 1,
+        source_file_sha256: await sha256Hex(`synthetic source for ${name}\n${body}`),
+        canonical_digest: canonical,
+        binding_digest: await sha256Hex(JSON.stringify(["synthetic-binding", PROJECT_ID, canonical])),
+        cursor: null,
+        records: {
+          milestones: await Promise.all(milestones.map((v, i) => record("milestones", v, i))),
+          tasks: tasks === null ? null : await Promise.all(tasks.map((v, i) => record("tasks", v, i))),
+        },
+      };
+    }
+
+    const SCENARIOS = {
+      normal: () => buildSnapshot("normal", NORMAL_MILESTONES, NORMAL_TASKS),
+      undeclared: () => buildSnapshot("undeclared", NORMAL_MILESTONES, null),
+      empty: () => buildSnapshot("empty", [], []),
+      long: () => buildSnapshot("long", LONG_MILESTONES, LONG_TASKS),
+      large: () => buildSnapshot("large", ...largeRecords()),
+    };
+
+    // Deliberately invalid inputs derived from the last valid snapshot.
+    const TESTS = {
+      "malformed-update": (snap) => {
+        const next = structuredClone(snap);
+        next.records.milestones = "not-an-array";
+        return next;
+      },
+      "contradictory-reuse": (snap) => {
+        const next = structuredClone(snap);
+        const rec = next.records.tasks?.[0] ?? next.records.milestones[0];
+        if (!rec) return null;
+        rec.value.title = `${rec.value.title ?? rec.value.id} (altered, digests kept)`;
+        return next;
+      },
+      "foreign-pointer": (snap) => {
+        const next = structuredClone(snap);
+        const rec = next.records.milestones[0] ?? next.records.tasks?.[0];
+        if (!rec) return null;
+        rec.source_pointer = rec.source_pointer.startsWith("/milestones/") ? "/tasks/0" : "/milestones/0";
+        return next;
+      },
+    };
+
+    // ------------------------------------------------------- mounting
+
+    function currentState() {
+      return mountEl.querySelector(".stv")?.dataset.stvState ?? "none";
+    }
+
+    function report(action, result) {
+      const payload = {
+        action,
+        ok: result ? result.ok : currentState() !== "error",
+        state: result?.state ?? currentState(),
+        reason: result?.reason ?? null,
+      };
+      resultEl.textContent = JSON.stringify(payload);
+      resultEl.dataset.action = action;
+      resultEl.dataset.ok = String(payload.ok);
+      resultEl.dataset.state = payload.state;
+    }
+
+    function remount(snapshot) {
+      if (view) view.destroy();
+      view = null;
+      view = mountTaskViews(mountEl, { snapshot, layout });
+    }
+
+    async function selectScenario(name) {
+      const token = ++seq;
+      fixture.dataset.fixtureBusy = "true";
+      try {
+        const snapshot = await SCENARIOS[name]();
+        if (token !== seq) return;
+        let result = null;
+        if (view) result = view.update(snapshot);
+        else remount(snapshot);
+        if (!result || result.ok) lastValid = snapshot;
+        report(`scenario:${name}`, result);
+      } catch (err) {
+        if (token === seq) report(`scenario:${name}`, { ok: false, state: "fixture-error", reason: String(err?.message ?? err) });
+      } finally {
+        if (token === seq) delete fixture.dataset.fixtureBusy;
+      }
+    }
+
+    function runTest(name) {
+      ++seq;
+      delete fixture.dataset.fixtureBusy;
+      if (name === "malformed-mount") {
+        remount({ project_id: PROJECT_ID });
+        report("test:malformed-mount", null);
+        return;
+      }
+      const next = lastValid ? TESTS[name](lastValid) : null;
+      if (!next || !view) {
+        report(`test:${name}`, { ok: null, state: "not-applicable", reason: "current scenario has no record to alter" });
+        return;
+      }
+      report(`test:${name}`, view.update(next));
+    }
+
+    controls.addEventListener("submit", (event) => event.preventDefault());
+
+    controls.addEventListener("change", (event) => {
+      const input = event.target;
+      if (input.name === "stv-fixture-layout") {
+        layout = input.value;
+        ++seq;
+        delete fixture.dataset.fixtureBusy;
+        if (lastValid) {
+          remount(lastValid);
+          report(`layout:${layout}`, null);
+        }
+      } else if (input.name === "stv-fixture-scenario") {
+        selectScenario(input.value);
+      }
+    });
+
+    controls.addEventListener("click", (event) => {
+      const button = event.target instanceof Element ? event.target.closest("[data-fixture-test]") : null;
+      if (button) runTest(button.dataset.fixtureTest);
+    });
+
+    await selectScenario("normal");
+    fixture.dataset.fixtureReady = "true";
+  </script>
+</body>
+</html>
