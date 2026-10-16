@@ -108,7 +108,7 @@ icon choice: 🐙 belongs to SWARM. If the project context has no clear match,
 use `role_icons.fallback`; do not default every project to 🐙.
 retain a user-requested role icon such as `👑` for royal portfolio control.
 For the main task, `<objective>` is the project name only: emoji + project,
-with exactly one space between the emoji and project name. Never add a CTRL label, suffix or duplicate-main description. The default template is `<project emoji> <project>`; examples: `🐟 Nemo`, `🧱 BLÖCKS`, `⚓ Helm`, `📐 Blüprint`, `🐙 SWARM`. Keep internal structural roles unchanged.
+with exactly one space between the emoji and project name. Never add a CTRL label, suffix or duplicate-main description. The default template is `<project emoji> <project>`; generic examples: `🌱 Garden`, `📚 Reading List`, `🐙 SWARM`. Keep internal structural roles unchanged.
 An assigned lane keeps its assigned profession and structural role. Preserve an
 explicit custom title or naming exception unless the user asks to change it.
 Visible lane names use a concise responsibility or artifact, with the configured

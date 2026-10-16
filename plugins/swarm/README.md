@@ -14,9 +14,9 @@
   <a href="https://github.com/flowwweb/swarm"><img alt="Open source on GitHub" src="https://img.shields.io/badge/open_source-GitHub-ffffff"></a>
 </p>
 
-SWARM is an open-source Codex plugin for work that benefits from more than one agent. You direct a single CTRL task. CTRL divides the objective into clear lanes, LEADs own the outcome of each lane, and DOERs complete focused work inside them.
+SWARM is an open-source Codex plugin that turns a goal into owned work and verifiable results. You direct one coordinator (CTRL). Leads own substantial responsibilities; workers deliver bounded tasks. The team stays as small as the work allows.
 
-The hierarchy keeps parallel work understandable: one place to steer, one owner for every lane, and one integrated result to review.
+One place to steer, one owner for each outcome, and one integrated result to review.
 
 [Explore SWARM](https://flowwweb.com/swarm) · [View the repository](https://github.com/flowwweb/swarm)
 
@@ -99,6 +99,14 @@ skills improve execution but never grant authority or turn CTRL into a producer.
 
 ## Project Workspace views
 
+The proposed document-first 1.0 flow starts with four reviewed documents:
+`project.md`, `roadmap.md`, `swarm.md`, and `design.md`. A derived Space view
+must identify its exact source version/digest and refresh time, preserve accepted
+and completed tasks, and show failed refreshes as stale. The publishing route
+remains unverified; this is not a promise of automatic refresh, native editing,
+or synchronization. Illustrative animation may be separate from real status;
+live message streaming is optional, not a release gate.
+
 A project may expose one digest-bound Project Workspace from its root
 `SWARM.md` brief and `swarm.project_views` manifest. The registered renderers
 are `canvas`, `table`, `timeline`, `gallery`, `compare`, and `document`.
@@ -167,7 +175,7 @@ Then ask Codex to use it:
 Use SWARM to ship the next release of this project.
 ```
 
-That task uses `<project emoji> <project>`, such as `⚓ Helm` or `🐙 SWARM`: the one place where you direct the work and review what the swarm returns. Explicit titles and icon preferences are preserved.
+That task uses `<project emoji> <project>`, such as the generic example `🌱 Garden` or `🐙 SWARM`. Explicit titles and icon preferences are preserved.
 
 To update an existing installation:
 
