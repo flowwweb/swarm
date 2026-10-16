@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 from typing import TYPE_CHECKING
-from .incidents import IncidentLedger, IncidentRecord
+from .incidents import EvidenceKind, IncidentDisposition, IncidentError, IncidentLedger, IncidentRecord
 from .request_ledger import RequestStore, RequestStoreError
 
 if TYPE_CHECKING:
@@ -1418,6 +1418,19 @@ class _RuntimeAcceptanceRecord:
 @dataclass
 class HiveRecord:
     id:str; content:str=""; reference:str=""; source:str=""; source_version:str=""; applicability:dict[str,int]=field(default_factory=dict); created_at:int=0; last_used_at:int|None=None; value:str="useful"; retention:str="adaptive"; status:HiveStatus=HiveStatus.ACTIVE; provenance:dict[str,str]=field(default_factory=dict)
+    finding_id:str=""; supersedes:str=""
+    # Ephemeral join context, deliberately not serialized/copied as HIVE evidence.
+    _lesson_owner=None; _lesson_ledger=None; _lesson_task_id=""
+    def current_for(self, architecture:dict[str,int]) -> bool:
+        if not isinstance(architecture,dict) or not isinstance(self.applicability,dict): return False
+        if self.status is not HiveStatus.ACTIVE or any(k not in architecture or type(v) is not int or type(architecture[k]) is not int or architecture[k]!=v for k,v in self.applicability.items()): return False
+        if not self.finding_id and self.source!="incident": return True
+        owner=self._lesson_owner
+        if not isinstance(owner,Swarm) or owner.hive.get(self.id) is not self: return False
+        try:
+            _,_,identity,provenance=owner._incident_lesson_binding(self,self._lesson_ledger,self._lesson_task_id)
+            return self.id==identity and self.provenance==provenance
+        except (InvariantError,IncidentError,OSError,ValueError,TypeError): return False
 
 @dataclass(frozen=True)
 class ContextPackage:
@@ -1429,7 +1442,7 @@ class ContextPackage:
         dependencies=[item for item in dependencies if current(item)]; artifacts=[item for item in artifacts if current(item)]; history=[item for item in history if current(item)]
         render=lambda item: f"{item.name}:v{item.version}" if isinstance(item,VersionedReference) else item
         dependencies=[render(item) for item in dependencies]; artifacts=[render(item) for item in artifacts]; history=[render(item) for item in history]
-        hive=[record.id for record in (hive or []) if record.status==HiveStatus.ACTIVE and all(architecture.get(k,v)==v for k,v in record.applicability.items())]
+        hive=[record.id for record in (hive or []) if record.current_for(architecture)]
         spine=[goal,*acceptance]; optional=[*dependencies,*artifacts,*hive,*history]
         if len(spine)>budget: raise InvariantError("budget cannot admit canonical spine")
         kept=optional[:max(0,budget-len(spine))]
@@ -2829,23 +2842,34 @@ class Swarm:
         self._role(actor,{Role.LEAD}); worker=self.workers[worker_id]
         hive=package.hive if self.hive_enabled else ()
         worker.context={"goal":package.goal,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"hive":hive,"transfer_cost":package.transfer_cost-len(package.hive)+len(hive),"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}
-    def remember(self, actor:Role, record:HiveRecord, now:int) -> str|None:
+    def remember(self, actor:Role, record:HiveRecord, now:int, *, incident_ledger:IncidentLedger|None=None, accepted_task_id:str="") -> str|None:
         self._role(actor,{Role.SPECIALIST,Role.ARCHITECT,Role.LEAD,Role.DOER})
         if not self.hive_enabled: return None
-        if not record.id or (not record.content and not record.reference) or len(record.content)>280 or record.value in {"noise","low"}: raise InvariantError("HIVE stores only compact future-useful lessons")
+        if not record.id or (not record.content and not record.reference) or len(record.content)>280 or len(record.reference)>512 or record.value in {"noise","low"}: raise InvariantError("HIVE stores only compact future-useful lessons")
         if record.source in {"repository","canonical"} and record.content: raise InvariantError("reference durable truth instead of copying it")
+        if record.finding_id or record.source=="incident":
+            finding,_,identity,provenance=self._incident_lesson_binding(record,incident_ledger,accepted_task_id)
+            record=replace(record,id=identity,provenance=provenance)
+            record._lesson_owner=self; record._lesson_ledger=incident_ledger; record._lesson_task_id=accepted_task_id
+            predecessors=[old for old in self.hive.values() if old.finding_id==finding.supersedesIncidentId and old.source==record.source and old.applicability==record.applicability and old.provenance.get("family")==provenance["family"]]
+            if len(predecessors)>1 or (record.supersedes and not any(old.id==record.supersedes for old in predecessors)): raise InvariantError("lesson supersession requires the exact declared finding predecessor")
+            if predecessors: record.supersedes=predecessors[0].id
+        signature=lambda item:(item.source,item.source_version,item.content,item.reference,item.applicability,item.finding_id)
         for old in self.hive.values():
-            if old.status==HiveStatus.ACTIVE and (old.id==record.id or (old.source,old.source_version,old.content or old.reference)==(record.source,record.source_version,record.content or record.reference)):
+            if old.id==record.id and signature(old)!=signature(record): raise InvariantError("HIVE identity conflicts with retained content")
+            if old.id==record.id or (old.status==HiveStatus.ACTIVE and signature(old)==signature(record)):
                 old.last_used_at=now; self.telemetry["hive_reused"]=self.telemetry.get("hive_reused",0)+1; return old.id
-            if old.status==HiveStatus.ACTIVE and old.source==record.source and old.applicability==record.applicability and old.source_version!=record.source_version:
-                old.status=HiveStatus.ARCHIVED; old.provenance["superseded_by"]=record.id; self.telemetry["hive_superseded"]=self.telemetry.get("hive_superseded",0)+1
-        if len([item for item in self.hive.values() if item.status==HiveStatus.ACTIVE])>=64: raise InvariantError("HIVE active record bound reached")
+        previous=self.hive.get(record.supersedes) if record.supersedes else None
+        if record.supersedes and (previous is None or previous.source!=record.source or previous.applicability!=record.applicability or not record.provenance.get("family") or previous.provenance.get("family")!=record.provenance["family"]): raise InvariantError("HIVE supersession requires an exact same-family predecessor")
+        if sum(item.status==HiveStatus.ACTIVE and item is not previous for item in self.hive.values())>=64: raise InvariantError("HIVE active record bound reached")
+        if previous is not None and previous.status is HiveStatus.ACTIVE:
+            previous.status=HiveStatus.ARCHIVED; previous.provenance["superseded_by"]=record.id; self.telemetry["hive_superseded"]=self.telemetry.get("hive_superseded",0)+1
         record.created_at=now; self.hive[record.id]=record; self.telemetry["hive_created"]=self.telemetry.get("hive_created",0)+1; self._hive_counts(); return record.id
     def _hive_counts(self) -> None:
         self.telemetry.update({f"hive_{state.value.lower()}":sum(r.status==state for r in self.hive.values()) for state in HiveStatus})
     def hydrate_hive(self, query:str, architecture:dict[str,int], budget:int, now:int) -> list[HiveRecord]:
         if not query or budget<1 or not self.hive_enabled: return []
-        matches=[r for r in self.hive.values() if r.status==HiveStatus.ACTIVE and all(architecture.get(k,v)==v for k,v in r.applicability.items()) and query.lower() in f"{r.content} {r.reference} {r.source}".lower()][:budget]
+        matches=[r for r in self.hive.values() if r.current_for(architecture) and query.lower() in f"{r.content} {r.reference} {r.source} {r.provenance.get('scope','')} {r.provenance.get('artifact','')}".lower()][:budget]
         for record in matches: record.last_used_at=now
         self.telemetry.update({"hive_hydration_count":len(matches),"hive_hydration_size":sum(len(r.content)+len(r.reference) for r in matches)})
         return matches
@@ -3182,8 +3206,36 @@ class Swarm:
         current=target_contract.artifact.reobserve(target_contract.observation_root)
         if current!=target_contract.artifact or receipt.before!=current.observables or receipt.after!=current.observables: raise InvariantError("receipt adoption requires current exact artifact observations")
         adopted=replace(receipt,authority_context_digest=_sha256_text(f"{target_task_id}:{actor_id}:{target_contract.proof_plan.plan_digest}"),adopted=True); object.__setattr__(adopted,"_authority",self._gate_capability); object.__setattr__(adopted,"_bound_task_id",target_task_id); target.gate_receipts[gate]=adopted; target.unverified_gate_receipts.pop(gate,None); return adopted
+    def _incident_lesson_binding(self, record:HiveRecord, ledger:IncidentLedger|None, task_id:str):
+        task=self.tasks.get(task_id)
+        accepted=self._runtime_acceptance_current(task) if task is not None else None
+        if not isinstance(ledger,IncidentLedger) or accepted is None or not task.acceptance_contract.required_gates or self.open_gates(task_id) or self.open_claims(task_id): raise InvariantError("incident lesson requires current runtime artifact/gate/review acceptance")
+        finding=next((item for item in ledger.read() if item.incidentId==record.finding_id),None)
+        if finding is None or finding.disposition is IncidentDisposition.REJECTED: raise InvariantError("incident lesson requires an unrejected retained finding")
+        artifact=accepted.artifact
+        if record.source!="incident" or record.content or record.reference!=f"incident:{finding.incidentId}" or not record.applicability or record.source_version!=artifact.revision or finding.artifact!=artifact.key(): raise InvariantError("incident lesson requires exact finding, source version and scoped reference")
+        if len(artifact.base)>256 or len(record.source_version)>256: raise InvariantError("incident lesson references must remain bounded")
+        if any(not isinstance(key,str) or not key or type(value) is not int for key,value in record.applicability.items()): raise InvariantError("incident lesson requires explicit version applicability")
+        review=task.acceptance_review_receipt; receipt_key="composed" if review.scope is ReviewScope.COMPOSED else "acceptance"
+        required=[(EvidenceKind.FILE_DIGEST,artifact.key(),artifact.content_address()),(EvidenceKind.REVIEW_RECEIPT,dict(review.receipt)[receipt_key],accepted.review_receipt_digest)]
+        required.extend((EvidenceKind.TEST_RECEIPT,gate,digest) for gate,digest in zip(sorted(task.gate_receipts),accepted.gate_receipt_digests))
+        if any(not any((item.kind,item.locator,item.digest)==wanted for item in finding.evidence) for wanted in required): raise InvariantError("incident lesson evidence must join exact accepted artifact, gates and independent review")
+        family=_sha256_text(json.dumps((finding.failure_class,artifact.base,artifact.purpose),sort_keys=True,separators=(",",":")))
+        identity="lesson:"+_sha256_text(json.dumps((finding.incidentId,family,sorted(record.applicability.items())),separators=(",",":")))
+        return finding,accepted,identity,{"task":task_id,"artifact":artifact.base,"artifact_digest":accepted.artifact_content_digest,"review":accepted.review_receipt_digest,"proof_plan":accepted.proof_plan_digest,"family":family,"scope":finding.scope}
     def consult_incidents(self, actor:Role, task_id:str, ledger:IncidentLedger, *, artifact:str, scope:str, actor_id:str) -> tuple[IncidentRecord,...]:
-        self._role(actor,{Role.LEAD,Role.DOER}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); incidents=ledger.unresolved(artifact=artifact,scope=scope); t.incident_consultation_receipt=f"{artifact}:{scope}:{','.join(item.incidentId for item in incidents) or 'none'}"; return incidents
+        self._role(actor,{Role.LEAD,Role.DOER}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); incidents=ledger.unresolved(artifact=artifact,scope=scope)
+        lessons=[]
+        if self.hive_enabled:
+            for record in self.hive.values():
+                if not record.finding_id or not record.current_for(t.contracts): continue
+                try: finding,_,_,_=self._incident_lesson_binding(record,record._lesson_ledger,record._lesson_task_id)
+                except (InvariantError,IncidentError,OSError,ValueError,TypeError): continue
+                if (finding.artifact,finding.scope)!=(artifact,scope): continue
+                lessons.append(record.id)
+                if len(lessons)==8: break
+        t.incident_consultation_receipt=f"{artifact}:{scope}:{','.join(item.incidentId for item in incidents) or 'none'}"+(f";lessons={','.join(lessons)}" if lessons else "")
+        return incidents
     def record_post_handoff_incident(self, actor:Role, task_id:str, ledger:IncidentLedger, record:IncidentRecord, *, material:bool, actor_id:str) -> bool:
         self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id)
         if not material: return False

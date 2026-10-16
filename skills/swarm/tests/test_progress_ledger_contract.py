@@ -1926,6 +1926,218 @@ class ProgressLedgerContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ProgressEventError, "stale progress scope_version"):
             self.ledger.append(stale)
 
+    def test_task_accounting_clips_closed_residence_and_replays_without_writes(self) -> None:
+        for stamp, state in ((10, "ACTIVE"), (20, "WAITING_EXTERNAL"), (30, "ACTIVE"), (40, "TOMBSTONED")):
+            event = self.event(f"account-{stamp}", "account", task_id="task-account",
+                kind="BLOCK_CREATED" if stamp == 10 else "STATE_CHANGED", lifecycle=state, observed_at_ms=stamp)
+            self.ledger.append(event)
+            self.assertEqual(self.ledger.append(event)["status"], "unchanged")
+        before = {path: path.read_bytes() for path in (self.root / PROGRESS_LEDGER_PATH, self.root / PROGRESS_PROJECTION_PATH)}
+        result = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-account",
+            observed_after_ms=15, observed_before_ms=35)
+        self.assertEqual(result["coverage"]["state"], "KNOWN")
+        self.assertEqual(result["residence"], {"active_ms": 10, "waiting_ms": 10, "concurrent_waiting_ms": 0, "elapsed_ms": 20})
+        self.assertEqual([(row["start_ms"], row["end_ms"]) for row in result["intervals"]], [(15, 20), (20, 30), (30, 35)])
+        self.assertEqual(Ledger(self.root).project_task_accounting("project-alpha", "ctrl-alpha", "task-account",
+            observed_after_ms=15, observed_before_ms=35), result)
+        partial = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-account",
+            observed_after_ms=5, observed_before_ms=45)
+        self.assertEqual((partial["coverage"]["state"], partial["coverage"]["unknown_ms"]), ("PARTIAL", 10))
+        self.assertIsNone(partial["residence"]["elapsed_ms"])
+        self.assertEqual(partial["tokens"]["state"], "UNKNOWN")
+        for path, data in before.items():
+            self.assertEqual(path.read_bytes(), data)
+
+    def test_task_accounting_clipped_edges_are_unknown_not_false_observed_zero(self) -> None:
+        self.ledger.append(self.event("edge-start", "edge", task_id="task-edge", lifecycle="ACTIVE", observed_at_ms=20))
+        self.ledger.append(self.event("edge-stop", "edge", task_id="task-edge", kind="STATE_CHANGED", lifecycle="TOMBSTONED", observed_at_ms=30))
+        before={path:path.read_bytes() for path in (self.root / PROGRESS_LEDGER_PATH,self.root / PROGRESS_PROJECTION_PATH)}
+        for start,end in ((10,19),(10,20),(30,40),(20,20)):
+            with self.subTest(window=(start,end)):
+                result=self.ledger.project_task_accounting("project-alpha","ctrl-alpha","task-edge",observed_after_ms=start,observed_before_ms=end)
+                self.assertEqual(result["coverage"]["state"],"UNKNOWN")
+                self.assertIsNone(result["coverage"]["closed_ms"]); self.assertIsNone(result["residence"]["active_ms"])
+                self.assertEqual(result["intervals"],[])
+                self.assertEqual(Ledger(self.root).project_task_accounting("project-alpha","ctrl-alpha","task-edge",observed_after_ms=start,observed_before_ms=end),result)
+        exact=self.ledger.project_task_accounting("project-alpha","ctrl-alpha","task-edge",observed_after_ms=20,observed_before_ms=30)
+        self.assertEqual((exact["coverage"]["state"],exact["residence"]["active_ms"]),("KNOWN",10))
+        for path,data in before.items(): self.assertEqual(path.read_bytes(),data)
+
+    def test_task_accounting_unions_parallel_blocks_and_distinguishes_observed_zero(self) -> None:
+        for name, block, stamp, state in (("a-start", "a", 10, "ACTIVE"), ("w-start", "w", 10, "WAITING_EXTERNAL"),
+                ("b-start", "b", 15, "ACTIVE"), ("a-end", "a", 30, "TOMBSTONED"),
+                ("b-end", "b", 40, "TOMBSTONED"), ("w-end", "w", 40, "TOMBSTONED")):
+            self.ledger.append(self.event(name, block, task_id="task-parallel",
+                kind="BLOCK_CREATED" if name.endswith("start") else "STATE_CHANGED", lifecycle=state, observed_at_ms=stamp))
+        result = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-parallel",
+            observed_after_ms=10, observed_before_ms=40)
+        self.assertEqual(result["residence"], {"active_ms": 30, "waiting_ms": 0, "concurrent_waiting_ms": 30, "elapsed_ms": 30})
+        missing = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "absent",
+            observed_after_ms=10, observed_before_ms=40)
+        self.assertEqual(missing["coverage"]["state"], "UNKNOWN")
+        self.assertIsNone(missing["residence"]["active_ms"])
+        waiting = Ledger(self.root / "waiting-only")
+        for stamp in (10, 40):
+            waiting.append(self.event(f"wait-{stamp}", "w", task_id="task-wait", lifecycle="WAITING_EXTERNAL" if stamp == 10 else "TOMBSTONED",
+                kind="BLOCK_CREATED" if stamp == 10 else "STATE_CHANGED", observed_at_ms=stamp))
+        zero = waiting.project_task_accounting("project-alpha", "ctrl-alpha", "task-wait", observed_after_ms=10, observed_before_ms=40)
+        self.assertEqual((zero["coverage"]["state"], zero["residence"]["active_ms"], zero["residence"]["waiting_ms"]), ("KNOWN", 0, 30))
+
+    def test_task_accounting_handoff_retry_and_scope_boundaries_are_not_activity(self) -> None:
+        for stamp, kind, state in ((10, "BLOCK_CREATED", "ACTIVE"), (20, "TAKEOVER_STARTED", "ACTIVE"),
+                (30, "RETRY_STARTED", "RETRYING"), (40, "STATE_CHANGED", "ACTIVE"), (50, "STATE_CHANGED", "TOMBSTONED")):
+            event = self.event(f"handoff-cost-{stamp}", "a", task_id="task-a", kind=kind, lifecycle=state, observed_at_ms=stamp)
+            if stamp >= 20:
+                event["owner_id"] = "new-owner"
+            self.ledger.append(event)
+        result = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a", observed_after_ms=10, observed_before_ms=50)
+        self.assertEqual((result["coverage"]["state"], result["coverage"]["unknown_ms"], result["residence"]["active_ms"]), ("PARTIAL", 30, 10))
+        self.assertIn("HANDOFF_OR_RETRY_BOUNDARY", result["coverage"]["reasons"])
+        scoped = Ledger(self.root / "scoped")
+        scoped.append(self.event("scope-old", "a", task_id="task-a", lifecycle="ACTIVE", observed_at_ms=10))
+        scoped.append(self.event("scope-new", "a", task_id="task-a", kind="SCOPE_REVISED", scope_version=2, lifecycle="ACTIVE", observed_at_ms=20))
+        scoped.append(self.event("scope-stop", "a", task_id="task-a", kind="STATE_CHANGED", scope_version=2, lifecycle="TOMBSTONED", observed_at_ms=30))
+        result = scoped.project_task_accounting("project-alpha", "ctrl-alpha", "task-a", observed_after_ms=10, observed_before_ms=30)
+        self.assertEqual((result["scope_version"], result["residence"]["active_ms"], result["coverage"]["unknown_ms"]), (2, 10, 10))
+        self.assertEqual({row["from"]["event_id"] for row in result["intervals"]}, {"scope-new"})
+        # A different task's accepted project-scope revision also invalidates the old scope.
+        self.ledger.append(self.event("other-start", "other", task_id="other-task", lifecycle="ACTIVE", observed_at_ms=60))
+        self.ledger.append(self.event("other-scope", "other", task_id="other-task", kind="SCOPE_REVISED", scope_version=2, lifecycle="ACTIVE", observed_at_ms=70))
+        stale = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a", observed_after_ms=10, observed_before_ms=50)
+        self.assertEqual((stale["scope_version"], stale["coverage"]["state"], stale["intervals"]), (2, "UNKNOWN", []))
+
+    def test_task_accounting_retained_handoff_record_breaks_residence(self) -> None:
+        self.ledger.append(self.event("before-handoff", "a", task_id="task-a", lifecycle="ACTIVE", observed_at_ms=10))
+        handoff = {"schema_version": 1, "record_type": "TASK_HANDOFF", "event_id": "account-handoff", "dedupe_key": "account-handoff",
+            "handoff_id": "handoff-account", "parent_event_id": None, "event_kind": "HANDOFF_DUE", "goal_id": "goal-a",
+            "task_id": "task-a", "old_owner": "owner-a", "new_owner": None, "checkpoint_digest": None,
+            "scope_version": 1, "lease_version": 1, "receipt_id": "a" * 64, "host_issued_at_ms": 15, "observed_at_ms": 15}
+        custody = Swarm(request_lifecycle_ledger=self.ledger)
+        receipt = self.host_receipt(custody, "a" * 64, "task-a", task_handoff_host_binding(handoff), 15)
+        self.ledger.append_task_handoff(handoff, custody_receipt=receipt)
+        self.ledger.append(self.event("after-handoff", "a", task_id="task-a", kind="STATE_CHANGED", lifecycle="TOMBSTONED", observed_at_ms=20))
+        before = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        result = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a", observed_after_ms=10, observed_before_ms=20)
+        self.assertEqual(result["coverage"]["state"], "UNKNOWN")
+        self.assertIsNone(result["residence"]["active_ms"])
+        self.assertEqual(result["intervals"][0]["reason"], "HANDOFF_OR_RETRY_BOUNDARY")
+        self.assertEqual(result["handoff_boundaries"][0]["event_id"], "account-handoff")
+        self.assertEqual(Ledger(self.root).project_task_accounting("project-alpha", "ctrl-alpha", "task-a",
+            observed_after_ms=10, observed_before_ms=20), result)
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
+
+    def test_task_accounting_conflicting_scope_or_event_and_bad_clock_fail_closed(self) -> None:
+        for mode in ("scope", "identity", "clock", "transition"):
+            with self.subTest(mode=mode):
+                ledger = Ledger(self.root / mode)
+                first = self.topology_event("first", "a", task_id="task-a", lifecycle="ACTIVE", observed_at_ms=10)
+                ledger.append(first)
+                last = self.topology_event("last", "a", task_id="task-a", kind="STATE_CHANGED", lifecycle="TOMBSTONED", observed_at_ms=20)
+                if mode == "scope":
+                    last["ctrl_id"] = "other-ctrl"
+                elif mode == "identity":
+                    last["event_id"] = "first"
+                elif mode == "clock":
+                    last["observed_at_ms"] = 5
+                else:
+                    last["lifecycle_state"] = "PLANNED"
+                ledger.append(last)
+                before = (ledger._state.path).read_bytes()
+                result = ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a", observed_after_ms=10, observed_before_ms=20)
+                self.assertEqual(result["coverage"]["state"], "UNKNOWN")
+                self.assertIsNone(result["coverage"]["closed_ms"])
+                self.assertIsNone(result["residence"]["active_ms"])
+                self.assertTrue(result["coverage"]["reasons"])
+                self.assertEqual(ledger._state.path.read_bytes(), before)
+
+    def test_task_accounting_does_not_count_unmatched_expected_observations(self) -> None:
+        unadmitted = self.event("unadmitted", "a", task_id="task-a", lifecycle="ACTIVE", observed_at_ms=10)
+        unadmitted["expected_observation"] = self.observation(self.expected_receipt("missing-receipt"))
+        self.ledger.append(unadmitted)
+        self.ledger.append(self.event("admitted", "a", task_id="task-a", lifecycle="ACTIVE", observed_at_ms=20))
+        self.ledger.append(self.event("terminal", "a", task_id="task-a", kind="STATE_CHANGED", lifecycle="TOMBSTONED", observed_at_ms=30))
+        result = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a", observed_after_ms=10, observed_before_ms=30)
+        self.assertEqual((result["residence"]["active_ms"], result["coverage"]["unknown_ms"]), (10, 10))
+        self.assertIn("UNADMITTED_MATERIAL_BOUNDARY", result["coverage"]["reasons"])
+        self.assertEqual([row["from"]["event_id"] for row in result["intervals"]], ["admitted"])
+
+    def test_task_accounting_versioned_estimates_and_definition_connector_isolation(self) -> None:
+        task = build_task_manifest(manifest_id="account-manifest", task_id="task-a", task_name="Accounting",
+            project_id="project-alpha", ctrl_id="ctrl-alpha",
+            milestones=[{"milestone_id": "m", "order": 0, "title": "M", "verification_policy": "source", "supersedes_milestone_id": None}],
+            blocks=[{"block_id": "a", "milestone_id": "m", "order": 0, "title": "A", "verification_policy": "source",
+                     "estimate_minutes": 0, "weight": None, "supersedes_block_id": None}])
+        self.ledger.append(identity_manifest_event(task, event_id="estimate-v1", dedupe_key="estimate-v1", observed_at_ms=1, provenance="accounting-test"))
+        only_definition = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a", observed_after_ms=1, observed_before_ms=20)
+        self.assertEqual(only_definition["coverage"]["state"], "UNKNOWN")
+        self.assertIsNone(only_definition["residence"]["active_ms"])
+        self.assertEqual(only_definition["estimate_at_window_start"]["estimated_minutes"], 0)
+        self.ledger.append(self.event("a-start", "a", task_id="task-a", lifecycle="ACTIVE", observed_at_ms=10))
+        fields = {key: value for key, value in task.items() if key != "manifest_digest"}
+        fields.update(manifest_version="2", supersedes_digest=task["manifest_digest"], blocks=[{**task["blocks"][0], "estimate_minutes": 15}])
+        revised = build_task_manifest(**fields)
+        self.ledger.append(identity_manifest_event(revised, event_id="estimate-v2", dedupe_key="estimate-v2", observed_at_ms=15, provenance="accounting-test"))
+        self.ledger.append(self.event("a-stop", "a", task_id="task-a", kind="STATE_CHANGED", lifecycle="TOMBSTONED", observed_at_ms=20))
+        self.ledger.append_connector_receipt({"schema_version": 1, "record_type": "CONNECTOR", "command_id": "nonmaterial", "idempotency_key": "nonmaterial-key",
+            "command_digest": "c" * 64, "project_id": "project-alpha", "root_digest": "d" * 64, "action": "LOCAL_HQ",
+            "receipt_id": "nonmaterial-command", "receipt_index": 0, "status": "COMMAND", "thread_id": None, "turn_id": None,
+            "observed_root_digest": None, "observed_at_ms": 1000, "task_creation_identity": None})
+        role = next(item for item in self.role_manifests() if item["id"] == "developer")
+        self.ledger.append(role_material_event("ROLE_ASSIGNMENT_BOUND", event_id="account-role", dedupe_key="account-role",
+            role_id="developer", manifest=role, expected_active_version=role["version"], assignment_task_id="task-a",
+            provenance="accounting-definition-isolation", observed_at_ms=1001))
+        result = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a", observed_after_ms=10, observed_before_ms=20)
+        self.assertEqual(result["residence"]["active_ms"], 10)
+        self.assertEqual(result["estimate_at_window_start"]["manifest_digest"], task["manifest_digest"])
+        self.assertEqual([row["estimated_minutes"] for row in result["estimate_revisions"]], [0, 15])
+        self.assertEqual(result["cursor"], self.ledger.replay()["cursor"])
+        self.assertEqual(len(result["intervals"]), 1)
+        self.assertIsNone(result["token_estimate"]["value"])
+
+    def test_task_accounting_consumes_existing_usage_deltas_dedupes_and_rejects_conflicts(self) -> None:
+        from datetime import datetime, timezone
+        from skills.swarm.scripts.swarm_usage import FIELDS, read_session
+        stamp = lambda value: datetime.fromtimestamp(value / 1000, timezone.utc).isoformat()
+        counts = lambda value: dict(zip(FIELDS, (value, 0, 0, 0, 0, value)))
+        path = self.root / "usage-fixture.jsonl"
+        records = [{"type": "session_meta", "payload": {"id": "task-a"}},
+                   {"type": "turn_context", "payload": {"model": "gpt-6.1-sol", "effort": "high"}}]
+        for when, cumulative, last in ((5, 100, 100), (20, 150, 50), (35, 180, 30)):
+            records.append({"type": "event_msg", "timestamp": stamp(when), "payload": {"type": "token_count", "info": {
+                "total_token_usage": counts(cumulative), "last_token_usage": counts(last)}}})
+        path.write_text("\n".join(json.dumps(row) for row in records), encoding="utf-8")
+        report = read_session(path, after=stamp(10), before=stamp(40))
+        self.assertEqual(report["accounting_status"], "SNAPSHOT")
+        for when in (10, 40):
+            self.ledger.append(self.event(f"token-{when}", "a", task_id="task-a", observed_at_ms=when,
+                kind="BLOCK_CREATED" if when == 10 else "STATE_CHANGED", lifecycle="ACTIVE" if when == 10 else "TOMBSTONED"))
+        before = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        project = lambda reports: self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a",
+            observed_after_ms=10, observed_before_ms=40, usage_reports=reports)
+        result = project((report, report))
+        self.assertEqual((result["tokens"]["state"], result["tokens"]["observed_tokens"]), ("KNOWN", 80))
+        self.assertEqual(len(result["tokens"]["observations"]), 1)
+        missing = read_session(path, after=stamp(36), before=stamp(39))
+        self.assertEqual((missing["accounting_status"], missing["tokens"]["total_tokens"]), ("UNVERIFIED", 0))
+        unobserved_zero = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a",
+            observed_after_ms=36, observed_before_ms=39, usage_reports=(missing,))
+        self.assertIsNone(unobserved_zero["tokens"]["observed_tokens"])
+        self.assertNotIn("tokens", result["intervals"][0])
+        self.assertNotIn("path", result["tokens"]["observations"][0])
+        conflict = project((report, {**report, "tokens": {**report["tokens"], "input_tokens": 81, "total_tokens": 81}}))
+        self.assertEqual(conflict["tokens"]["state"], "UNKNOWN")
+        self.assertIn("USAGE_IDENTITY_CONFLICT", conflict["tokens"]["reasons"])
+        for bad in ({**report, "tokens": {"total_tokens": 81}}, {**report, "thread_id": "other-thread"},
+                    {**report, "after": stamp(0)}, {**report, "accounting_status": "UNVERIFIED"}, {**report, "sha256": "f" * 64}):
+            with self.subTest(bad=bad):
+                rejected = project((report, bad))
+                self.assertEqual(rejected["tokens"]["state"], "UNKNOWN")
+                self.assertIsNone(rejected["tokens"]["observed_tokens"])
+        self.assertEqual(project(({**report, "tokens": {"total_tokens": 80}},))["tokens"]["state"], "UNKNOWN")
+        self.assertEqual(Ledger(self.root).project_task_accounting("project-alpha", "ctrl-alpha", "task-a",
+            observed_after_ms=10, observed_before_ms=40, usage_reports=(report, report)), result)
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
+
     def test_verified_yield_replays_proof_invalidation_and_duplicate_receipts_once(self) -> None:
         created = self.event(
             "yield-created", "yield", task_id="task-yield", committed=10,

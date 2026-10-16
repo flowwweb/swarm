@@ -49,13 +49,14 @@ class IncidentRecord:
     incidentId:str; occurredAt:str; artifact:str; scope:str; introducedAt:str; ownerSurface:str
     detectedAt:str; gate:str; earliestCheapDetector:str; missedGateReason:str; propagationPath:tuple[str,...]
     localCorrection:str; generalizedCandidate:str; disposition:IncidentDisposition; evidence:tuple[EvidenceReference,...]
-    cost:float|None=None; timeLost:float|None=None; dispositionReason:str=""
+    cost:float|None=None; timeLost:float|None=None; dispositionReason:str=""; supersedesIncidentId:str|None=None
 
     def __post_init__(self):
         required=(self.incidentId,self.occurredAt,self.artifact,self.scope,self.introducedAt,self.ownerSurface,self.detectedAt,self.gate,self.earliestCheapDetector,self.missedGateReason,self.localCorrection)
         if any(not isinstance(value,str) or not value.strip() for value in required): raise IncidentError("incident record requires stable identity, scope, causal trace, detector, missed gate, and correction")
         if not self.propagationPath or any(not item.strip() for item in self.propagationPath) or not self.evidence or any(not isinstance(item,EvidenceReference) for item in self.evidence): raise IncidentError("material incident requires propagation path and structured evidence references")
         if not isinstance(self.disposition,IncidentDisposition): raise IncidentError("incident disposition must be typed")
+        if self.supersedesIncidentId is not None and (not isinstance(self.supersedesIncidentId,str) or not self.supersedesIncidentId.strip() or self.supersedesIncidentId==self.incidentId): raise IncidentError("incident supersession requires an explicit distinct predecessor")
         if (self.cost is not None and self.cost<0) or (self.timeLost is not None and self.timeLost<0): raise IncidentError("incident cost and time lost must be nonnegative")
         _reject_credentials(json.dumps(asdict(self),default=str,ensure_ascii=False))
 
@@ -93,14 +94,32 @@ class IncidentLedger:
 
     def _read_unlocked(self) -> tuple[IncidentRecord,...]:
         if not self.path.exists(): return ()
-        return tuple(self._decode(json.loads(line)) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip())
+        records={}
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if not line.strip(): continue
+            record=self._decode(json.loads(line))
+            if record.incidentId in records: raise IncidentError("incident identity already exists")
+            self._validate_supersession(record,records); records[record.incidentId]=record
+        return tuple(records.values())
+
+    @staticmethod
+    def _validate_supersession(record:IncidentRecord, records:dict[str,IncidentRecord]) -> None:
+        if record.supersedesIncidentId is None: return
+        previous=records.get(record.supersedesIncidentId)
+        def family(item):
+            identity=item.artifact.split("#obs=",1)[0]; base,separator,tail=identity.rpartition("@")
+            return (item.failure_class,base if separator else identity,tail.partition(":")[2] if separator else "")
+        if previous is None or family(previous)!=family(record): raise IncidentError("supersession requires an existing exact same-family predecessor")
+        if any(item.supersedesIncidentId==previous.incidentId for item in records.values()): raise IncidentError("incident predecessor already has an explicit successor")
 
     def read(self) -> tuple[IncidentRecord,...]:
         with self._state.locked(): return self._read_unlocked()
 
     def append(self, record:IncidentRecord) -> None:
         with self._state.locked():
-            if any(existing.incidentId==record.incidentId for existing in self._read_unlocked()): raise IncidentError("incident identity already exists")
+            records={item.incidentId:item for item in self._read_unlocked()}
+            if record.incidentId in records: raise IncidentError("incident identity already exists")
+            self._validate_supersession(record,records)
             payload=(json.dumps(asdict(record),default=str,ensure_ascii=False,separators=(",",":"))+"\n").encode("utf-8")
             self._state.replace_bytes_unlocked(self._state.read_bytes_unlocked()+payload)
 

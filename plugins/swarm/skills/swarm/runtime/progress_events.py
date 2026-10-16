@@ -9,6 +9,7 @@ import tempfile
 import time
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from threading import Condition
@@ -3851,6 +3852,185 @@ class Ledger:
         project_id = _safe_id(project_id, "project_id")
         projection = self.replay()
         return self._project_from_projection(project_id, projection)
+
+    def project_task_accounting(
+        self, project_id: str, ctrl_id: str, task_id: str, *,
+        observed_after_ms: int, observed_before_ms: int,
+        usage_reports: tuple[Mapping[str, Any], ...] = (),
+    ) -> dict[str, Any]:
+        """Closed lifecycle residence and supplied swarm_usage reports, never compute or progress."""
+        project_id, ctrl_id, task_id = (_safe_id(value, name) for value, name in (
+            (project_id, "project_id"), (ctrl_id, "ctrl_id"), (task_id, "task_id")))
+        start = _positive_int(observed_after_ms, "observed_after_ms", allow_zero=True)
+        end = _positive_int(observed_before_ms, "observed_before_ms", allow_zero=True)
+        if end < start:
+            raise ProgressEventError("accounting window is inverted")
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+
+        def reference(seq: int, event: ProgressMaterialEvent) -> dict[str, Any]:
+            return {"event_seq": seq, "event_id": event.event_id, "event_digest": event.digest,
+                    "custody_receipt_id": event.custody_receipt_id}
+
+        def union_ms(ranges: list[tuple[int, int]]) -> int:
+            total, boundary = 0, start
+            for left, right in sorted(ranges):
+                total += max(0, right - max(left, boundary))
+                boundary = max(boundary, right)
+            return total
+
+        events, definitions, handoffs, issues = [], [], [], set()
+        for record in records:
+            raw = record["event"]
+            if self._is_non_material_record(raw):
+                if raw.get("record_type") == "TASK_HANDOFF" and raw.get("task_id") == task_id:
+                    handoffs.append({"event_seq": record["event_seq"], "event_id": raw["event_id"],
+                                     "event_digest": record["event_digest"], "observed_at_ms": raw["observed_at_ms"],
+                                     "scope_version": raw["scope_version"], "lease_version": raw["lease_version"]})
+                continue
+            event = validate_progress_material_event(raw)
+            if event.topology_node_kind != "BLOCK" and event.task_manifest is None:
+                continue  # Role/agent definitions are not task activity or scope changes.
+            if event.task_id != task_id:
+                continue
+            if (event.project_id, event.ctrl_id) != (project_id, ctrl_id):
+                issues.add("TASK_SCOPE_CONFLICT")
+                continue
+            if projection["events"].get(event.event_id) != event.digest or projection["dedupe"].get(event.dedupe_key) != event.semantic_digest:
+                issues.add("EVENT_IDENTITY_CONFLICT")
+                continue
+            if event.expected_observation is not None:
+                matched = projection["expected_receipts"].get(event.expected_observation["expected_receipt_id"], {}).get("result", {})
+                if matched.get("status") != "MATCHED" or (matched.get("event_id"), matched.get("event_seq")) != (event.event_id, record["event_seq"]):
+                    issues.add("UNADMITTED_MATERIAL_BOUNDARY")
+                    continue
+            if event.task_manifest is not None:
+                definitions.append((record["event_seq"], event))
+            if event.event_kind not in _TOPOLOGY_DEFINITION_EVENT_KINDS and event.topology_node_kind == "BLOCK":
+                events.append((record["event_seq"], event))
+        scope_version = max(int(projection["scopes"].get(project_id, 0)),
+                            max((event.scope_version for _, event in events), default=0)) or None
+        scoped = [(seq, event) for seq, event in events if event.scope_version == scope_version]
+        if scoped and any(seq > scoped[0][0] and event.scope_version != scope_version for seq, event in events):
+            issues.add("SCOPE_REGRESSION")
+        by_block: dict[str, list[tuple[int, ProgressMaterialEvent]]] = {}
+        for seq, event in scoped:
+            by_block.setdefault(event.block_id, []).append((seq, event))
+        intervals, active, waiting = [], [], []
+        wait_states = {ProgressLifecycle.WAITING_DEPENDENCY, ProgressLifecycle.WAITING_EXTERNAL,
+                       ProgressLifecycle.USER_PAUSED, ProgressLifecycle.REVIEW}
+        for block_id, history in sorted(by_block.items()):
+            for (left_seq, left), (right_seq, right) in zip(history, history[1:]):
+                if right.observed_at_ms < left.observed_at_ms:
+                    issues.add("INVALID_LIFECYCLE_BOUNDARY")
+                    continue
+                lower, upper = max(start, left.observed_at_ms), min(end, right.observed_at_ms)
+                if upper <= lower:
+                    continue
+                reason = None
+                if right.lifecycle_state not in _LIFECYCLE_TRANSITIONS[left.lifecycle_state]:
+                    reason = "INVALID_LIFECYCLE_BOUNDARY"
+                elif left.owner_id != right.owner_id or right.event_kind in {ProgressEventKind.TAKEOVER_STARTED, ProgressEventKind.RETRY_STARTED} or any(
+                    left_seq < handoff["event_seq"] <= right_seq for handoff in handoffs
+                ):
+                    reason = "HANDOFF_OR_RETRY_BOUNDARY"
+                elif set(left.flags + right.flags) & {"stale", "conflicted", "unverified"}:
+                    reason = "UNVERIFIED_BOUNDARY"
+                kind = "ACTIVE" if left.lifecycle_state is ProgressLifecycle.ACTIVE else (
+                    "WAITING" if left.lifecycle_state in wait_states else "UNKNOWN")
+                if reason is not None:
+                    kind = "UNKNOWN"
+                    issues.add(reason)
+                intervals.append({"block_id": block_id, "owner_id": left.owner_id,
+                    "scope_version": scope_version, "start_ms": lower, "end_ms": upper,
+                    "kind": kind, "reason": reason or ("LIFECYCLE_NOT_ACTIVE_OR_WAITING" if kind == "UNKNOWN" else None),
+                    "from": reference(left_seq, left), "to": reference(right_seq, right)})
+                if kind == "ACTIVE":
+                    active.append((lower, upper))
+                elif kind == "WAITING":
+                    waiting.append((lower, upper))
+        known = union_ms(active + waiting)
+        covered = bool(active or waiting)
+        unknown = end - start - known
+        state = "UNKNOWN" if not covered else "PARTIAL" if unknown or issues else "KNOWN"
+        if unknown:
+            issues.add("OPEN_OR_UNCOVERED_WINDOW")
+        if issues & {"TASK_SCOPE_CONFLICT", "EVENT_IDENTITY_CONFLICT", "SCOPE_REGRESSION"}:
+            state, known, unknown, active, waiting = "UNKNOWN", 0, end - start, [], []
+            intervals = []
+
+        estimates = []
+        for seq, event in definitions:
+            if event.observed_at_ms > end:
+                continue
+            manifest = event.task_manifest
+            values = [block["estimate_minutes"] for block in manifest["blocks"]]
+            estimates.append({"manifest_id": manifest["manifest_id"], "manifest_version": manifest["manifest_version"],
+                "manifest_digest": manifest["manifest_digest"], "observed_at_ms": event.observed_at_ms,
+                "estimated_minutes": sum(values) if values and all(value is not None for value in values) else None,
+                "blocks": [{"block_id": block["block_id"], "estimate_minutes": block["estimate_minutes"]} for block in manifest["blocks"]],
+                "source": reference(seq, event)})
+        baseline = next((item for item in reversed(estimates) if item["observed_at_ms"] <= start), None)
+
+        # These are existing read_session window-delta reports, not cumulative counters.
+        # One exact thread/window report only: never spread tokens over blocks or owners.
+        samples, token_issues = {}, set()
+        for report in usage_reports:
+            if not isinstance(report, Mapping):
+                raise ProgressEventError("usage report must be an object")
+            if report.get("thread_id") != task_id:
+                token_issues.add("USAGE_TASK_SCOPE_MISMATCH")
+                continue
+            try:
+                def timestamp(value: Any) -> int:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        raise ValueError("usage window needs a timezone")
+                    return round(parsed.timestamp() * 1000)
+                if (timestamp(report.get("after")), timestamp(report.get("before"))) != (start, end):
+                    raise ValueError("usage window differs")
+                source_digest = report.get("sha256")
+                if not isinstance(source_digest, str) or re.fullmatch(r"[0-9a-f]{64}", source_digest) is None:
+                    raise ValueError("usage source digest missing")
+                counts = {key: _positive_int(report["tokens"].get(key), key, allow_zero=True) for key in (
+                    "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens")}
+                tokens = counts["total_tokens"]
+                if tokens != counts["input_tokens"] + counts["output_tokens"] or counts["cached_input_tokens"] > counts["input_tokens"] or counts["reasoning_output_tokens"] > counts["output_tokens"]:
+                    raise ValueError("usage categories conflict")
+                if report.get("accounting_status") != "SNAPSHOT" or report.get("issues") != []:
+                    raise ValueError("usage source coverage unverified")
+            except (ValueError, TypeError, KeyError, AttributeError):
+                token_issues.add("USAGE_WINDOW_OR_SOURCE_UNVERIFIED")
+                continue
+            sample = {"source_sha256": source_digest, "thread_id": task_id,
+                      "start_ms": start, "end_ms": end, "observed_tokens": tokens}
+            if source_digest in samples and samples[source_digest] != sample:
+                token_issues.add("USAGE_IDENTITY_CONFLICT")
+            samples[source_digest] = sample
+        if len(samples) > 1:
+            token_issues.add("MULTIPLE_THREAD_WINDOW_REPORTS")
+        if not scoped or start < scoped[0][1].observed_at_ms or end > scoped[-1][1].observed_at_ms or state == "UNKNOWN":
+            token_issues.add("USAGE_SCOPE_WINDOW_UNCOVERED")
+        token_known = len(samples) == 1 and not token_issues
+        result = {"project_id": project_id, "ctrl_id": ctrl_id, "task_id": task_id,
+            "scope_version": scope_version, "window": {"start_ms": start, "end_ms": end},
+            "cursor": projection["cursor"], "coverage": {"state": state, "closed_ms": known if covered and state != "UNKNOWN" else None,
+                "unknown_ms": unknown, "reasons": sorted(issues)},
+            "residence": {"active_ms": union_ms(active) if covered and state != "UNKNOWN" else None,
+                "waiting_ms": known - union_ms(active) if covered and state != "UNKNOWN" else None,
+                "concurrent_waiting_ms": union_ms(waiting) - (known - union_ms(active)) if state != "UNKNOWN" else None,
+                "elapsed_ms": end - start if state == "KNOWN" else None},
+            "intervals": intervals, "handoff_boundaries": handoffs,
+            "estimate_at_window_start": baseline, "estimate_revisions": estimates,
+            "token_estimate": {"state": "UNKNOWN", "value": None, "reason": "NOT_RETAINED"},
+            "tokens": {"state": "KNOWN" if token_known else "UNKNOWN",
+                "observed_tokens": next(iter(samples.values()))["observed_tokens"] if token_known else None,
+                "coverage": "SUPPLIED_SESSION_REPORT_ONLY" if token_known else "UNKNOWN",
+                "reasons": sorted(token_issues) if usage_reports else ["NO_USAGE_OBSERVATION"],
+                "observations": sorted(samples.values(), key=lambda item: item["source_sha256"])},
+            "claim_limit": "Closed lifecycle residence is not host compute or productive time. Supplied local session deltas are not provider/billing proof, block allocation, progress or acceptance."}
+        result["projection_digest"] = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return result
 
     def project_verified_yield(
         self,

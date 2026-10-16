@@ -1,6 +1,8 @@
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import asdict, replace
 from pathlib import Path
 import multiprocessing
+import json
 import subprocess
 import sys
 import tempfile
@@ -34,6 +36,41 @@ class IncidentLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(IncidentError,"already exists"): self.ledger.append(incident("i-1"))
 
     def test_same_failure_class_is_deterministic(self): self.assertEqual(incident("i-1").failure_class,incident("i-2").failure_class)
+
+    def test_explicit_supersession_is_same_family_and_restart_safe_without_rewriting_history(self):
+        first=incident("first",artifact="route@v1:source"); self.ledger.append(first)
+        unrelated=incident("unrelated",artifact="other@v1:source"); self.ledger.append(unrelated)
+        before=self.ledger.path.read_bytes()
+        next_record=replace(incident("next",artifact="route@v2:source"),supersedesIncidentId="first")
+        self.ledger.append(next_record)
+        after=self.ledger.path.read_bytes(); self.assertTrue(after.startswith(before))
+        self.assertEqual(IncidentLedger(self.root).read()[-1].supersedesIncidentId,"first")
+        self.assertEqual(self.ledger.path.read_bytes(),after)
+        self.assertIs(self.ledger.read()[1].disposition,IncidentDisposition.CANDIDATE)
+        for bad in (replace(incident("missing"),supersedesIncidentId="absent"),
+                    replace(incident("wrong-family",artifact="other@v2:source"),supersedesIncidentId="first"),
+                    replace(incident("wrong-purpose",artifact="route@v2:other"),supersedesIncidentId="first"),
+                    replace(incident("fork",artifact="route@v3:source"),supersedesIncidentId="first")):
+            with self.subTest(bad=bad.incidentId),self.assertRaises(IncidentError): self.ledger.append(bad)
+        self.assertEqual(self.ledger.path.read_bytes(),after)
+
+    def test_content_bound_revisions_keep_same_family_without_copying_old_observations(self):
+        from runtime import ArtifactIdentity
+        path=self.root/'observed.txt'; path.write_text('v1',encoding='utf-8')
+        first_key=ArtifactIdentity.capture('observed','v1','source',root=str(self.root),paths=('observed.txt',)).key()
+        self.ledger.append(incident('observed-first',artifact=first_key))
+        path.write_text('v2',encoding='utf-8')
+        next_key=ArtifactIdentity.capture('observed','v2','source',root=str(self.root),paths=('observed.txt',)).key()
+        self.assertNotEqual(first_key,next_key)
+        self.ledger.append(replace(incident('observed-next',artifact=next_key),supersedesIncidentId='observed-first'))
+        self.assertEqual(IncidentLedger(self.root).read()[-1].supersedesIncidentId,'observed-first')
+
+    def test_historical_incident_omission_remains_unverified_and_byte_preserved(self):
+        raw=asdict(incident("historical")); raw.pop("supersedesIncidentId")
+        before=(json.dumps(raw,default=str)+"\n").encode(); self.ledger.path.write_bytes(before)
+        decoded=IncidentLedger(self.root).read()[0]
+        self.assertIsNone(decoded.supersedesIncidentId)
+        self.assertEqual(self.ledger.path.read_bytes(),before)
 
     def test_structured_evidence_allows_auth_language_but_rejects_credentials(self):
         self.ledger.append(incident("ordinary",note="auth token validation receipt"))

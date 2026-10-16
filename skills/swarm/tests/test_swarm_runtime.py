@@ -172,6 +172,26 @@ class RuntimeTests(unittest.TestCase):
   self.s.add_worker(Role.LEAD,Worker("R","L",2)); self.s.assign(Role.LEAD,Task("B","D","author",1,{})); lesson=HiveRecord("handoff",content="use migration seam",source="worker",source_version="1",provenance={"task":"B"})
   self.s.retire(Role.LEAD,"D","R",lessons=[lesson],now=3); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["B"].owner,"R"); self.assertIn("handoff",self.s.hive)
   self.s.hive["handoff"].retention="expired"; self.s.groom_hive(Role.CTRL,4); self.s.groom_hive(Role.CTRL,5); self.s.groom_hive(Role.CTRL,6); self.assertEqual(self.s.hive["handoff"].status,HiveStatus.PURGED); self.assertEqual(self.s.hive["handoff"].provenance,{"task":"B"})
+ def test_hive_missing_applicability_never_matches_either_hydration_route(self):
+  record=HiveRecord("scoped",content="auth rule",source="decision",source_version="2",applicability={"auth":2})
+  self.s.remember(Role.DOER,record,1)
+  for architecture in ({},{"auth":1},{"auth":True}):
+   self.assertEqual(self.s.hydrate_hive("auth",architecture,4,2),[])
+   package=ContextPackage.build(goal="g",architecture=architecture,dependencies=[],artifacts=[],acceptance=[],history=[],budget=3,hive=[record])
+   self.assertEqual(package.hive,())
+  self.assertEqual([r.id for r in self.s.hydrate_hive("auth",{"auth":2},4,2)],["scoped"])
+ def test_hive_supersession_is_explicit_and_preserves_unrelated_notes(self):
+  old=HiveRecord("old",content="auth old",source="decision",source_version="1",applicability={"auth":2},provenance={"family":"auth"})
+  unrelated=HiveRecord("other",content="other",source="decision",source_version="1",applicability={"auth":2},provenance={"family":"other"})
+  new=HiveRecord("new",content="auth new",source="decision",source_version="2",applicability={"auth":2},provenance={"family":"auth"})
+  for item in (old,unrelated,new): self.s.remember(Role.DOER,item,1)
+  self.assertTrue(all(item.status is HiveStatus.ACTIVE for item in (old,unrelated,new)))
+  successor=HiveRecord("successor",content="auth corrected",source="decision",source_version="3",applicability={"auth":2},provenance={"family":"auth"},supersedes="old")
+  self.s.remember(Role.DOER,successor,2)
+  self.assertIs(old.status,HiveStatus.ARCHIVED); self.assertIs(unrelated.status,HiveStatus.ACTIVE); self.assertIs(new.status,HiveStatus.ACTIVE)
+  bad=HiveRecord("bad",content="wrong family",source="decision",provenance={"family":"other"},supersedes="new")
+  with self.assertRaises(InvariantError): self.s.remember(Role.DOER,bad,3)
+  self.assertIs(new.status,HiveStatus.ACTIVE)
  def test_heartbeat_recovery_and_wait_resume(self):
   self.s.tasks["A"].active_goal=True; self.s.tasks["A"].goal_id="g"; self.s.tasks["A"].milestone="proof"; self.s.tasks["A"].review_horizon_minutes=30
   self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=())); self.assertNotIn("A",self.s.scheduled_wakeups)
@@ -305,4 +325,111 @@ class RuntimeTests(unittest.TestCase):
   self.assertIsNotNone(self.s.ctrl_event("HANDOFF","A","evidence-2",**args))
   self.accept(); self.s.complete(Role.LEAD,"A",True,True,1,actor_id="L")
   self.assertIsNotNone(self.s.ctrl_event("ACCEPTANCE","A","accepted",outcome="Routing accepted.",evidence_id="proof"))
+class IncidentLessonTests(unittest.TestCase):
+ """Actual in-process gate/review receipts, not native M1 or human acceptance."""
+ def setUp(self):
+  from skills.swarm.tests.test_acceptance_contract import AcceptanceContractTests
+  from runtime import IncidentLedger
+  self.fixture=AcceptanceContractTests('test_atomic_producer_executes_and_completes_after_independent_acceptance')
+  self.fixture.setUp(); self.addCleanup(self.fixture.tearDown)
+  self.s=self.fixture.swarm; self.s.tasks['route'].contracts['auth']=2
+  self.fixture.pass_gates(); self.s.review(Role.REVIEW,'route',self.fixture.acceptance(),True)
+  self.ledger=IncidentLedger(self.fixture.temp.name)
+ def finding(self, identity, *, supersedes=None, valid=True):
+  from runtime import EvidenceKind, EvidenceReference, IncidentDisposition, IncidentRecord
+  accepted=self.s._runtime_acceptance_current(self.s.tasks['route']); self.assertIsNotNone(accepted)
+  evidence=[EvidenceReference(EvidenceKind.FILE_DIGEST,accepted.artifact.key(),accepted.artifact_content_digest),
+            EvidenceReference(EvidenceKind.REVIEW_RECEIPT,'review:route',accepted.review_receipt_digest)]
+  evidence.extend(EvidenceReference(EvidenceKind.TEST_RECEIPT,gate,digest) for gate,digest in zip(sorted(self.s.tasks['route'].gate_receipts),accepted.gate_receipt_digests))
+  if not valid: evidence=evidence[:1]
+  return IncidentRecord(identity,'2026-10-17',accepted.artifact.key(),'routing','producer','source','review','test','exact gates',
+    'missing contrast',('producer','review'),'use exact receipts','Bind exact receipts',IncidentDisposition.CANDIDATE,tuple(evidence),supersedesIncidentId=supersedes)
+ def proposal(self, identity, finding):
+  return HiveRecord(identity,reference='incident:'+finding.incidentId,source='incident',source_version=self.fixture.artifact.revision,
+    applicability={'auth':2},finding_id=finding.incidentId)
+ def package(self, records, architecture):
+  return ContextPackage.build(goal='g',architecture=architecture,dependencies=[],artifacts=[],acceptance=[],history=[],budget=4,hive=records)
+ def test_exact_acceptance_promotes_reference_once_and_both_routes_match_explicit_scope(self):
+  from dataclasses import asdict
+  finding=self.finding('verified'); self.ledger.append(finding); before=self.ledger.path.read_bytes()
+  identity=self.s.remember(Role.LEAD,self.proposal('proposal',finding),1,incident_ledger=self.ledger,accepted_task_id='route')
+  self.assertEqual(self.s.remember(Role.LEAD,self.proposal('different-caller-id',finding),2,incident_ledger=self.ledger,accepted_task_id='route'),identity)
+  self.assertEqual(len(self.s.hive),1); stored=self.s.hive[identity]
+  self.assertEqual(stored.content,''); self.assertEqual(stored.reference,'incident:verified')
+  self.assertEqual(self.s.hydrate_hive('routing',{'auth':2},4,3),[stored]); self.assertEqual(self.package([stored],{'auth':2}).hive,(identity,))
+  for architecture in ({},{'auth':1},{'auth':True}):
+   self.assertEqual(self.s.hydrate_hive('routing',architecture,4,3),[]); self.assertEqual(self.package([stored],architecture).hive,())
+  public=asdict(stored); self.assertFalse(any(key.startswith('_lesson') for key in public))
+  self.assertNotIn('#obs=',str(public)); self.assertEqual(stored.provenance['artifact_digest'],self.fixture.artifact.content_address())
+  restored=HiveRecord(**public); self.assertEqual(self.package([restored],{'auth':2}).hive,())
+  self.assertEqual(self.ledger.path.read_bytes(),before)
+  self.s.consult_incidents(Role.LEAD,'route',self.ledger,artifact=self.fixture.artifact.key(),scope='routing',actor_id='lead')
+  self.assertIn(';lessons='+identity,self.s.tasks['route'].incident_consultation_receipt)
+ def test_folded_proof_string_and_caller_flag_cannot_verify(self):
+  from runtime import FoldCandidate
+  finding=self.finding('unverified',valid=False); self.ledger.append(finding)
+  folded=self.ledger.daily_fold(FoldCandidate('Require exact receipts',('unverified',),'proof says PASS',demonstrably_generalizable=True)); self.assertTrue(folded.promoted)
+  with self.assertRaisesRegex(InvariantError,'evidence must join'): self.s.remember(Role.LEAD,self.proposal('p',finding),1,incident_ledger=self.ledger,accepted_task_id='route')
+  fake=self.proposal('fake',finding); fake.provenance={'verified':'true'}; self.s.hive[fake.id]=fake
+  self.assertEqual(self.s.hydrate_hive('incident',{'auth':2},4,2),[]); self.assertEqual(self.package([fake],{'auth':2}).hive,())
+ def test_consultation_requires_exact_finding_scope_not_search_words(self):
+  from dataclasses import replace
+  unrelated=replace(self.finding('routing-word-only'),scope='unrelated-scope')
+  matching=self.finding('opaque-control')
+  for finding in (unrelated,matching):
+   self.ledger.append(finding)
+   self.s.remember(Role.LEAD,self.proposal('proposal-'+finding.incidentId,finding),1,incident_ledger=self.ledger,accepted_task_id='route')
+   if finding is unrelated:
+    self.assertEqual(self.s.consult_incidents(Role.LEAD,'route',self.ledger,artifact=self.fixture.artifact.key(),scope='routing',actor_id='lead'),())
+    self.assertEqual(self.s.tasks['route'].incident_consultation_receipt,self.fixture.artifact.key()+':routing:none')
+  before=self.ledger.path.read_bytes()
+  # Ordinary advisory search intentionally remains broad, unlike consultation.
+  self.assertEqual(len(self.s.hydrate_hive('routing',{'auth':2},8,2)),2)
+  incidents=self.s.consult_incidents(Role.LEAD,'route',self.ledger,artifact=self.fixture.artifact.key(),scope='routing',actor_id='lead')
+  self.assertEqual([item.incidentId for item in incidents],['opaque-control'])
+  identity=next(record.id for record in self.s.hive.values() if record.finding_id=='opaque-control')
+  self.assertEqual(self.s.tasks['route'].incident_consultation_receipt,self.fixture.artifact.key()+':routing:opaque-control;lessons='+identity)
+  self.assertEqual(self.ledger.path.read_bytes(),before)
+ def test_consultation_filters_scope_and_exact_artifact_before_eight_record_limit(self):
+  from dataclasses import replace
+  for index in range(8):
+   finding=replace(self.finding('routing-unrelated-'+str(index)),scope='unrelated-scope')
+   self.ledger.append(finding)
+   self.s.remember(Role.LEAD,self.proposal('proposal-'+finding.incidentId,finding),1,incident_ledger=self.ledger,accepted_task_id='route')
+  matching=self.finding('exact-match'); self.ledger.append(matching)
+  identity=self.s.remember(Role.LEAD,self.proposal('matching',matching),1,incident_ledger=self.ledger,accepted_task_id='route')
+  self.s.consult_incidents(Role.LEAD,'route',self.ledger,artifact=self.fixture.artifact.key(),scope='routing',actor_id='lead')
+  self.assertEqual(self.s.tasks['route'].incident_consultation_receipt,self.fixture.artifact.key()+':routing:exact-match;lessons='+identity)
+  # Sharing a base string is not an exact accepted artifact identity.
+  self.assertEqual(self.s.consult_incidents(Role.LEAD,'route',self.ledger,artifact=self.fixture.artifact.base,scope='routing',actor_id='lead'),())
+  self.assertEqual(self.s.tasks['route'].incident_consultation_receipt,self.fixture.artifact.base+':routing:none')
+ def test_consultation_retains_at_most_eight_exact_lessons(self):
+  identities=[]
+  for index in range(9):
+   finding=self.finding('exact-'+str(index)); self.ledger.append(finding)
+   identities.append(self.s.remember(Role.LEAD,self.proposal('proposal-'+str(index),finding),1,incident_ledger=self.ledger,accepted_task_id='route'))
+  self.s.consult_incidents(Role.LEAD,'route',self.ledger,artifact=self.fixture.artifact.key(),scope='routing',actor_id='lead')
+  self.assertEqual(self.s.tasks['route'].incident_consultation_receipt.split(';lessons=')[1],','.join(identities[:8]))
+ def test_rejected_wrong_version_or_missing_current_acceptance_is_not_eligible(self):
+  finding=self.finding('rejected'); self.ledger.append(finding); self.ledger.reject(('rejected',),reason='not a retained control')
+  with self.assertRaises(InvariantError): self.s.remember(Role.LEAD,self.proposal('r',finding),1,incident_ledger=self.ledger,accepted_task_id='route')
+  good=self.finding('good'); self.ledger.append(good); wrong=self.proposal('wrong',good); wrong.source_version='unaccepted-version'
+  with self.assertRaises(InvariantError): self.s.remember(Role.LEAD,wrong,1,incident_ledger=self.ledger,accepted_task_id='route')
+  identity=self.s.remember(Role.LEAD,self.proposal('right',good),1,incident_ledger=self.ledger,accepted_task_id='route')
+  self.fixture.artifact_path.write_text('changed after acceptance',encoding='utf-8')
+  self.assertEqual(self.s.hydrate_hive('routing',{'auth':2},4,3),[]); self.assertEqual(self.package([self.s.hive[identity]],{'auth':2}).hive,())
+  with self.assertRaises(InvariantError): self.s.remember(Role.LEAD,self.proposal('again',good),3,incident_ledger=self.ledger,accepted_task_id='route')
+ def test_explicit_verified_successor_archives_only_its_declared_family(self):
+  first=self.finding('first'); self.ledger.append(first)
+  old_id=self.s.remember(Role.LEAD,self.proposal('first-proposal',first),1,incident_ledger=self.ledger,accepted_task_id='route')
+  unrelated=HiveRecord('unrelated',content='retained auth advice',source='worker',source_version='older',applicability={'auth':2})
+  self.s.remember(Role.DOER,unrelated,1)
+  successor=self.finding('next',supersedes='first'); self.ledger.append(successor)
+  new_id=self.s.remember(Role.LEAD,self.proposal('next-proposal',successor),2,incident_ledger=self.ledger,accepted_task_id='route')
+  self.assertNotEqual(old_id,new_id); self.assertIs(self.s.hive[old_id].status,HiveStatus.ARCHIVED)
+  self.assertIs(unrelated.status,HiveStatus.ACTIVE); self.assertTrue(self.s.hive[new_id].current_for({'auth':2}))
+  before=(self.s.mode,self.s.hive_enabled,self.s.task_lifetime_hours)
+  self.s.hydrate_hive('routing',{'auth':2},4,3)
+  self.assertEqual((self.s.mode,self.s.hive_enabled,self.s.task_lifetime_hours),before)
+
 if __name__ == "__main__": unittest.main()
