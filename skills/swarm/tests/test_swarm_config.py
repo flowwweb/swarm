@@ -19,6 +19,21 @@ SPEC.loader.exec_module(config)
 
 
 class SwarmConfigTests(unittest.TestCase):
+    def test_guided_interview_default_override_and_validation(self) -> None:
+        self.assertTrue(config.merge({})["init"]["guided_interview"])
+        effective, exists = config.load(config.TEMPLATE_PATH)
+        self.assertTrue(exists)
+        self.assertTrue(effective["init"]["guided_interview"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.toml"
+            path.write_text("[init]\nguided_interview = false\n", encoding="utf-8")
+            self.assertFalse(config.load(path)[0]["init"]["guided_interview"])
+            for value in ("false", 0, 1, [], {}):
+                with self.subTest(value=value), self.assertRaises(config.ConfigError):
+                    config.validate({"init": {"guided_interview": value}})
+            with self.assertRaises(config.ConfigError):
+                config.validate({"init": {"approved": True}})
+
     def test_report_preferences_preserve_opt_in_scope_and_collection_failures(self) -> None:
         effective = config.merge({})
         for scope in ("portfolio", "project"):

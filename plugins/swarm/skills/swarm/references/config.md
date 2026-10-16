@@ -65,6 +65,14 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 
 ## Settings
 
+`init.guided_interview` defaults to true. The read-only project alignment
+planner consumes it through this same loader. Set false to suppress its
+initial questions; baseline approval remains unverified. An explicit
+`swarm_init.py --plan --no-questions` overrides this preference for that call.
+`--config <path>` selects one config through the existing loader, not another
+settings layer. These controls plan an interview; they do not invent answers,
+approve documents or perform a migration.
+
 | Setting | Meaning | Valid values |
 | --- | --- | --- |
 | `portfolio.max_active_tasks` | Tasks currently producing, integrating, or reviewing | 1-12 |

@@ -78,6 +78,7 @@ DEFAULTS: dict[str, Any] = {
     "turbo": {"enabled": False},
     "efficiency": {"mode":"BALANCED", "doer_wip_limit":3},
     "goals": {"use_goals": True},
+    "init": {"guided_interview": True},
     "hive": {"enabled": True, "cleanup_strategy":"adaptive", "retention_strategy":"adaptive", "worker_strategy":"warm_when_useful", "archive_behavior":"provenance"},
     "chat_relay": {
         "enabled": False,
@@ -469,6 +470,10 @@ def validate(raw: dict[str, Any]) -> None:
     goals = _expect_table(raw, "goals")
     _expect_keys(goals, set(DEFAULTS["goals"]), "goals")
     _boolean(goals, "use_goals", "goals")
+
+    initialization = _expect_table(raw, "init")
+    _expect_keys(initialization, set(DEFAULTS["init"]), "init")
+    _boolean(initialization, "guided_interview", "init")
 
     hive = _expect_table(raw, "hive")
     _expect_keys(hive, set(DEFAULTS["hive"]), "hive")

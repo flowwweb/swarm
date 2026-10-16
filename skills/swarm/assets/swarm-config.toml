@@ -98,6 +98,10 @@ doer_wip_limit = 3
 # interruption. Set false only when the host explicitly wants ephemeral intake.
 use_goals = true
 
+[init]
+# Guided setup asks the first alignment questions. Off never implies approval.
+guided_interview = true
+
 [hive]
 # Compact SWARM continuity only: durable lessons without a new memory service.
 enabled = true
