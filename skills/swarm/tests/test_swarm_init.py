@@ -34,6 +34,44 @@ class ProjectInitTests(unittest.TestCase):
     def snapshot(self):
         return {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.iterdir() if p.is_file()}
 
+    def test_plan_retains_named_links_and_unknown_history_without_conversion(self):
+        import hashlib
+        brief = init._new_brief(self.root)
+        brief["links"] = {f"source_{i}": f"evidence/source-{i}.md" for i in range(10)}
+        brief["planning"] = {"history": [{"owner_id": "owner-1", "artifact": {"id": "proof-1"}}]}
+        self.write_brief(brief)
+        before = self.snapshot()
+        parsed, digest = self.brief()
+        self.assertEqual(parsed, brief)
+        self.assertEqual(digest, "sha256:" + hashlib.sha256(json.dumps(
+            brief, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+        for _ in range(2):
+            result = subprocess.run([sys.executable, "-B", str(SCRIPT), "--root", str(self.root),
+                                     "--plan", "--no-questions"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plan = json.loads(result.stdout)
+            self.assertEqual(plan["status"], "LEGACY_LAYOUT")
+            self.assertFalse(plan["approval_verified"])
+            self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.brief(), (brief, digest))
+        with self.assertRaisesRegex(ValueError, "named links must be explicitly migrated"):
+            init.archive_brief_section(self.root, "planning", expected_sha256=hashlib.sha256(before["SWARM.md"][0]).hexdigest())
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root / "history").exists())
+
+    def test_named_links_reject_invalid_mapping_without_writes(self):
+        for links in ({"": "source.md"}, {"source": ""}, {"source": None},
+                      {"source": ["source.md"]}, {"source": {"ref": "source.md"}},
+                      {"source\n": "source.md"}, {"source": "source\x00.md"}, 1, "source.md"):
+            with self.subTest(links=links):
+                brief = init._new_brief(self.root)
+                brief["links"] = links
+                self.write_brief(brief)
+                before = self.snapshot()
+                with self.assertRaisesRegex(ValueError, "field links is invalid"):
+                    init.plan_alignment(self.root, questions_enabled=False)
+                self.assertEqual(self.snapshot(), before)
+
     def test_alignment_missing_cli_is_read_only_even_with_questions_off(self):
         result = subprocess.run([sys.executable, "-B", str(SCRIPT), "--root", str(self.root),
                                  "--plan", "--no-questions"], capture_output=True, text=True)

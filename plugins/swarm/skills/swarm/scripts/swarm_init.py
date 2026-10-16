@@ -226,6 +226,8 @@ def archive_brief_section(root: Path, field: str, *, expected_sha256: str) -> di
         return {"status": "REPLAY", "archive": section, "current_sha256": original_sha}
     if original_sha != expected_sha256 or not isinstance(section, (dict, list)):
         raise ValueError("brief changed or selected section is not structured data")
+    if not isinstance(document["links"], list):
+        raise ValueError("named links must be explicitly migrated before appending a brief history link; preserved")
     reference = {"rel": "brief_history", "path": f"history/swarm-brief-{original_sha}.md",
                  "sha256": original_sha, "bytes": len(raw), "canonical_digest": original_digest, "field": field}
     document[field] = reference

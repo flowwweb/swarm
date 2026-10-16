@@ -190,9 +190,19 @@ def parse_project_brief_markdown(text: str, *, project_id: str | None = None) ->
     for field in ("project", "objective", "repo", "authority", "ownership", "proof_acceptance"):
         if not isinstance(document.get(field), dict):
             raise ProjectModelError(f"project brief field {field} is invalid")
-    for field in ("users_outcomes", "milestones", "decisions", "risks_blockers", "links"):
+    for field in ("users_outcomes", "milestones", "decisions", "risks_blockers"):
         if not isinstance(document.get(field), list):
             raise ProjectModelError(f"project brief field {field} is invalid")
+    # Retained schema-1 briefs also use named pointers. Preserve their exact
+    # representation in the canonical digest; these are not executable links.
+    links = document["links"]
+    if not isinstance(links, list) and not (
+        isinstance(links, dict) and all(
+            isinstance(value, str) and value.strip() and not any(ord(char) < 32 for char in value)
+            for pair in links.items() for value in pair
+        )
+    ):
+        raise ProjectModelError("project brief field links is invalid")
     for field in ("tasks", "blocks", "artifacts"):
         if field in document and (
             not isinstance(document[field], list) or any(not isinstance(item, dict) for item in document[field])
