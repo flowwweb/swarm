@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 import time
 import unicodedata
@@ -20,7 +21,7 @@ from .agent_colors import (
     BUILT_IN_ROLE_ACCENTS as ROLE_ACCENTS,
     project_agent_color_registry,
 )
-from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, CustodyMutation, HostCustodyReceipt, InvariantError, OperationClass, Role, RoleGateDecision, RetryOutcome, RetryTopologyAction, RetryTopologyLedger, Task, _authority_verify, _custody_message, role_gate, validate_work_unit
+from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, CustodyMutation, HostCustodyReceipt, InvariantError, OperationClass, Role, RoleGateDecision, RetryOutcome, RetryTopologyAction, RetryTopologyLedger, Swarm, Task, TaskState, _authority_verify, _custody_message, role_gate, validate_work_unit
 from .private_state import LockedPrivateState
 
 
@@ -32,6 +33,15 @@ MAX_PULSE_FILES = 1024
 PROGRESS_LEDGER_PATH = Path("swarm") / "progress-ledger.jsonl"
 PROGRESS_PROJECTION_PATH = Path("swarm") / "progress-current.json"
 MAX_PROGRESS_EVENT_BYTES = 16 * 1024
+MAX_BOUND_EVIDENCE_BYTES = 64 * 1024 * 1024
+BOUND_EVIDENCE_CLAIM_LIMIT = (
+    "Owner-submitted file digest for one block of a host-created bound task; "
+    "it is not dispatch or completion or admitted progress or independent acceptance."
+)
+BOUND_ACCEPTANCE_CLAIM_LIMIT = (
+    "In-process runtime review and completion bound to the retained file digest; "
+    "it is not host-signed custody or deployed or native proof."
+)
 MAX_FEED_SCAN_BYTES = 1024 * 1024
 MAX_MATERIAL_SENTENCE = 240
 MAX_YIELD_SERIES = 96
@@ -2383,6 +2393,62 @@ def task_creation_binding_event(
     return validate_progress_material_event(payload).canonical_payload()
 
 
+def _bound_evidence_digest(path: Path) -> str:
+    """Hash one bounded regular file; links, reparse points and changing files are refused."""
+    if not isinstance(path, Path) or not path.is_absolute():
+        raise ProgressEventError("bound evidence requires an absolute file path")
+    try:
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400
+                or info.st_size > MAX_BOUND_EVIDENCE_BYTES):
+            raise ProgressEventError("bound evidence must be one bounded regular file")
+        digest, size = hashlib.sha256(), 0
+        with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            while chunk := stream.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_BOUND_EVIDENCE_BYTES:
+                    raise ProgressEventError("bound evidence exceeds its size bound")
+                digest.update(chunk)
+        after = path.lstat()
+    except OSError as error:
+        raise ProgressEventError("bound evidence file is unavailable") from error
+    if ((opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino) or size != opened.st_size
+            or (after.st_size, after.st_mtime_ns) != (info.st_size, info.st_mtime_ns)):
+        raise ProgressEventError("bound evidence changed while it was read")
+    return digest.hexdigest()
+
+
+def _bound_block_payload(
+    *, event_id: str, kind: str, lifecycle: str, project_id: str, task_id: str,
+    manifest: Mapping[str, Any], block: Mapping[str, Any], created: str, operation_id: str,
+    scope_version: int, admit: bool, proof_receipt_ids: list[str], claim_limit: str,
+    observed_at_ms: int, parent_event_id: str,
+) -> dict[str, Any]:
+    """Compose one schema-1 block event from retained manifest and creation-binding facts only."""
+    weight = block.get("weight")
+    measured = type(weight) is int and weight > 0
+    return {
+        "schema_version": 1, "event_id": event_id, "dedupe_key": event_id, "portfolio_id": "swarm",
+        "project_id": project_id, "ctrl_id": manifest["ctrl_id"], "milestone_id": block["milestone_id"],
+        "block_id": block["block_id"], "task_id": task_id, "owner_id": task_id,
+        "scope_version": scope_version, "parent_block_id": None, "dependency_ids": [],
+        "lineage": {"predecessor_block_ids": [], "split_from": None, "merged_from": []},
+        "event_kind": kind, "lifecycle_state": lifecycle,
+        "measurement": {"state": "MEASURED" if measured else "UNMEASURED",
+                        "committed_weight": weight if measured else None,
+                        "admitted_proof_weight": weight if measured and admit else 0,
+                        "basis_receipt_ids": [created] if measured else []},
+        "proof": {"required_classes": [], "receipt_ids": proof_receipt_ids, "claim_limit": claim_limit},
+        "eta": {"start_ms": None, "end_ms": None, "confidence": None, "basis_receipt_ids": []},
+        "rework": {"attempt": 1, "count": 0, "invalidated_receipt_ids": []},
+        "custody": {"surface": "ledger:bound-task-lifecycle", "receipt_id": created},
+        "steering_receipt_ids": [], "material_update_sentence": None, "flags": [],
+        "provenance": f"bound-task-lifecycle:{operation_id}", "source": "swarm_runtime",
+        "observed_at_ms": observed_at_ms, "causation_id": None, "parent_event_id": parent_event_id,
+    }
+
+
 def _ticket_identity(payload: dict[str, Any]) -> dict[str, Any]:
     _exact_fields(payload, frozenset({"schema_version", "record_type", "project_id", "project_code", "assignments"}), "ticket identity")
     if type(payload["schema_version"]) is not int or payload["schema_version"] != 1 or payload["record_type"] != "TICKET_IDENTITY":
@@ -3758,6 +3824,184 @@ class Ledger:
             "cursor": projection["cursor"],
             "claim_limit": "Only retained connector-confirmed task creation is projected; titles, paths, cwd, profession labels, and independent host tasks never backfill authority.",
         }
+
+    @staticmethod
+    def _require_bound_revision(manifest_digest: Any, expected_event_seq: Any) -> None:
+        if not isinstance(manifest_digest, str) or not manifest_digest:
+            raise ProgressEventError("bound lifecycle requires the retained manifest digest")
+        if type(expected_event_seq) is not int or expected_event_seq < 0:
+            raise ProgressEventError("bound lifecycle requires a nonnegative expected event sequence")
+
+    @staticmethod
+    def _bound_block_context(
+        projection: Mapping[str, Any], project_id: str, task_id: str, block_id: str, manifest_digest: str,
+    ) -> tuple[str, dict[str, Any], dict[str, Any], str, dict[str, Any] | None]:
+        """Resolve one block only through retained host-confirmed creation and its active manifest."""
+        state = projection["task_manifests"].get(task_id)
+        operation_id = projection["task_creation_operations_by_task"].get(task_id)
+        binding = None if operation_id is None else projection["task_creation_bindings"].get(operation_id)
+        manifest = None if state is None else state["versions"].get(state["active_version"])
+        if (binding is None or manifest is None or binding["task_id"] != task_id
+                or binding["project_id"] != project_id or manifest["project_id"] != project_id
+                or manifest["task_id"] != task_id):
+            raise ProgressEventError("bound lifecycle requires an exact host-created task in this project")
+        if manifest["manifest_digest"] != manifest_digest:
+            raise ProgressEventError("bound task manifest changed; reload before continuing")
+        if manifest["supersedes_digest"] is not None:
+            raise ProgressEventError("bound lifecycle requires the original host-created manifest")
+        block = next((item for item in manifest["blocks"] if item["block_id"] == block_id), None)
+        created = next((item["receipt_id"] for item in binding["receipts"]["block_receipts"]
+                        if item["id"] == block_id), None)
+        if block is None or created is None:
+            raise ProgressEventError("bound lifecycle block is not part of the host-confirmed task")
+        retained = [item for item in projection["blocks"].values()
+                    if item["project_id"] == project_id and item["block_id"] == block_id]
+        if any(item["task_id"] != task_id for item in retained):
+            raise ProgressEventError("bound lifecycle block id is retained for another task")
+        return operation_id, manifest, block, created, (retained[0] if retained else None)
+
+    @staticmethod
+    def _retained_prefix(projection: Mapping[str, Any], events: tuple[ProgressMaterialEvent, ...]) -> int:
+        retained = [projection["dedupe"].get(event.dedupe_key) for event in events]
+        count = 0
+        for value, event in zip(retained, events):
+            if value is None:
+                break
+            if value != event.semantic_digest:
+                raise ProgressEventError("bound block already retains different lifecycle content")
+            count += 1
+        if any(value is not None for value in retained[count:]):
+            raise ProgressEventError("bound block retains a noncontiguous lifecycle")
+        return count
+
+    def _append_material_batch_unlocked(
+        self, projection: dict[str, Any], records: list[dict[str, Any]], events: tuple[ProgressMaterialEvent, ...],
+    ) -> dict[str, Any]:
+        """Validate the complete suffix before appending; a valid durable prefix is retryable."""
+        trial = json.loads(json.dumps(projection, sort_keys=True))
+        lines: list[bytes] = []
+        for offset, event in enumerate(events, 1):
+            event_seq = len(records) + offset
+            self._apply(trial, event, event_seq)
+            lines.append(json.dumps(self._record(event, event_seq), ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":")).encode("utf-8") + b"\n")
+        encoded = b"".join(lines)
+        self._state.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._state.path.open("ab") as handle:
+            handle.write(encoded); handle.flush(); os.fsync(handle.fileno())
+        self._write_projection_unlocked(trial)
+        return trial
+
+    def append_bound_block_evidence(
+        self, *, project_id: str, task_id: str, block_id: str, manifest_digest: str,
+        expected_event_seq: int, evidence_path: Path, expected_sha256: str,
+        observed_at_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Retain owner file evidence for one block of an already host-created bound task."""
+        project_id = _safe_id(project_id, "project_id")
+        task_id = _safe_id(task_id, "task_id")
+        block_id = _safe_id(block_id, "block_id")
+        self._require_bound_revision(manifest_digest, expected_event_seq)
+        if not isinstance(expected_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+            raise ProgressEventError("bound evidence requires a lowercase SHA-256 digest")
+        if _bound_evidence_digest(evidence_path) != expected_sha256:
+            raise ProgressEventError("bound evidence digest does not match the file")
+        receipt = f"sha256:{expected_sha256}"
+        observed = int(time.time() * 1000) if observed_at_ms is None else observed_at_ms
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            operation_id, manifest, block, created, retained = self._bound_block_context(
+                projection, project_id, task_id, block_id, manifest_digest)
+            event = validate_progress_material_event(_bound_block_payload(
+                event_id=f"bound-evidence:{task_id}:{block_id}", kind="BLOCK_CREATED", lifecycle="ACTIVE",
+                project_id=project_id, task_id=task_id, manifest=manifest, block=block, created=created,
+                operation_id=operation_id, scope_version=int(projection["scopes"].get(project_id, 0)) or 1,
+                admit=False, proof_receipt_ids=[receipt], claim_limit=BOUND_EVIDENCE_CLAIM_LIMIT,
+                observed_at_ms=observed, parent_event_id=operation_id))
+            outcome = {"event_id": event.event_id, "proof_receipt_id": receipt, "accepted": False,
+                       "claim_limit": BOUND_EVIDENCE_CLAIM_LIMIT}
+            if self._retained_prefix(projection, (event,)) == 1:
+                return {"status": "unchanged", "cursor": projection["cursor"], **outcome}
+            if retained is not None:
+                raise ProgressEventError("bound block lifecycle was already started by another writer")
+            if projection["cursor"]["event_seq"] != expected_event_seq:
+                raise ProgressEventError("progress ledger changed; reload before submitting evidence")
+            trial = self._append_material_batch_unlocked(projection, records, (event,))
+        with self._condition:
+            self._condition.notify_all()
+        return {"status": "appended", "cursor": trial["cursor"], **outcome}
+
+    def append_runtime_block_acceptance(
+        self, *, swarm: Swarm, project_id: str, task_id: str, block_id: str, manifest_digest: str,
+        expected_event_seq: int, observed_at_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Retain REVIEW -> VERIFIED -> ACCEPTED from the live runtime that reviewed and completed the task.
+
+        Acceptance is read only through Swarm._runtime_acceptance_current, which returns the record
+        minted by Swarm.review while artifact, gates and review remain current. No CLI exposes this.
+        """
+        project_id = _safe_id(project_id, "project_id")
+        task_id = _safe_id(task_id, "task_id")
+        block_id = _safe_id(block_id, "block_id")
+        self._require_bound_revision(manifest_digest, expected_event_seq)
+        if type(swarm) is not Swarm:
+            raise ProgressEventError("bound acceptance requires the live runtime Swarm that reviewed the task")
+        runtime_task = swarm.tasks.get(task_id)
+        accepted = None if runtime_task is None else Swarm._runtime_acceptance_current(swarm, runtime_task)
+        contract = None if runtime_task is None else runtime_task.acceptance_contract
+        # _runtime_acceptance_current re-observes only when a root and observed paths exist; require both.
+        if (runtime_task is None or runtime_task.state is not TaskState.COMPLETE or accepted is None
+                or runtime_task.subagent_receipt != f"host:thread:{task_id}" or accepted.reviewer == task_id
+                or contract is None or not contract.observation_root or len(contract.artifact.observed_paths) != 1):
+            raise ProgressEventError("bound acceptance requires a completed task with current independent runtime acceptance on its host thread")
+        digest = _bound_evidence_digest(Path(contract.observation_root) / contract.artifact.observed_paths[0])
+        evidence_receipt = f"sha256:{digest}"
+        review_receipt = f"runtime-review:{accepted.review_receipt_digest}"
+        proof_ids = [evidence_receipt, review_receipt, f"runtime-artifact:{accepted.artifact_content_digest}",
+                     *(f"runtime-gate:{value}" for value in accepted.gate_receipt_digests)]
+        observed = int(time.time() * 1000) if observed_at_ms is None else observed_at_ms
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            operation_id, manifest, block, created, retained = self._bound_block_context(
+                projection, project_id, task_id, block_id, manifest_digest)
+            if retained is None:
+                raise ProgressEventError("bound acceptance requires retained ACTIVE evidence for the block")
+            if any(item["task_id"] == task_id and item["block_id"] != block_id
+                   and review_receipt in item["proof_receipt_ids"] for item in projection["blocks"].values()):
+                raise ProgressEventError("runtime review already accepted another block")
+            if retained["committed_weight"] != block["weight"]:
+                raise ProgressEventError("bound block weight changed after evidence")
+            evidence_id = f"bound-evidence:{task_id}:{block_id}"
+            ids = tuple(f"bound-{name}:{task_id}:{block_id}" for name in ("review", "verified", "accepted"))
+            steps = (("STATE_CHANGED", "REVIEW", False, [evidence_receipt, review_receipt]),
+                     ("PROOF_ADMITTED", "VERIFIED", True, proof_ids),
+                     ("ACCEPTED", "ACCEPTED", True, proof_ids))
+            moment = max(observed, int(retained["observed_at_ms"]))
+            scope_version = int(projection["scopes"].get(project_id, 0))
+            events = tuple(validate_progress_material_event(_bound_block_payload(
+                event_id=identity, kind=kind, lifecycle=lifecycle, project_id=project_id, task_id=task_id,
+                manifest=manifest, block=block, created=created, operation_id=operation_id,
+                scope_version=scope_version, admit=admit, proof_receipt_ids=receipts,
+                claim_limit=BOUND_ACCEPTANCE_CLAIM_LIMIT, observed_at_ms=moment, parent_event_id=parent))
+                for identity, parent, (kind, lifecycle, admit, receipts)
+                in zip(ids, (evidence_id, *ids[:-1]), steps))
+            outcome = {"event_id": ids[-1], "proof_receipt_ids": proof_ids, "accepted": True,
+                       "claim_limit": BOUND_ACCEPTANCE_CLAIM_LIMIT}
+            retained_count = self._retained_prefix(projection, events)
+            if retained_count == len(events):
+                return {"status": "unchanged", "cursor": projection["cursor"], **outcome}
+            if not retained_count and (retained["lifecycle_state"] != ProgressLifecycle.ACTIVE.value
+                    or retained["latest_event_id"] != evidence_id
+                    or retained["proof_receipt_ids"] != [evidence_receipt]):
+                raise ProgressEventError("bound acceptance requires the retained ACTIVE evidence for the accepted bytes")
+            if retained_count and retained["latest_event_id"] != events[retained_count - 1].event_id:
+                raise ProgressEventError("bound lifecycle advanced beyond its retryable prefix")
+            if projection["cursor"]["event_seq"] not in {expected_event_seq, expected_event_seq + retained_count}:
+                raise ProgressEventError("progress ledger changed; reload before retaining acceptance")
+            trial = self._append_material_batch_unlocked(projection, records, events[retained_count:])
+        with self._condition:
+            self._condition.notify_all()
+        return {"status": "appended", "cursor": trial["cursor"], **outcome}
 
     @staticmethod
     def _project_role_manifests_from_projection(

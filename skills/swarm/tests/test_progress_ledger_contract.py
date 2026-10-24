@@ -45,6 +45,331 @@ from skills.swarm.runtime.core import AcceptanceContract, ArtifactIdentity, Cont
 
 
 class ProgressLedgerContractTests(unittest.TestCase):
+    def _runtime(self):
+        import importlib
+        return importlib.import_module(type(self.ledger).__module__.rpartition(".")[0])
+
+    def _host_result(self, operation_id: str, task_id: str) -> dict:
+        base = {
+            "schema_version": 1, "record_type": "CONNECTOR", "command_id": f"command:{operation_id}",
+            "idempotency_key": operation_id, "command_digest": "a" * 64,
+            "project_id": "project-alpha", "root_digest": "b" * 64,
+            "action": "MANUAL_AGENT", "thread_id": None, "turn_id": None, "observed_root_digest": None,
+        }
+        self.ledger.append_connector_receipt({**base, "receipt_id": f"{operation_id}:command", "receipt_index": 0, "status": "COMMAND", "observed_at_ms": 1})
+        self.ledger.append_connector_receipt({**base, "receipt_id": f"{operation_id}:ack", "receipt_index": 1, "status": "ACKNOWLEDGED", "thread_id": task_id, "observed_root_digest": "b" * 64, "observed_at_ms": 2})
+        return {**base, "receipt_id": f"{operation_id}:result", "receipt_index": 2, "status": "RESULT", "thread_id": task_id, "turn_id": f"turn:{task_id}", "observed_root_digest": "b" * 64, "observed_at_ms": 3}
+
+    def _bound_task(self, operation_id: str, task_id: str, *, weight: int | None = None, block_count: int = 1) -> dict:
+        role = next(item for item in self.role_manifests() if item["id"] == "developer")
+        milestone, block = f"{task_id}-milestone", f"{task_id}-block"
+        manifest = build_task_manifest(
+            manifest_id=f"task-manifest:{task_id}", task_id=task_id, task_name=f"Task {task_id}",
+            project_id="project-alpha", ctrl_id="ctrl-alpha",
+            policy={"presentation_priority": 1000, "weighted_progress": weight is not None,
+                    "expected_update_interval_minutes": 30, "amber_freshness_multiplier": 2,
+                    "red_freshness_multiplier": 4, "amber_estimate_ratio_milli": 1000,
+                    "red_estimate_ratio_milli": 1500},
+            milestones=[{"milestone_id": milestone, "order": 0, "title": "Implement",
+                         "verification_policy": "source-contract", "supersedes_milestone_id": None}],
+            blocks=[{"block_id": block if index == 0 else f"{block}-{index}", "milestone_id": milestone, "order": index, "title": "Build the bounded slice",
+                     "verification_policy": "source-contract", "estimate_minutes": 30, "weight": weight,
+                     "supersedes_block_id": None} for index in range(block_count)],
+        )
+        result = self._host_result(operation_id, task_id)
+        event = task_creation_binding_event(
+            operation_id=operation_id, project_id="project-alpha", root_digest="b" * 64, ctrl_id="ctrl-alpha",
+            task_id=task_id, role_manifest=role, task_manifest=manifest, parent_task_id=None,
+            topology_manifest_receipt_id=f"{operation_id}:topology", task_receipt_id=f"{operation_id}:task",
+            milestone_receipts=[{"id": milestone, "receipt_id": f"receipt:{milestone}"}],
+            block_receipts=[{"id": item["block_id"], "receipt_id": f"receipt:{item['block_id']}"} for item in manifest["blocks"]],
+            explicit_empty_work_receipt_id=None, host_result_receipt_id=result["receipt_id"], observed_at_ms=4,
+        )
+        self.ledger.append_connector_result_with_task_creation(result, event)
+        state = self.ledger.replay()["task_manifests"][task_id]
+        return state["versions"][state["active_version"]]
+
+    def _work_file(self, name: str, data: bytes):
+        path = self.root / "work" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path.resolve(), hashlib.sha256(data).hexdigest()
+
+    def _scope_request(self, manifest: dict) -> dict:
+        return {"project_id": "project-alpha", "task_id": manifest["task_id"],
+                "block_id": manifest["blocks"][0]["block_id"], "manifest_digest": manifest["manifest_digest"],
+                "expected_event_seq": self.ledger.replay()["cursor"]["event_seq"]}
+
+    def _evidence_request(self, manifest: dict, path, digest: str) -> dict:
+        return {**self._scope_request(manifest), "evidence_path": path, "expected_sha256": digest}
+
+    def _dispatch_state(self) -> str:
+        import json
+        projection = self.ledger.replay()
+        keys = ("connector_receipts", "connector_receipt_ids", "task_creation_bindings",
+                "task_creation_operations_by_task", "task_manifests")
+        return json.dumps({key: projection[key] for key in keys}, sort_keys=True)
+
+    def _block(self, ledger, block_id: str) -> dict:
+        return next(item for item in ledger.replay()["blocks"].values() if item["block_id"] == block_id)
+
+    def runtime_lane(self, task_id: str, artifact_name: str, *, thread: str | None = None):
+        """AcceptanceContractTests.setUp pattern: real assign, captured contract, incident consultation."""
+        rt = self._runtime()
+        root = str((self.root / "work").resolve())
+        artifact = rt.ArtifactIdentity.capture(task_id, "rev-1", "release", root=root, paths=(artifact_name,))
+        swarm = rt.Swarm()
+        swarm.add_lead(rt.Role.CTRL, "lead")
+        swarm.add_worker(rt.Role.LEAD, rt.Worker("builder", "lead", 1))
+        delegation = rt.DelegationContract(task_id, f"Return the exact {task_id} artifact.", "builder",
+                                           (artifact_name,), artifact, (artifact_name,), (rt.ProofClass.SOURCE,), 60)
+        swarm.assign(rt.Role.LEAD, rt.Task(
+            task_id, "builder", "author", 1, {}, goal_id=f"goal-{task_id}",
+            subagent_receipt=thread or f"host:thread:{task_id}", lane_kind=rt.LaneKind.CODE, owning_lead_id="lead",
+            acceptance_contract=rt.AcceptanceContract(artifact, ("test",), observation_root=root),
+            delegation_contract=delegation))
+        swarm.consult_incidents(rt.Role.LEAD, task_id, rt.IncidentLedger(root), artifact=task_id,
+                                scope="bound-lifecycle", actor_id="lead")
+        return swarm
+
+    def _gate_return_review(self, swarm, task_id: str) -> None:
+        """Runtime-executed gate, exact delegated return, independent LIGHT ACCEPTANCE review."""
+        import sys
+        from pathlib import Path
+        rt = self._runtime()
+        task = swarm.tasks[task_id]
+        root = task.acceptance_contract.observation_root
+        receipt = swarm.run_gate(rt.Role.LEAD, task_id, "test", (sys.executable, "-c", "pass"), cwd=root, actor_id="lead")
+        self.assertIs(receipt.outcome, rt.ProofOutcome.PASS)
+        delegation = task.delegation_contract
+        raw = (Path(root) / delegation.artifact_paths[0]).read_bytes()
+        file_digest = hashlib.sha256(raw).hexdigest()
+        parity = rt.ArtifactParityReceipt.from_files(
+            delegation.artifact, (rt.ArtifactFileEvidence(delegation.artifact_paths[0], len(raw), file_digest),))
+        evidence = rt.DelegatedEvidence(f"evidence-{task_id}", rt.ProofClass.SOURCE, delegation.artifact.key(),
+                                        file_digest, "Bound lifecycle delegated return.")
+        swarm.record_delegated_return(rt.Role.DOER, task_id, rt.DelegatedReturnReceipt(
+            f"return-{task_id}", task_id, delegation.owner_id, rt.DelegatedReceiptVerdict.ACCEPT, delegation.artifact,
+            "Exact delegated return for the bound block.", (evidence,), parity, (), 1), actor_id=delegation.owner_id)
+        swarm.review(rt.Role.REVIEW, task_id, rt.ReviewEvidence(
+            rt.ReviewStrategy.LIGHT, "independent-reviewer", True, task.acceptance_contract.artifact,
+            receipt=(("acceptance", f"review:{task_id}"),), scope=rt.ReviewScope.ACCEPTANCE), True)
+
+    def _accepted_lane(self, task_id: str, artifact_name: str, *, thread: str | None = None):
+        rt = self._runtime()
+        swarm = self.runtime_lane(task_id, artifact_name, thread=thread)
+        self._gate_return_review(swarm, task_id)
+        swarm.complete(rt.Role.LEAD, task_id, True, True, 1, actor_id="lead")
+        self.assertIs(swarm.tasks[task_id].state, rt.TaskState.COMPLETE)
+        return swarm
+
+    def test_runtime_review_complete_retains_accepted_block_once(self) -> None:
+        rt = self._runtime()
+        manifest = self._bound_task("create-accept", "task-accept")
+        path, digest = self._work_file("accept.md", b"accepted result\n")
+        self.ledger.append_bound_block_evidence(**self._evidence_request(manifest, path, digest), observed_at_ms=10)
+        swarm = self.runtime_lane("task-accept", "accept.md")
+        dispatch, evidence_only = self._dispatch_state(), self.ledger._state.path.read_bytes()
+        with self.assertRaisesRegex(ProgressEventError, "completed task"):
+            self.ledger.append_runtime_block_acceptance(swarm=swarm, **self._scope_request(manifest))
+        self._gate_return_review(swarm, "task-accept")
+        self.assertIs(swarm.tasks["task-accept"].state, rt.TaskState.REVIEW)
+        with self.assertRaisesRegex(ProgressEventError, "completed task"):
+            self.ledger.append_runtime_block_acceptance(swarm=swarm, **self._scope_request(manifest))
+        with self.assertRaises(ProgressEventError):
+            self.ledger.append_runtime_block_acceptance(swarm=object(), **self._scope_request(manifest))
+        self.assertEqual(self.ledger._state.path.read_bytes(), evidence_only)
+        swarm.complete(rt.Role.LEAD, "task-accept", True, True, 1, actor_id="lead")
+        request = self._scope_request(manifest)
+        result = self.ledger.append_runtime_block_acceptance(swarm=swarm, **request, observed_at_ms=20)
+        self.assertEqual((result["status"], result["accepted"]), ("appended", True))
+        self.assertEqual(result["cursor"]["event_seq"], request["expected_event_seq"] + 3)
+        retained = self.ledger._state.path.read_bytes()
+        accepted = swarm._runtime_acceptance_current(swarm.tasks["task-accept"])
+        block = self._block(self.host_ledger(self.root), "task-accept-block")
+        self.assertEqual((block["lifecycle_state"], block["measurement_state"], block["committed_weight"],
+                          block["admitted_proof_weight"]), ("ACCEPTED", "UNMEASURED", None, 0))
+        self.assertEqual(block["proof_receipt_ids"][:2],
+                         [f"sha256:{digest}", f"runtime-review:{accepted.review_receipt_digest}"])
+        self.assertEqual(block["latest_event_id"], "bound-accepted:task-accept:task-accept-block")
+        again = self.host_ledger(self.root).append_runtime_block_acceptance(swarm=swarm, **request, observed_at_ms=99)
+        self.assertEqual(again["status"], "unchanged")
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+        self.assertEqual(self._dispatch_state(), dispatch)
+
+    def test_runtime_acceptance_fails_closed_without_matching_current_evidence(self) -> None:
+        def refused(swarm, request: dict, pattern: str = ".") -> None:
+            before = self.ledger._state.path.read_bytes()
+            with self.assertRaisesRegex(ProgressEventError, pattern):
+                self.ledger.append_runtime_block_acceptance(swarm=swarm, **request)
+            self.assertEqual(self.ledger._state.path.read_bytes(), before)
+
+        mismatch = self._bound_task("create-mismatch", "task-mismatch")
+        path, digest = self._work_file("mismatch.md", b"first bytes\n")
+        self.ledger.append_bound_block_evidence(**self._evidence_request(mismatch, path, digest), observed_at_ms=10)
+        path.write_bytes(b"accepted bytes\n")
+        swarm = self._accepted_lane("task-mismatch", "mismatch.md")
+        request = self._scope_request(mismatch)
+        refused(swarm, request, "retained ACTIVE evidence")
+        for change in ({"project_id": "project-beta"}, {"block_id": "task-other-block"},
+                       {"manifest_digest": "sha256:" + "0" * 64}):
+            refused(swarm, {**request, **change})
+
+        drift = self._bound_task("create-drift", "task-drift")
+        drift_path, drift_digest = self._work_file("drift.md", b"drift result\n")
+        self.ledger.append_bound_block_evidence(**self._evidence_request(drift, drift_path, drift_digest), observed_at_ms=10)
+        drift_swarm = self._accepted_lane("task-drift", "drift.md")
+        drift_path.write_bytes(b"changed after completion\n")
+        refused(drift_swarm, self._scope_request(drift), "completed task")
+
+        absent = self._bound_task("create-absent", "task-absent")
+        self._work_file("absent.md", b"never submitted\n")
+        refused(self._accepted_lane("task-absent", "absent.md"), self._scope_request(absent), "retained ACTIVE evidence")
+
+        foreign = self._bound_task("create-foreign", "task-foreign")
+        foreign_path, foreign_digest = self._work_file("foreign.md", b"foreign thread\n")
+        self.ledger.append_bound_block_evidence(**self._evidence_request(foreign, foreign_path, foreign_digest), observed_at_ms=10)
+        refused(self._accepted_lane("task-foreign", "foreign.md", thread="host:thread:another-thread"),
+                self._scope_request(foreign), "completed task")
+
+        stale = self._bound_task("create-stale", "task-stale")
+        stale_path, stale_digest = self._work_file("stale.md", b"stale revision\n")
+        self.ledger.append_bound_block_evidence(**self._evidence_request(stale, stale_path, stale_digest), observed_at_ms=10)
+        stale_swarm = self._accepted_lane("task-stale", "stale.md")
+        current = self._scope_request(stale)
+        refused(stale_swarm, {**current, "expected_event_seq": current["expected_event_seq"] - 1}, "changed")
+        self.assertEqual(self.ledger.append_runtime_block_acceptance(swarm=stale_swarm, **current, observed_at_ms=20)["status"], "appended")
+
+    def test_runtime_review_cannot_credit_two_blocks(self) -> None:
+        manifest = self._bound_task("create-two", "task-two", weight=3, block_count=2)
+        path, digest = self._work_file("two.md", b"one reviewed artifact\n")
+        for block in manifest["blocks"]:
+            request = {**self._evidence_request(manifest, path, digest), "block_id": block["block_id"]}
+            self.ledger.append_bound_block_evidence(**request, observed_at_ms=10)
+        swarm = self._accepted_lane("task-two", "two.md")
+        self.ledger.append_runtime_block_acceptance(swarm=swarm, **self._scope_request(manifest), observed_at_ms=20)
+        before = self.ledger._state.path.read_bytes()
+        second = {**self._scope_request(manifest), "block_id": manifest["blocks"][1]["block_id"]}
+        with self.assertRaisesRegex(ProgressEventError, "another block"):
+            self.ledger.append_runtime_block_acceptance(swarm=swarm, **second, observed_at_ms=21)
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        self.assertEqual(self._block(self.ledger, second["block_id"])["admitted_proof_weight"], 0)
+
+    def test_runtime_acceptance_rejects_revised_creation_weight(self) -> None:
+        manifest = self._bound_task("create-revision", "task-revision", weight=3)
+        path, digest = self._work_file("revision.md", b"reviewed original weight\n")
+        self.ledger.append_bound_block_evidence(**self._evidence_request(manifest, path, digest), observed_at_ms=10)
+        swarm = self._accepted_lane("task-revision", "revision.md")
+        fields = {k: v for k, v in manifest.items() if k != "manifest_digest"}
+        fields.update(manifest_version="2", supersedes_digest=manifest["manifest_digest"],
+                      blocks=[{**manifest["blocks"][0], "weight": 9}])
+        revised = build_task_manifest(**fields)
+        self.ledger.append(identity_manifest_event(revised, event_id="weight-v2", dedupe_key="weight-v2",
+                                                  observed_at_ms=15, provenance="revision-test"))
+        before = self.ledger._state.path.read_bytes()
+        self.ledger = Ledger(self.root)
+        with self.assertRaisesRegex(ProgressEventError, "original host-created manifest"):
+            self.ledger.append_runtime_block_acceptance(swarm=swarm, **self._scope_request(revised), observed_at_ms=20)
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        self.assertEqual(self._block(self.ledger, revised["blocks"][0]["block_id"])["admitted_proof_weight"], 0)
+
+    def test_runtime_acceptance_recovers_each_valid_durable_prefix(self) -> None:
+        manifest = self._bound_task("create-prefix", "task-prefix")
+        path, digest = self._work_file("prefix.md", b"recoverable acceptance\n")
+        self.ledger.append_bound_block_evidence(**self._evidence_request(manifest, path, digest), observed_at_ms=10)
+        swarm = self._accepted_lane("task-prefix", "prefix.md")
+        request = self._scope_request(manifest)
+        before = self.ledger._state.path.read_bytes()
+        self.ledger.append_runtime_block_acceptance(swarm=swarm, **request, observed_at_ms=20)
+        full = self.ledger._state.path.read_bytes()
+        suffix = full[len(before):].splitlines(keepends=True)
+        self.assertEqual(len(suffix), 3)
+        for count in (1, 2):
+            with self.subTest(prefix=count):
+                self.ledger._state.path.write_bytes(before + b"".join(suffix[:count]))
+                self.ledger = Ledger(self.root)
+                result = self.ledger.append_runtime_block_acceptance(swarm=swarm, **request, observed_at_ms=20)
+                self.assertEqual(result["status"], "appended")
+                self.assertEqual(self.ledger._state.path.read_bytes(), full)
+                self.assertEqual(self.ledger.append_runtime_block_acceptance(swarm=swarm, **request, observed_at_ms=20)["status"], "unchanged")
+        malformed = before + suffix[0] + suffix[1][:19]
+        self.ledger._state.path.write_bytes(malformed)
+        with self.assertRaises(ProgressEventError):
+            Ledger(self.root).append_runtime_block_acceptance(swarm=swarm, **request, observed_at_ms=20)
+        self.assertEqual(self.ledger._state.path.read_bytes(), malformed)
+
+    def test_measured_block_admits_weight_only_through_runtime_acceptance(self) -> None:
+        manifest = self._bound_task("create-weighted", "task-weighted", weight=3)
+        path, digest = self._work_file("weighted.md", b"weighted result\n")
+        self.ledger.append_bound_block_evidence(**self._evidence_request(manifest, path, digest), observed_at_ms=10)
+        block = self._block(self.ledger, "task-weighted-block")
+        self.assertEqual((block["lifecycle_state"], block["measurement_state"], block["committed_weight"],
+                          block["admitted_proof_weight"]), ("ACTIVE", "MEASURED", 3, 0))
+        swarm = self._accepted_lane("task-weighted", "weighted.md")
+        self.ledger.append_runtime_block_acceptance(swarm=swarm, **self._scope_request(manifest), observed_at_ms=20)
+        block = self._block(self.ledger, "task-weighted-block")
+        self.assertEqual((block["lifecycle_state"], block["committed_weight"], block["admitted_proof_weight"]),
+                         ("ACCEPTED", 3, 3))
+
+    def test_bound_block_evidence_fails_closed_without_exact_scope_proof_or_revision(self) -> None:
+        from pathlib import Path
+        manifest = self._bound_task("create-scope", "task-scope")
+        self.ledger.append_connector_receipt(self._host_result("independent", "task-independent"))
+        path, digest = self._work_file("scope.md", b"scoped result\n")
+        base = self._evidence_request(manifest, path, digest)
+        before = self.ledger._state.path.read_bytes()
+        cases = {
+            "wrong project": {"project_id": "project-beta"},
+            "unbound task": {"task_id": "task-unbound"},
+            "independent host task": {"task_id": "task-independent", "block_id": "task-independent-block"},
+            "foreign block": {"block_id": "task-other-block"},
+            "changed manifest": {"manifest_digest": "sha256:" + "0" * 64},
+            "stale revision": {"expected_event_seq": base["expected_event_seq"] - 1},
+            "changed proof": {"expected_sha256": "0" * 64},
+            "missing proof": {"evidence_path": path.with_name("missing.md")},
+            "directory proof": {"evidence_path": path.parent},
+            "relative proof": {"evidence_path": Path("scope.md")},
+        }
+        for label, change in cases.items():
+            with self.subTest(label), self.assertRaises(ProgressEventError):
+                self.ledger.append_bound_block_evidence(**{**base, **change}, observed_at_ms=10)
+            self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        dispatch = self._dispatch_state()
+        self.assertEqual(self.ledger.append_bound_block_evidence(**base, observed_at_ms=10)["status"], "appended")
+        self.assertEqual(self.host_ledger(self.root).append_bound_block_evidence(**base, observed_at_ms=99)["status"], "unchanged")
+        block = self._block(self.ledger, "task-scope-block")
+        self.assertEqual((block["lifecycle_state"], block["measurement_state"], block["admitted_proof_weight"]),
+                         ("ACTIVE", "UNMEASURED", 0))
+        self.assertEqual(self._dispatch_state(), dispatch)
+        retained = self.ledger._state.path.read_bytes()
+        path.write_bytes(b"changed result\n")
+        with self.assertRaisesRegex(ProgressEventError, "different"):
+            self.ledger.append_bound_block_evidence(
+                **{**base, "expected_sha256": hashlib.sha256(b"changed result\n").hexdigest(),
+                   "expected_event_seq": self.ledger.replay()["cursor"]["event_seq"]}, observed_at_ms=11)
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+
+    def test_bound_evidence_cli_writes_once_and_rejects_without_writing(self) -> None:
+        import json, subprocess, sys
+        from pathlib import Path
+        manifest = self._bound_task("create-cli", "task-cli")
+        path, digest = self._work_file("cli.md", b"cli result\n")
+        script = Path(__file__).resolve().parents[1] / "scripts" / "swarm_progress.py"
+        request = {**self._evidence_request(manifest, path, digest), "evidence_path": str(path)}
+
+        def run(payload: dict) -> subprocess.CompletedProcess:
+            return subprocess.run([sys.executable, "-B", str(script), "--bound-evidence", "--ledger-root", str(self.root)],
+                                  input=json.dumps(payload), capture_output=True, text=True, timeout=60)
+
+        before = self.ledger._state.path.read_bytes()
+        for bad in ({**request, "expected_sha256": "0" * 64}, {**request, "acceptance_receipt_id": "self"}):
+            self.assertEqual(run(bad).returncode, 2)
+            self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        first, again = run(request), run(request)
+        self.assertEqual((first.returncode, json.loads(first.stdout)["status"]), (0, "appended"))
+        self.assertEqual((again.returncode, json.loads(again.stdout)["status"]), (0, "unchanged"))
+        self.assertFalse(json.loads(first.stdout)["accepted"])
+
     HOST_PRIVATE_KEY = 0x5A17
 
     def test_numeric_ticket_migration_is_explicit_stable_and_non_material(self) -> None:
