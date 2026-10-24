@@ -129,7 +129,12 @@ TOOLS: tuple[dict[str, Any], ...] = (
 
 
 class MCPError(Exception):
-    pass
+    def __init__(self, message: str, data: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.data = data
+
+
+HQ_RESOURCE_URI = re.compile(r"ui://swarm/hq/([0-9a-f]{64})\.html")
 
 
 def _projects_asset(name: str, digest: str, *, exact_size: int | None = None) -> bytes:
@@ -232,6 +237,21 @@ class HQApp:
                                       "served_html_sha256": hashlib.sha256(self.render().encode("utf-8")).hexdigest(),
                                       "sdk_sha256": HQ_SDK_SHA256, "refresh": "EXPLICIT_HOST_READS_ACKNOWLEDGED_SETTINGS" if self.projects else "PINNED_SNAPSHOT_REEXPORT_REQUIRED",
                                       "approval_verified": False, "live": False}, "isError": False}
+
+
+def _require_hq_read(params: dict[str, Any], hq_app: HQApp | None) -> HQApp:
+    """Admit the exact served URI and optional protocol metadata without echoing input."""
+    if (set(params) - {"uri", "_meta"} or not isinstance(params.get("uri"), str)
+            or ("_meta" in params and not isinstance(params["_meta"], dict))):
+        raise MCPError("invalid HQ resource request")
+    if hq_app is not None and params["uri"] == hq_app.uri:
+        return hq_app
+    received = HQ_RESOURCE_URI.fullmatch(params["uri"])
+    expected = None if hq_app is None else HQ_RESOURCE_URI.fullmatch(hq_app.uri)
+    if received and expected:
+        raise MCPError("stale HQ resource identity",
+                       {"expected_sha256": expected.group(1), "received_sha256": received.group(1)})
+    raise MCPError("unknown HQ resource")
 
 
 class SwarmProjection:
@@ -507,8 +527,11 @@ def _response(request_id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
-def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+def _error(request_id: Any, code: int, message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": request_id, "error": error}
 
 
 def _probe(root: Path, method: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -582,10 +605,9 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
             elif method == "resources/list":
                 result = {"resources": [{"uri": hq_app.uri, "name": "swarm-hq", "mimeType": "text/html;profile=mcp-app"}] if hq_app else []}
             elif method == "resources/read":
-                if not hq_app or params != {"uri": hq_app.uri}:
-                    raise MCPError("unknown HQ resource")
+                served = _require_hq_read(params, hq_app)
                 try:
-                    result = hq_app.resource()
+                    result = served.resource()
                 except (OSError, ValueError):
                     raise MCPError("HQ export unavailable or invalid") from None
             elif method == "tools/call":
@@ -622,7 +644,7 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
                 continue
             print(json.dumps(_response(request_id, result), ensure_ascii=False, separators=(",", ":")), flush=True)
         except MCPError as exc:
-            print(json.dumps(_error(request_id, -32602, str(exc))), flush=True)
+            print(json.dumps(_error(request_id, -32602, str(exc), exc.data)), flush=True)
     return 0
 
 

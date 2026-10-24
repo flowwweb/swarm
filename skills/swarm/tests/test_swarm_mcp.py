@@ -289,6 +289,62 @@ class SwarmMCPTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         return path, hashlib.sha256(path.read_bytes()).hexdigest(), value
 
+    def test_hq_resource_read_accepts_protocol_meta_and_reports_only_stale_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, digest, _ = self.hq_export(Path(directory))
+            app = mcp.HQApp(path, digest)
+            expected = app.uri[len("ui://swarm/hq/"):-len(".html")]
+            stale = "a" * 64
+            cases = [
+                {"uri": app.uri},
+                {"uri": app.uri, "_meta": {"progressToken": "META-SECRET", "openai/widget": {"nested": [1]}}},
+                {"uri": app.uri, "_meta": {}},
+                {"uri": app.uri, "_meta": None},
+                {"uri": app.uri, "_meta": "META-SECRET"},
+                {"uri": app.uri, "_meta": ["META-SECRET"]},
+                {"uri": app.uri, "FIELD-SECRET": 1},
+                {"_meta": {}},
+                {"uri": 7},
+                {"uri": f"ui://swarm/hq/{stale}.html", "_meta": {"progressToken": "META-SECRET"}},
+                {"uri": f"ui://swarm/hq/{stale.upper()}.html"},
+                {"uri": f"ui://swarm/hq/{stale}.html?URI-SECRET"},
+                {"uri": "file:///URI-SECRET"},
+            ]
+            lines = [json.dumps({"jsonrpc": "2.0", "id": index, "method": "resources/read", "params": params})
+                     for index, params in enumerate(cases)]
+            before = path.read_bytes()
+            with patch.object(mcp.SwarmProjection, "_load_app", side_effect=AssertionError("no host load")), \
+                    patch.object(mcp, "_telemetry", side_effect=AssertionError("no telemetry write")), \
+                    patch.object(sys, "stdin", io.StringIO("\n".join(lines))), \
+                    patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(mcp.serve(hq_app=app), 0)
+            rows = {row["id"]: row for row in map(json.loads, output.getvalue().splitlines())}
+            self.assertEqual(len(rows), len(cases))
+            served = rows[0]["result"]
+            self.assertEqual(served["contents"][0]["uri"], app.uri)
+            self.assertEqual(hashlib.sha256(served["contents"][0]["text"].encode()).hexdigest(), expected)
+            for index in (1, 2):
+                self.assertEqual(rows[index]["result"], served)
+            for index in (3, 4, 5, 6, 7, 8):
+                self.assertEqual(rows[index]["error"], {"code": -32602, "message": "invalid HQ resource request"})
+            self.assertEqual(rows[9]["error"], {"code": -32602, "message": "stale HQ resource identity",
+                                                "data": {"expected_sha256": expected, "received_sha256": stale}})
+            for index in (10, 11, 12):
+                self.assertEqual(rows[index]["error"], {"code": -32602, "message": "unknown HQ resource"})
+            errors = "".join(json.dumps(rows[index]) for index in range(3, len(cases)))
+            for secret in ("META-SECRET", "FIELD-SECRET", "URI-SECRET", "progressToken", "openai/widget", stale.upper()):
+                self.assertNotIn(secret, errors)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+
+        unbound = {"jsonrpc": "2.0", "id": 1, "method": "resources/read",
+                   "params": {"uri": f"ui://swarm/hq/{'b' * 64}.html", "_meta": {}}}
+        with patch.object(mcp, "_telemetry", side_effect=AssertionError("no telemetry write")), \
+                patch.object(sys, "stdin", io.StringIO(json.dumps(unbound))), \
+                patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(mcp.serve(), 0)
+        self.assertEqual(json.loads(output.getvalue())["error"], {"code": -32602, "message": "unknown HQ resource"})
+
     def test_hq_resource_uses_exact_export_without_host_access_or_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             path, digest, value = self.hq_export(Path(directory))

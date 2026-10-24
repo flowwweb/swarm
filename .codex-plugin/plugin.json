@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "1.0.15+codex.20261024.bound-task-lifecycle",
+  "version": "1.0.16+codex.20261024.resource-read-metadata",
   "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",
