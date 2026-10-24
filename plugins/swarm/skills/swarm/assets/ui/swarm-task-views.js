@@ -411,7 +411,6 @@ export function mountTaskViews(container, { snapshot, layout } = {}) {
     sheetEl: null,
     pendingFocus: null,
     expandedGroups: new Set(),
-    expandedRows: new Set(),
     groupPages: new Map(),
     openRecord: null,
     inspectorReturn: null,
@@ -462,7 +461,6 @@ export function mountTaskViews(container, { snapshot, layout } = {}) {
       st.filter = "";
       filterInput.value = "";
       st.expandedGroups.clear();
-      st.expandedRows.clear();
       st.groupPages.clear();
     }
     st.model = model;
@@ -481,9 +479,7 @@ export function mountTaskViews(container, { snapshot, layout } = {}) {
     } else {
       st.groups = buildGroups(model);
       const groupKeys = new Set(st.groups.map((g) => g.key));
-      const rowKeys = new Set(st.groups.flatMap((g) => g.rows.map((r) => r.key)));
       for (const k of [...st.expandedGroups]) if (!groupKeys.has(k)) st.expandedGroups.delete(k);
-      for (const k of [...st.expandedRows]) if (!rowKeys.has(k)) st.expandedRows.delete(k);
       for (const k of [...st.groupPages.keys()]) if (!groupKeys.has(k)) st.groupPages.delete(k);
     }
     const observedEmpty = model.milestones.length === 0 && model.tasksKnown && model.tasks.length === 0;
@@ -519,6 +515,7 @@ export function mountTaskViews(container, { snapshot, layout } = {}) {
 
   function openRecord(kind, id, returnKey) {
     if (!(kind === "milestones" ? st.model.milestoneById : st.model.taskById).has(id)) return;
+    if (kind === "tasks") st.selectedTaskId = id;
     st.openRecord = { kind, id };
     st.inspectorReturn = returnKey;
     st.sheetOpen = st.narrow;
@@ -726,7 +723,7 @@ export function mountTaskViews(container, { snapshot, layout } = {}) {
           h("span", { class: "stv-group-meta" }, [stateLabel(ms?.state), h("span", { class: "stv-group-count", text: countText(m, g) })]),
           toggle,
         ]),
-        h("div", { class: "stv-group-body", id: bodyId, hidden: !expanded }, expanded ? renderGroupBody(m, g, gi) : []),
+        h("div", { class: "stv-group-body", id: bodyId, hidden: !expanded }, expanded ? renderGroupBody(m, g) : []),
       ],
     );
   }
@@ -737,7 +734,7 @@ export function mountTaskViews(container, { snapshot, layout } = {}) {
     return "This milestone lists no task ids; task records are not declared.";
   }
 
-  function renderGroupBody(m, g, gi) {
+  function renderGroupBody(m, g) {
     const ms = g.milestone;
     const pageCount = Math.max(1, Math.ceil(g.rows.length / PAGE_SIZE));
     const page = Math.min(Math.max(st.groupPages.get(g.key) ?? 0, 0), pageCount - 1);
@@ -748,16 +745,16 @@ export function mountTaskViews(container, { snapshot, layout } = {}) {
         ? h(
             "ol",
             { class: "stv-rows", start: start + 1 },
-            g.rows.slice(start, start + PAGE_SIZE).map((row, i) => renderRow(m, row, `${prefix}-g${gi}-r${start + i}`)),
+            g.rows.slice(start, start + PAGE_SIZE).map((row) => renderRow(m, row)),
           )
         : h("p", { class: m.tasksKnown ? "stv-empty" : "stv-undeclared", text: noRowsText(m, ms) }),
       pager(g.key, page, g.rows.length, "Milestone task pages"),
     ];
   }
 
-  function renderRow(m, row, detailId) {
+  function renderRow(m, row) {
     const t = row.task;
-    const expanded = t !== null && st.expandedRows.has(row.key);
+    const selected = t !== null && t.id === st.selectedTaskId;
     const record = t ? "present" : m.tasksKnown ? "missing" : "undeclared";
     const notes = [];
     if (record === "missing") notes.push("No task record with this id in the snapshot.");
@@ -767,36 +764,21 @@ export function mountTaskViews(container, { snapshot, layout } = {}) {
       notes.push(`Declares milestone ${t.milestone_id}, which has no record in this snapshot.`);
     }
     const title = t ? t.title || "Untitled task" : record === "missing" ? "Missing task record" : "Task record not declared";
-    const label = [
-      t ? h("button", { type: "button", class: "stv-record-title stv-row-title", text: title,
-        data: { stvAction: "open-record", recordKind: "tasks", recordId: t.id, stvFocus: fk("task-title", row.key) } })
-        : h("span", { class: "stv-row-title", text: title }),
-      stateLabel(t?.state),
-    ];
-    const head = t
-      ? h(
-          "button",
-          {
-            type: "button",
-            class: "stv-row-toggle",
-            "aria-expanded": String(expanded),
-            "aria-controls": detailId,
-            "aria-label": `${expanded ? "Collapse" : "Expand"} ${title}`,
-            data: { stvAction: "toggle-row", stvRow: row.key, stvFocus: fk("row", row.key) },
-          },
-          [chevron()],
-        )
-      : null;
+    const head = h(t ? "button" : "div", {
+      class: t ? "stv-row-head stv-row-toggle" : "stv-row-head",
+      ...(t ? { type: "button", "aria-current": selected ? "true" : null,
+        data: { stvAction: "open-record", recordKind: "tasks", recordId: t.id, stvFocus: fk("row", row.key) } } : {}),
+    }, [stateMark(t?.state), h("span", { class: "stv-row-title", text: title }), stateLabel(t?.state),
+      t ? h("span", { class: "stv-option-chevron", "aria-hidden": "true" }, [chevron()]) : null]);
     return h(
       "li",
       {
-        class: expanded ? "stv-row is-expanded" : "stv-row",
+        class: selected ? "stv-row is-selected" : "stv-row",
         data: { taskId: row.id, state: t?.state, record, membership: row.conflict ? "conflict" : "single" },
       },
       [
-        h("div", { class: "stv-row-head" }, [stateMark(t?.state), ...label, head]),
+        head,
         notes.map((text) => h("p", { class: "stv-row-note", text })),
-        t ? h("div", { class: "stv-row-detail", id: detailId, hidden: !expanded }, expanded ? [taskDetail(m, t, null)] : []) : null,
       ],
     );
   }
@@ -832,10 +814,6 @@ export function mountTaskViews(container, { snapshot, layout } = {}) {
       }
       case "toggle-group":
         toggle(st.expandedGroups, d.stvGroup);
-        render();
-        break;
-      case "toggle-row":
-        toggle(st.expandedRows, d.stvRow);
         render();
         break;
     }
@@ -945,7 +923,6 @@ export function mountTaskViews(container, { snapshot, layout } = {}) {
       st.sheetOpen = false;
       st.openRecord = st.inspectorReturn = null;
       st.expandedGroups.clear();
-      st.expandedRows.clear();
       st.groupPages.clear();
     },
   };

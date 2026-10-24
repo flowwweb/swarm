@@ -5,9 +5,12 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 import tempfile
 import threading
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -55,7 +58,6 @@ _LIFECYCLE_FIELDS = frozenset({
     "affected_ids", "acceptance_criteria", "artifact_ids", "artifact_refs", "release_condition",
     "suggested_recovery", "critical_path", "attempts", "note",
 })
-# ponytail: process-local serialization; add a host-owned cross-process lock only if multiple writers are introduced.
 _UPDATE_LOCK = threading.Lock()
 _MAX_BRIEF_BYTES = 512 * 1024
 
@@ -168,7 +170,100 @@ def _finite_json(value: Any) -> bool:
     return True
 
 
-def parse_project_brief_markdown(text: str, *, project_id: str | None = None) -> tuple[dict[str, Any], str]:
+def _brief_regular_path(path: Path):
+    for item in (*reversed(path.parents), path):
+        info = item.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise ProjectModelError("brief content links/reparse points are not admissible")
+        if not (stat.S_ISREG(info.st_mode) if item == path else stat.S_ISDIR(info.st_mode)):
+            raise ProjectModelError("brief content path is not regular")
+    return path.stat()
+
+
+@contextmanager
+def _brief_update_lock(path: Path):
+    """Serialize the existing root writers, including independent CLI processes."""
+    with _UPDATE_LOCK:
+        _brief_regular_path(path)
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+            kernel.CreateMutexW.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.ReleaseMutex.argtypes = (wintypes.HANDLE,)
+            kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+            identity = hashlib.sha256(os.path.normcase(str(path.parent.resolve())).encode("utf-8")).hexdigest()
+            handle = kernel.CreateMutexW(None, False, "Local\\SWARMBrief-" + identity)
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            acquired = False
+            try:
+                result = kernel.WaitForSingleObject(handle, 10000)
+                if result not in (0, 0x80):  # acquired, or recovered after a dead writer
+                    raise ProjectModelError("project brief writer unavailable; retry with the same expected digest")
+                acquired = True
+                yield
+            finally:
+                if acquired:
+                    kernel.ReleaseMutex(handle)
+                kernel.CloseHandle(handle)
+        else:
+            import fcntl
+            descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+
+
+def read_brief_content(root: Path, reference: Mapping[str, Any]) -> bytes:
+    """Read one immutable full brief from the existing root-local history directory."""
+    if (not isinstance(reference, dict)
+            or set(reference) != {"rel", "path", "sha256", "bytes", "canonical_digest", "project_id"}
+            or reference.get("rel") != "brief_content"
+            or not isinstance(reference.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", reference["sha256"]) is None
+            or reference.get("path") != f"history/swarm-brief-{reference['sha256']}.md"
+            or type(reference.get("bytes")) is not int or not 0 < reference["bytes"] <= 2 * _MAX_BRIEF_BYTES
+            or not isinstance(reference.get("canonical_digest"), str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", reference["canonical_digest"]) is None
+            or not isinstance(reference.get("project_id"), str) or not reference["project_id"].strip()):
+        raise ProjectModelError("invalid full brief reference")
+    root = Path(os.path.abspath(root))
+    path = root / reference["path"]
+
+    def check_path():
+        info = _brief_regular_path(path)
+        if path.resolve() != root.resolve() / reference["path"]:
+            raise ProjectModelError("brief content escapes the project root")
+        return info
+
+    try:
+        before = check_path()
+        with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            raw = stream.read(2 * _MAX_BRIEF_BYTES + 1)
+        after = check_path()
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+        ) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ProjectModelError("brief content changed during read")
+    except (OSError, UnicodeError) as exc:
+        raise ProjectModelError("brief content is unavailable") from exc
+    if len(raw) != reference["bytes"] or hashlib.sha256(raw).hexdigest() != reference["sha256"]:
+        raise ProjectModelError("brief content bytes/digest mismatch")
+    return raw
+
+
+def parse_project_brief_markdown(text: str, *, project_id: str | None = None,
+                                 root: Path | None = None) -> tuple[dict[str, Any], str]:
     if not isinstance(text, str) or len(text.encode("utf-8")) > _MAX_BRIEF_BYTES:
         raise ProjectModelError("project brief must be bounded UTF-8 text")
     if text.count(_BRIEF_MARKER) != 1:
@@ -181,6 +276,28 @@ def parse_project_brief_markdown(text: str, *, project_id: str | None = None) ->
         document = json.loads(matches[0].group("payload"), parse_constant=_reject_constant)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ProjectModelError("project brief JSON is invalid") from exc
+    if isinstance(document, dict) and "brief_content" in document:
+        if (root is None or set(document) != {"schema_version", "updated_at", "project", "links", "brief_content"}
+                or type(document["schema_version"]) is not int or document["schema_version"] != 1):
+            raise ProjectModelError("full brief reference requires an exact root-bound envelope")
+        raw = read_brief_content(root, document["brief_content"])
+        try:
+            # One hop only: an archive must contain the full model, never another pointer.
+            full_text = raw.decode("utf-8")
+            archived = list(_BRIEF_FENCE.finditer(full_text))
+            if len(archived) != 1:
+                raise ProjectModelError("full brief content requires one object")
+            archived_document = json.loads(archived[0].group("payload"))
+            if not isinstance(archived_document, dict) or "brief_content" in archived_document:
+                raise ProjectModelError("full brief reference cannot chain")
+            full, digest = parse_project_brief_markdown(full_text, project_id=project_id)
+        except (ValueError, UnicodeError) as exc:
+            raise ProjectModelError("full brief content is invalid") from exc
+        reference = document["brief_content"]
+        if (digest != reference["canonical_digest"] or full["project"]["id"] != reference["project_id"]
+                or any(document[key] != full[key] for key in ("schema_version", "updated_at", "project", "links"))):
+            raise ProjectModelError("full brief identity/metadata binding mismatch")
+        return full, digest
     if not isinstance(document, dict) or not _BRIEF_REQUIRED.issubset(document):
         raise ProjectModelError("project brief is missing required fields")
     if type(document.get("schema_version")) is not int or document["schema_version"] != 1 or not _finite_json(document):
@@ -234,11 +351,13 @@ def parse_project_brief_markdown(text: str, *, project_id: str | None = None) ->
     return document, f"sha256:{_digest(document)}"
 
 
-def render_project_brief_markdown(text: str, document: Mapping[str, Any]) -> str:
-    current, _ = parse_project_brief_markdown(text)
+def render_project_brief_markdown(text: str, document: Mapping[str, Any], *, root: Path | None = None) -> str:
+    current, _ = parse_project_brief_markdown(text, root=root)
     replacement = dict(document)
     if replacement == current:
         return text
+    if "brief_content" in json.loads(next(_BRIEF_FENCE.finditer(text)).group("payload")):
+        raise ProjectModelError("referenced brief changes require the atomic brief writer")
     rendered = json.dumps(replacement, ensure_ascii=False, indent=2)
     if "\r\n" in text:
         rendered = rendered.replace("\n", "\r\n")
@@ -279,7 +398,7 @@ def mutate_project_brief(
     updated_at: str,
 ) -> str:
     """Persist create/update/reopen; a process restart only reparses these bytes."""
-    with _UPDATE_LOCK:
+    with _brief_update_lock(path):
         return _mutate_project_brief(
             path,
             expected_digest=expected_digest,
@@ -304,10 +423,10 @@ def _mutate_project_brief(
     if path.name != "SWARM.md" or path.is_symlink() or not path.is_file():
         raise ProjectModelError("project brief path must be an existing regular SWARM.md")
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_bytes().decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise ProjectModelError("project brief is unreadable") from exc
-    document, digest = parse_project_brief_markdown(text)
+    document, digest = parse_project_brief_markdown(text, root=path.parent)
     if digest != expected_digest:
         raise ProjectModelError("project brief digest conflict")
     if collection == "flow_definitions":
@@ -396,23 +515,123 @@ def _write_project_brief(path: Path, text: str, document: dict[str, Any], update
     if not isinstance(updated_at, str) or not updated_at.strip():
         raise ProjectModelError("project brief timestamp is invalid")
     document["updated_at"] = updated_at.strip()
+    envelope = json.loads(next(_BRIEF_FENCE.finditer(text)).group("payload"))
+    if "brief_content" in envelope:
+        full_text = read_brief_content(path.parent, envelope["brief_content"]).decode("utf-8")
+        full_text = render_project_brief_markdown(full_text, document)
+        return _replace_compact_brief(path, text.encode("utf-8"), full_text.encode("utf-8"))["canonical_digest"]
     updated = render_project_brief_markdown(text, document)
     _, new_digest = parse_project_brief_markdown(updated)
 
+    try:
+        _replace_brief_bytes(path, text.encode("utf-8"), updated.encode("utf-8"))
+    except OSError as exc:
+        raise ProjectModelError("project brief update failed") from exc
+    return new_digest
+
+
+def _replace_brief_bytes(path: Path, expected: bytes, updated: bytes) -> None:
+    """The caller holds the shared root lock through comparison and replacement."""
     temporary: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent, delete=False) as handle:
+        with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as handle:
             temporary = Path(handle.name)
             handle.write(updated)
             handle.flush()
             os.fsync(handle.fileno())
+        if path.read_bytes() != expected:
+            raise ProjectModelError("project brief changed before replacement")
         os.replace(temporary, path)
-    except OSError as exc:
-        raise ProjectModelError("project brief update failed") from exc
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    return new_digest
+
+
+def _create_brief_bytes(path: Path, raw: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _publish_brief_archive(archive: Path, full: bytes, *, create=None) -> None:
+    """Atomic create-if-absent; callers validate the retained immutable identity."""
+    archive.parent.mkdir(exist_ok=True)
+    info = archive.parent.lstat()
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        raise ProjectModelError("brief history directory must not be a link/reparse point")
+    if not archive.exists():
+        temporary = archive.with_name(".swarm-brief-" + uuid.uuid4().hex + ".tmp")
+        try:
+            (create or _create_brief_bytes)(temporary, full)
+            # Atomic create-if-absent; never overwrite a pre-existing immutable identity.
+            try:
+                if os.name == "nt":
+                    os.rename(temporary, archive)  # Windows rename refuses an existing destination.
+                else:
+                    os.link(temporary, archive)
+            except FileExistsError:
+                pass
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _replace_compact_brief(path: Path, original: bytes, full: bytes) -> dict[str, Any]:
+    """Publish durable full content first, then atomically advance the sole root pointer."""
+    _brief_regular_path(path)
+    document, digest = parse_project_brief_markdown(full.decode("utf-8"))
+    sha = hashlib.sha256(full).hexdigest()
+    reference = {"rel": "brief_content", "path": f"history/swarm-brief-{sha}.md", "sha256": sha,
+                 "bytes": len(full), "canonical_digest": digest, "project_id": document["project"]["id"]}
+    archive = path.parent / reference["path"]
+    _publish_brief_archive(archive, full)
+    if read_brief_content(path.parent, reference) != full:
+        raise ProjectModelError("immutable full brief conflicts")
+
+    def label(item):
+        return next((item[key] for key in ("title", "name", "label", "summary", "id")
+                     if isinstance(item.get(key), str) and item[key].strip()), "Untitled record")
+
+    # Human index only; no shortened field is parsed as current authority.
+    lines = [f"# {document['project']['id']}", "", "## Current outcome", "",
+             str(document["objective"].get("current", document["project"].get("purpose", ""))), ""]
+    for heading, field in (("Milestones", "milestones"), ("Work", "tasks"), ("Risks and blockers", "risks_blockers")):
+        lines += [f"## {heading}", ""]
+        for item in document.get(field, []):
+            if isinstance(item, dict):
+                lines.append(f"- {label(item)} [{item.get('id', 'no stable ID')}; {item.get('state', 'UNKNOWN')}]")
+        lines.append("")
+    lines += ["## Full current detail and preserved history", "",
+              f"[Read the complete brief]({reference['path']}). Ownership, requirements, decisions, risks and acceptance remain there unchanged.",
+              "This index grants no approval or runtime authority.", "", _BRIEF_MARKER, "```json"]
+    envelope = {key: document[key] for key in ("schema_version", "updated_at", "project", "links")}
+    envelope["brief_content"] = reference
+    candidate = "\n".join(lines) + "\n" + json.dumps(envelope, ensure_ascii=False, indent=2) + "\n```\n"
+    observed, observed_digest = parse_project_brief_markdown(candidate, root=path.parent)
+    if observed != document or observed_digest != digest:
+        raise ProjectModelError("compact brief semantic roundtrip mismatch")
+    _replace_brief_bytes(path, original, candidate.encode("utf-8"))
+    return {"status": "COMPACTED", "archive": reference, "canonical_digest": digest,
+            "current_bytes": len(candidate.encode("utf-8")),
+            "current_sha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest()}
+
+
+def compact_project_brief(path: Path, *, expected_sha256: str) -> dict[str, Any]:
+    """Losslessly compact one explicit canonical brief; retry reuses immutable history."""
+    with _brief_update_lock(path):
+        if path.name != "SWARM.md" or path.is_symlink() or not path.is_file():
+            raise ProjectModelError("one existing regular canonical SWARM.md is required")
+        _brief_regular_path(path)
+        original = path.read_bytes()
+        document, digest = parse_project_brief_markdown(original.decode("utf-8"), root=path.parent)
+        envelope = json.loads(next(_BRIEF_FENCE.finditer(original.decode("utf-8"))).group("payload"))
+        sha = hashlib.sha256(original).hexdigest()
+        if "brief_content" in envelope and expected_sha256 in {sha, envelope["brief_content"]["sha256"]}:
+            return {"status": "REPLAY", "archive": envelope["brief_content"], "canonical_digest": digest,
+                    "current_sha256": sha, "current_bytes": len(original)}
+        if sha != expected_sha256:
+            raise ProjectModelError("project brief digest conflict")
+        return _replace_compact_brief(path, original, original)
 
 
 def _digest(value: Any) -> str:
@@ -674,22 +893,45 @@ def project_schema1_views(
 
     def add_work(record: Mapping[str, Any], kind: str, depth: int, parent_id: str | None) -> None:
         identity = str(record["id"]).strip()
+        declared_state = record.get("state")
+        if declared_state is not None and (not isinstance(declared_state, str) or not declared_state.strip() or len(declared_state) > 128):
+            raise ProjectModelError("declared work state must be bounded non-empty text")
         rows.append({
             "id": identity,
             "kind": kind,
             "label": _label(record, identity),
             "depth": depth,
             "parent_id": parent_id,
+            "declared_state": declared_state.strip() if declared_state is not None else None,
             "owner_id": _text(record.get("owner_id") or record.get("owner")),
             "progress_percent": _progress(record),
             "action": {"kind": "open_entity", "project_id": project_id, "entity_id": identity},
         })
 
     task_lookup = {str(item["id"]).strip(): item for item in groups["task"]}
+    tasks_by_milestone = {str(item["id"]).strip(): list(_ids(item.get("task_ids"))) for item in milestone_order}
+    parents: dict[str, str] = {}
+    for milestone_id, task_ids in tasks_by_milestone.items():
+        for task_id in task_ids:
+            if task_id in parents and parents[task_id] != milestone_id:
+                raise ProjectModelError("work task has conflicting milestone parents")
+            parents[task_id] = milestone_id
+    for task_id, task in task_lookup.items():
+        declared_parent = task.get("milestone_id")
+        if declared_parent is None:
+            continue
+        if not isinstance(declared_parent, str) or declared_parent.strip() not in tasks_by_milestone:
+            raise ProjectModelError("work task milestone_id must name an existing milestone")
+        milestone_id = declared_parent.strip()
+        if task_id in parents and parents[task_id] != milestone_id:
+            raise ProjectModelError("work task has conflicting milestone parents")
+        if task_id not in tasks_by_milestone[milestone_id]:
+            tasks_by_milestone[milestone_id].append(task_id)
+        parents[task_id] = milestone_id
     for milestone in milestone_order:
         milestone_id = str(milestone["id"]).strip()
         add_work(milestone, "milestone", 0, None)
-        for task_id in _ids(milestone.get("task_ids")):
+        for task_id in tasks_by_milestone[milestone_id]:
             task = task_lookup.get(task_id)
             if task is None or task_id in emitted_tasks:
                 continue
@@ -810,6 +1052,9 @@ def project_schema1_views(
             continue
         pointers = required_pointers + tuple(pointer for pointer in optional_pointers if pointer[1:] in model)
         content = content_by_id[view_id]
+        if view_id == "view.project.work" and isinstance(objective.get("current"), str) and objective["current"].strip():
+            content = {**content, "declared_goal": {"text": objective["current"].strip(), "source_pointer": "/objective"}}
+            pointers += ("/objective",)
         if view_id == "view.project.work" and selected_lens_ids is not None and "ranked_outcomes" in objective:
             pointer = "/objective/ranked_outcomes"
             if not _valid_pointer(model, pointer):

@@ -244,6 +244,41 @@ def validate_plugin_manifest(root: Path, files: dict[str, str] | None = None) ->
             raise ValueError(f"plugin manifest {field} is not a shipped file: {value}")
         if target.stat().st_size > 5 * 1024 * 1024:
             raise ValueError(f"plugin manifest {field} exceeds 5 MiB")
+    if "mcpServers" in manifest:
+        if manifest["mcpServers"] != "./.mcp.json":
+            raise ValueError("plugin MCP configuration must be the root ./.mcp.json")
+        reader = "skills/swarm/scripts/swarm_mcp.py"
+        for relative in (".mcp.json", reader):
+            target = root / relative
+            if (relative not in surface or not target.is_file() or _is_reparse_path(target)
+                    or not target.resolve().is_relative_to(root)):
+                raise ValueError(f"plugin MCP component is not a confined shipped file: {relative}")
+        config = root / ".mcp.json"
+        if config.stat().st_size > 65536:
+            raise ValueError("plugin MCP configuration exceeds 64 KiB")
+        try:
+            declaration = json.loads(config.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError("invalid plugin MCP configuration") from error
+        # SWARM ships one existing reader, not an arbitrary process-launch registry.
+        expected = {"mcpServers": {"swarm": {
+            "type": "stdio", "command": "python",
+            "args": ["-B", "${PLUGIN_ROOT}/" + reader, "--stdio"],
+            "cwd": "${PLUGIN_ROOT}",
+        }}}
+        desktop = {"mcpServers": {"swarm": {
+            "type": "stdio", "command": sys.executable,
+            "args": ["-B", "skills/swarm/scripts/swarm_desktop.py"], "cwd": ".",
+        }}}
+        if declaration == desktop:
+            for relative in ("skills/swarm/scripts/swarm_desktop.py",
+                             "skills/swarm/assets/ui/swarm-hq-snapshot.json"):
+                target = root / relative
+                if (relative not in surface or not target.is_file() or _is_reparse_path(target)
+                        or not target.resolve().is_relative_to(root)):
+                    raise ValueError(f"plugin desktop component is not a confined shipped file: {relative}")
+        elif declaration != expected:
+            raise ValueError("plugin MCP declaration must use the shipped SWARM stdio reader")
     return manifest
 
 

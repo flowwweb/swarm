@@ -47,6 +47,144 @@ from skills.swarm.runtime.core import AcceptanceContract, ArtifactIdentity, Cont
 class ProgressLedgerContractTests(unittest.TestCase):
     HOST_PRIVATE_KEY = 0x5A17
 
+    def test_numeric_ticket_migration_is_explicit_stable_and_non_material(self) -> None:
+        for index, task in enumerate(("task-z", "task-a"), 1):
+            self.ledger.append(self.event(f"number-{index}", f"block-{index}", task_id=task, observed_at_ms=index))
+        path = self.root / PROGRESS_LEDGER_PATH
+        before = path.read_bytes()
+        measured = self.ledger.project("project-alpha")
+        result = self.ledger.assign_ticket_ids("project-alpha", "swrm", ("task-a", "task-z"))
+        self.assertEqual(result["display_ids"], {"task-z": "SWRM-1", "task-a": "SWRM-2"})
+        self.assertTrue(path.read_bytes().startswith(before))
+        retained = path.read_bytes()
+        replay = Ledger(self.root).assign_ticket_ids("project-alpha", "SWRM", ("task-z", "task-a"))
+        self.assertEqual(replay["status"], "REPLAY")
+        self.assertEqual(path.read_bytes(), retained)
+        after = self.ledger.project("project-alpha")
+        self.assertEqual({k:v for k,v in measured.items() if k != "cursor"}, {k:v for k,v in after.items() if k != "cursor"})
+        ticket = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-z", observed_after_ms=0, observed_before_ms=10)
+        self.assertEqual(ticket["display_id"], "SWRM-1")
+        self.assertTrue(ticket["ticket_id"].startswith("ticket-"))
+        self.assertEqual(path.read_bytes(), retained)
+        for code in ("", "ABCDE", "1", "A-B", "Å", "Ａ", " HQ", None):
+            with self.subTest(code=code), self.assertRaises(ProgressEventError):
+                self.ledger.assign_ticket_ids("project-alpha", code, ("task-z",))
+        for code, tasks in (("HQ", ("task-z",)), ("SWRM", ("missing",)), ("SWRM", ("task-z", "task-z"))):
+            with self.assertRaises(ProgressEventError):
+                self.ledger.assign_ticket_ids("project-alpha", code, tasks)
+        self.assertEqual(path.read_bytes(), retained)
+
+    def test_numeric_ticket_concurrent_retries_and_code_collisions(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        tasks = tuple(f"task-{i}" for i in range(12))
+        for i, task in enumerate(tasks):
+            self.ledger.append(self.event(f"parallel-{i}", f"parallel-block-{i}", task_id=task))
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda task: Ledger(self.root).assign_ticket_ids("project-alpha", "hq", (task,)), tasks + tasks))
+        assigned = Ledger(self.root).replay()["ticket_identities"]["project-alpha"]["assignments"]
+        self.assertEqual(sorted(assigned.values()), list(range(1, 13)))
+        self.assertEqual(sum(r["status"] == "APPENDED" for r in results), 12)
+        other = self.event("other-project-ticket", "other-project-block", task_id="other-task")
+        other["project_id"] = "project-other"
+        self.ledger.append(other)
+        before = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        with self.assertRaisesRegex(ProgressEventError, "another project"):
+            self.ledger.assign_ticket_ids("project-other", "HQ", ("other-task",))
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
+        self.assertEqual(self.ledger.assign_ticket_ids("project-other", "X", ("other-task",))["display_ids"], {"other-task":"X-1"})
+
+    def test_numeric_ticket_supported_command_and_restart_readback(self) -> None:
+        import subprocess
+        import sys
+        self.ledger.append(self.event("cli-task", "cli-block", task_id="cli-task"))
+        script = Path(__file__).resolve().parents[1] / "scripts" / "swarm_progress.py"
+        command = [sys.executable, "-B", str(script), "--assign-tickets", "--ledger-root", str(self.root)]
+        payload = {"project_id": "project-alpha", "project_code": "SWRM", "task_ids": ["cli-task"]}
+        first = subprocess.run(command, input=json.dumps(payload), text=True, capture_output=True, timeout=30)
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        self.assertEqual(json.loads(first.stdout)["display_ids"], {"cli-task": "SWRM-1"})
+        retained = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        retry = subprocess.run(command, input=json.dumps(payload), text=True, capture_output=True, timeout=30)
+        self.assertEqual(retry.returncode, 0, retry.stderr + retry.stdout)
+        self.assertEqual(json.loads(retry.stdout)["status"], "REPLAY")
+        wrong = subprocess.run(command, input=json.dumps({**payload, "project_id": "other-project"}), text=True, capture_output=True, timeout=30)
+        self.assertEqual(wrong.returncode, 2)
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), retained)
+        view = Ledger(self.root).project_task_accounting("project-alpha", "ctrl-alpha", "cli-task", observed_after_ms=0, observed_before_ms=10)
+        self.assertEqual(view["display_id"], "SWRM-1")
+        wrong_view = Ledger(self.root).project_task_accounting("project-alpha", "wrong-ctrl", "cli-task", observed_after_ms=0, observed_before_ms=10)
+        self.assertIsNone(wrong_view["display_id"])
+
+    def test_numeric_ticket_corrupt_retained_assignments_fail_closed(self) -> None:
+        self.ledger.append(self.event("retained-task", "retained-block", task_id="task-one"))
+        self.ledger.assign_ticket_ids("project-alpha", "A", ("task-one",))
+        self.ledger.append(self.event("retained-second", "retained-second-block", task_id="task-two"))
+        path = self.root / PROGRESS_LEDGER_PATH
+        retained = path.read_bytes()
+        for assignments in ({"missing": 2}, {"task-one": 2}, {"task-two": 0}, {"task-two": True}, {"task-two": 1.0}, {"task-two": 3}):
+            with self.subTest(assignments=assignments):
+                event = {"schema_version": 1, "record_type": "TICKET_IDENTITY", "project_id": "project-alpha", "project_code": "A", "assignments": assignments}
+                digest = hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                corrupt = retained + json.dumps({"event_seq": 4, "event_digest": digest, "event": event}).encode() + b"\n"
+                path.write_bytes(corrupt)
+                with self.assertRaises(ProgressEventError):
+                    Ledger(self.root).replay()
+                self.assertEqual(path.read_bytes(), corrupt)
+        path.write_bytes(retained)
+        self.assertEqual(Ledger(self.root).replay()["ticket_identities"]["project-alpha"]["assignments"], {"task-one": 1})
+        self.assertEqual(self.ledger.assign_ticket_ids("project-alpha", "A", ("task-two",))["display_ids"], {"task-two": "A-2"})
+
+    def test_numeric_ticket_atomic_write_failures_and_durable_retry(self) -> None:
+        from skills.swarm.runtime import private_state
+        self.ledger.append(self.event("atomic", "atomic-block", task_id="atomic-task"))
+        path = self.root / PROGRESS_LEDGER_PATH
+        original = path.read_bytes()
+        factory = private_state.tempfile.NamedTemporaryFile
+        class PartialWriter:
+            def __init__(self, *args, **kwargs):
+                self.handle = factory(*args, **kwargs)
+                self.name = self.handle.name
+            def __enter__(self): return self
+            def __exit__(self, *args): self.handle.close()
+            def write(self, data):
+                self.handle.write(data[:7])
+                self.handle.flush()
+                raise OSError("injected partial write")
+        with mock.patch.object(private_state.tempfile, "NamedTemporaryFile", PartialWriter):
+            with self.assertRaisesRegex(OSError, "partial write"):
+                self.ledger.assign_ticket_ids("project-alpha", "A", ("atomic-task",))
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(Ledger(self.root).replay()["ticket_identities"], {})
+        for operation in ("fsync", "replace"):
+            with self.subTest(operation=operation):
+                with mock.patch.object(private_state.os, operation, side_effect=OSError("injected I/O failure")):
+                    with self.assertRaises(OSError):
+                        self.ledger.assign_ticket_ids("project-alpha", "A", ("atomic-task",))
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(Ledger(self.root).replay()["ticket_identities"], {})
+        # A durable record followed by failed projection write is uncertain delivery,
+        # not a second allocation. Restart must recover the exact first number.
+        with mock.patch.object(self.ledger, "_write_projection_unlocked", side_effect=OSError("projection unavailable")):
+            with self.assertRaises(OSError):
+                self.ledger.assign_ticket_ids("project-alpha", "A", ("atomic-task",))
+        durable = path.read_bytes()
+        self.assertTrue(durable.startswith(original))
+        self.assertEqual(Ledger(self.root).assign_ticket_ids("project-alpha", "A", ("atomic-task",))["status"], "REPLAY")
+        self.assertEqual(path.read_bytes(), durable)
+
+    def test_numeric_ticket_replay_validates_each_material_event_once(self) -> None:
+        from skills.swarm.runtime import progress_events
+        for i in range(24):
+            self.ledger.append(self.event(f"scale-{i}", f"scale-block-{i}", task_id=f"scale-task-{i}"))
+            self.ledger.assign_ticket_ids("project-alpha", "S", (f"scale-task-{i}",))
+        validate = progress_events._validate_progress_material_event
+        with mock.patch.object(progress_events, "_validate_progress_material_event", wraps=validate) as counted, \
+             mock.patch.object(Ledger, "_is_non_material_record", wraps=Ledger._is_non_material_record) as scans:
+            Ledger(self.root).assign_ticket_ids("project-alpha", "S", ("scale-task-0",))
+        self.assertEqual(counted.call_count, 24)
+        self.assertLessEqual(scans.call_count, 48)
+        self.assertEqual(len(Ledger(self.root).replay()["ticket_identities"]["project-alpha"]["assignments"]), 24)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -1925,6 +2063,40 @@ class ProgressLedgerContractTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ProgressEventError, "stale progress scope_version"):
             self.ledger.append(stale)
+
+    def test_ticket_identity_and_activity_are_existing_ledger_views(self) -> None:
+        for stamp, state in ((10, "ACTIVE"), (20, "WAITING_EXTERNAL"), (30, "ACTIVE")):
+            event = self.event(f"ticket-{stamp}", "ticket-block", task_id="ticket-task",
+                kind="BLOCK_CREATED" if stamp == 10 else "STATE_CHANGED",
+                lifecycle=state, observed_at_ms=stamp)
+            self.ledger.append(event)
+            self.assertEqual(self.ledger.append(event)["status"], "unchanged")
+        before = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        result = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "ticket-task",
+            observed_after_ms=10, observed_before_ms=30)
+        expected = "ticket-" + hashlib.sha256(b'["project-alpha","ticket-task"]').hexdigest()
+        self.assertEqual(result["ticket_id"], expected)
+        self.assertEqual([item["event_id"] for item in result["activity"]], ["ticket-10", "ticket-20", "ticket-30"])
+        self.assertEqual([item["observed_at_ms"] for item in result["activity"]], [10, 20, 30])
+        self.assertTrue(all(item["task_id"] == "ticket-task" and item["block_id"] == "ticket-block" for item in result["activity"]))
+        self.assertTrue(all("owner_id" in item and "event_digest" in item and "attempt" in item for item in result["activity"]))
+        self.assertTrue(all("prompt" not in item and "material_update_sentence" not in item and "chat_id" not in item for item in result["activity"]))
+        self.assertIsNone(result["tokens"]["observed_tokens"])
+        restarted = Ledger(self.root)
+        self.assertEqual(restarted.project_task_accounting("project-alpha", "ctrl-alpha", "ticket-task",
+            observed_after_ms=10, observed_before_ms=30), result)
+        clipped = restarted.project_task_accounting("project-alpha", "ctrl-alpha", "ticket-task",
+            observed_after_ms=20, observed_before_ms=30)
+        self.assertEqual(clipped["ticket_id"], expected)
+        self.assertEqual(len(clipped["activity"]), 2)
+        for project, ctrl, task in (("other-project", "ctrl-alpha", "ticket-task"),
+                                   ("project-alpha", "other-ctrl", "ticket-task"),
+                                   ("project-alpha", "ctrl-alpha", "missing-task")):
+            withheld = restarted.project_task_accounting(project, ctrl, task,
+                observed_after_ms=10, observed_before_ms=30)
+            self.assertIsNone(withheld["ticket_id"])
+            self.assertEqual(withheld["activity"], [])
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
 
     def test_task_accounting_clips_closed_residence_and_replays_without_writes(self) -> None:
         for stamp, state in ((10, "ACTIVE"), (20, "WAITING_EXTERNAL"), (30, "ACTIVE"), (40, "TOMBSTONED")):

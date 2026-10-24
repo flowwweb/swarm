@@ -883,6 +883,9 @@ class ExecutionConfigGeneration:
     effort: str
     changed_at_ms: int
     host_receipt_id: str
+    project_id: str = ""
+    task_id: str = ""
+    inherit: bool = False
 
     def __post_init__(self) -> None:
         _text(self.generation_id, "execution config generation id")
@@ -894,10 +897,20 @@ class ExecutionConfigGeneration:
         if not isinstance(self.changed_at_ms, int) or isinstance(self.changed_at_ms, bool) or self.changed_at_ms < 0:
             raise InvariantError("execution config generation requires a nonnegative changed-at timestamp")
         _text(self.host_receipt_id, "execution config host receipt")
+        if self.task_id and not self.project_id:
+            raise InvariantError("task generation requires exact project binding")
+        if self.project_id and (self.model or self.effort):
+            raise InvariantError("scoped speed generations cannot override model or effort")
+        if type(self.inherit) is not bool or self.inherit and not self.project_id:
+            raise InvariantError("only scoped speed generations may inherit")
+        for value in (self.project_id, self.task_id):
+            if value:
+                _text(value, "execution config scope")
 
     @property
     def digest(self) -> str:
-        return _canonical_digest((self.generation_id, self.fast_mode, self.model, self.effort, self.changed_at_ms, self.host_receipt_id))
+        fields = (self.generation_id, self.fast_mode, self.model, self.effort, self.changed_at_ms, self.host_receipt_id)
+        return _canonical_digest(fields + ((self.project_id, self.task_id, self.inherit),) if self.project_id else fields)
 
     @property
     def requested_service_tier(self) -> str:
@@ -968,10 +981,21 @@ class ExecutionReservation:
     retry_count: int = 0
     snapshot_digest: str = ""
     updated_at_ms: int = 0
+    project_id: str = ""
+    service_tier_receipt_id: str = ""
+    settings_task_id: str = ""
 
     def __post_init__(self) -> None:
         for value, label in ((self.reservation_id, "execution reservation id"), (self.task_id, "execution task id"), (self.owner_id, "execution owner id")):
             _text(value, label)
+        if self.project_id:
+            _text(self.project_id, "execution project id")
+        if self.service_tier_receipt_id:
+            _text(self.service_tier_receipt_id, "host service tier receipt")
+        if self.settings_task_id:
+            _text(self.settings_task_id, "settings host task id")
+            if not self.project_id:
+                raise InvariantError("task settings require exact project binding")
         if not isinstance(self.artifact, ArtifactIdentity) or not isinstance(self.state, ExecutionDispatchState):
             raise InvariantError("execution reservation requires exact artifact and typed state")
         if self.request_digest:
@@ -1014,6 +1038,9 @@ class ExecutionReservation:
             "request_bytes": self.request_bytes,
             "generation_id": self.generation_id,
             "requested_fast_mode": self.requested_fast_mode,
+            **({"project_id": self.project_id} if self.project_id else {}),
+            **({"service_tier_receipt_id": self.service_tier_receipt_id} if self.service_tier_receipt_id else {}),
+            **({"settings_task_id": self.settings_task_id} if self.settings_task_id else {}),
             "requested_service_tier": self.requested_service_tier,
             "requested_model": self.requested_model,
             "requested_effort": self.requested_effort,
@@ -1051,6 +1078,9 @@ class ExecutionReservation:
             reservation_id=str(payload.get("reservation_id") or ""),
             task_id=str(payload.get("task_id") or ""),
             owner_id=str(payload.get("owner_id") or ""),
+            project_id=str(payload.get("project_id") or ""),
+            service_tier_receipt_id=str(payload.get("service_tier_receipt_id") or ""),
+            settings_task_id=str(payload.get("settings_task_id") or ""),
             artifact=artifact,
             state=ExecutionDispatchState(str(payload.get("state") or "")),
             request_digest=str(payload.get("request_digest") or ""),
@@ -1101,7 +1131,7 @@ class ExecutionDispatchLedger:
 
     @property
     def latest_generation(self) -> ExecutionConfigGeneration | None:
-        return max(self._generations.values(), key=lambda item: (item.changed_at_ms, item.generation_id), default=None)
+        return max((item for item in self._generations.values() if not item.project_id), key=lambda item: (item.changed_at_ms, item.generation_id), default=None)
 
     def observe_generation(self, generation: ExecutionConfigGeneration) -> None:
         if not isinstance(generation, ExecutionConfigGeneration):
@@ -1109,14 +1139,29 @@ class ExecutionDispatchLedger:
         existing = self._generations.get(generation.generation_id)
         if existing is not None and existing != generation:
             raise InvariantError("execution config generation identity conflicts with retained state")
-        latest = self.latest_generation
+        latest = max((item for item in self._generations.values() if
+                      (item.project_id, item.task_id) == (generation.project_id, generation.task_id)),
+                     key=lambda item: (item.changed_at_ms, item.generation_id), default=None)
         if latest is not None and existing is None and generation.changed_at_ms <= latest.changed_at_ms:
             raise InvariantError("stale or ambiguously ordered execution config generation cannot become current")
         self._generations[generation.generation_id] = generation
         if latest is None or (generation.changed_at_ms, generation.generation_id) > (latest.changed_at_ms, latest.generation_id):
             for reservation in self._reservations.values():
-                if reservation.state is ExecutionDispatchState.ACTIVE:
-                    reservation.next_generation_id = generation.generation_id
+                effective = self._generation_for(reservation)
+                if reservation.state is ExecutionDispatchState.ACTIVE and effective is not None:
+                    pending = effective.generation_id if effective.generation_id != reservation.generation_id else ""
+                    if pending != reservation.next_generation_id:
+                        reservation.next_generation_id = pending
+                        reservation.updated_at_ms = max(reservation.updated_at_ms, generation.changed_at_ms)
+
+    def _generation_for(self, reservation: ExecutionReservation) -> ExecutionConfigGeneration | None:
+        latest = {}
+        for item in self.generations:
+            latest[item.project_id, item.task_id] = item
+        return max((item for item in latest.values() if not item.inherit and
+                    (not item.project_id or item.project_id == reservation.project_id) and
+                    (not item.task_id or item.task_id == (reservation.settings_task_id or reservation.task_id))),
+                   key=lambda item: (bool(item.task_id), bool(item.project_id), item.changed_at_ms, item.generation_id), default=None)
 
     def _add_reservation(self, reservation: ExecutionReservation) -> None:
         if not isinstance(reservation, ExecutionReservation):
@@ -1126,10 +1171,10 @@ class ExecutionDispatchLedger:
         self._reservations[reservation.reservation_id] = reservation
         self._task_reservations[reservation.task_id] = reservation.reservation_id
 
-    def reserve(self, reservation_id: str, task_id: str, owner_id: str, artifact: ArtifactIdentity, *, observed_at_ms: int) -> ExecutionReservation:
+    def reserve(self, reservation_id: str, task_id: str, owner_id: str, artifact: ArtifactIdentity, *, observed_at_ms: int, project_id: str = "", settings_task_id: str = "") -> ExecutionReservation:
         if reservation_id in self._reservations or task_id in self._task_reservations:
             raise InvariantError("duplicate dispatch reservation is prohibited")
-        reservation = ExecutionReservation(reservation_id, task_id, owner_id, artifact, updated_at_ms=observed_at_ms)
+        reservation = ExecutionReservation(reservation_id, task_id, owner_id, artifact, updated_at_ms=observed_at_ms, project_id=project_id, settings_task_id=settings_task_id)
         self._add_reservation(reservation)
         return reservation
 
@@ -1151,7 +1196,7 @@ class ExecutionDispatchLedger:
         reservation = self.reservation(reservation_id)
         if direct_user_keep_out:
             raise InvariantError("direct-user CTRL keep-out blocks delegated dispatch")
-        generation = self.latest_generation
+        generation = self._generation_for(reservation)
         if generation is None:
             raise InvariantError("latest host execution config is unavailable; dispatch remains UNVERIFIED")
         if reservation.state is ExecutionDispatchState.ACTIVE:
@@ -1165,15 +1210,20 @@ class ExecutionDispatchLedger:
         digest = _digest(request_digest, "execution request")
         if not isinstance(request_bytes, int) or isinstance(request_bytes, bool) or request_bytes <= 0:
             raise InvariantError("execution request requires a positive bounded byte count")
+        base = max((item for item in self._generations.values() if not item.project_id),
+                   key=lambda item: (item.changed_at_ms, item.generation_id), default=None)
+        if base is None:
+            raise InvariantError("global model/effort observation is unavailable")
         reservation.request_digest = digest
         reservation.request_bytes = request_bytes
         reservation.generation_id = generation.generation_id
         reservation.requested_service_tier = generation.requested_service_tier
         reservation.requested_fast_mode = reservation.requested_service_tier in {"fast", "priority"}
-        reservation.requested_model = generation.model
-        reservation.requested_effort = generation.effort
+        reservation.requested_model = base.model
+        reservation.requested_effort = base.effort
         reservation.actual_service_tier = ""
         reservation.service_tier_truth = ServiceTierTruth.UNVERIFIED
+        reservation.service_tier_receipt_id = ""
         reservation.next_generation_id = ""
         reservation.host_completed = False
         reservation.failure_kind = None
@@ -1182,6 +1232,23 @@ class ExecutionDispatchLedger:
         if retry:
             reservation.retry_count += 1
         return reservation
+
+    def speed_application(self, reservation_id: str) -> dict[str, object]:
+        """Provider application is evidence, never inferred from a saved preference."""
+        item = self.reservation(reservation_id)
+        state = "pending-next-turn"
+        if item.failure_kind is not None:
+            state = "failed"
+        elif not item.next_generation_id and item.service_tier_receipt_id:
+            matches = item.actual_service_tier == item.requested_service_tier or item.requested_service_tier == "fast" and item.actual_service_tier == "priority"
+            state = "provider-applied" if matches else "unsupported"
+        return {"state": state, "requested_service_tier": item.requested_service_tier,
+                "project_id": item.project_id or None,
+                "task_id": (item.settings_task_id or item.task_id) if item.project_id else None,
+                "actual_service_tier": item.actual_service_tier or None,
+                "receipt_id": item.service_tier_receipt_id or None,
+                "generation_id": item.generation_id, "next_generation_id": item.next_generation_id or None,
+                "origin": ("task" if self._generations[item.generation_id].task_id else "project" if self._generations[item.generation_id].project_id else "global") if item.generation_id in self._generations else None}
 
     def checkpoint(self, reservation_id: str, *, observed_at_ms: int) -> ExecutionReservation:
         reservation = self.reservation(reservation_id)
@@ -1195,6 +1262,7 @@ class ExecutionDispatchLedger:
         reservation.requested_effort = ""
         reservation.actual_service_tier = ""
         reservation.service_tier_truth = ServiceTierTruth.UNVERIFIED
+        reservation.service_tier_receipt_id = ""
         reservation.updated_at_ms = observed_at_ms
         return reservation
 
@@ -1218,9 +1286,10 @@ class ExecutionDispatchLedger:
         if served_tier is not None and served_tier._authority is _HOST_RESPONSE_AUTHORITY:
             expected = reservation.requested_service_tier
             actual_ok = served_tier.actual_service_tier == expected or expected == "fast" and served_tier.actual_service_tier == "priority"
-            if served_tier.request_digest == reservation.request_digest and actual_ok:
+            if served_tier.request_digest == reservation.request_digest:
                 reservation.actual_service_tier = served_tier.actual_service_tier
-                reservation.service_tier_truth = ServiceTierTruth.CONFIRMED
+                reservation.service_tier_receipt_id = served_tier.receipt_id
+                reservation.service_tier_truth = ServiceTierTruth.CONFIRMED if actual_ok else ServiceTierTruth.UNVERIFIED
         reservation.updated_at_ms = observed_at_ms
         return True
 
@@ -1234,6 +1303,7 @@ class ExecutionDispatchLedger:
         reservation.state = ExecutionDispatchState.UNVERIFIED
         reservation.actual_service_tier = ""
         reservation.service_tier_truth = ServiceTierTruth.UNVERIFIED
+        reservation.service_tier_receipt_id = ""
         reservation.updated_at_ms = observed_at_ms
         return reservation
 

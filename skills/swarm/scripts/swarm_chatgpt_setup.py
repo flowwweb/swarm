@@ -26,7 +26,7 @@ def _load(path: Path) -> dict:
     return value
 
 
-def _desired(config: dict, *, project_root: Path) -> dict:
+def _desired(config: dict, *, project_root: Path, hq_args: list[str] | None = None) -> dict:
     result = dict(config)
     existing_root = result.get("workDir")
     if existing_root is not None and (
@@ -35,6 +35,24 @@ def _desired(config: dict, *, project_root: Path) -> dict:
         or Path(existing_root).resolve() != project_root
     ):
         raise ValueError("Existing workDir differs; use a separate config for this project")
+    if hq_args is not None:
+        # Amend only our known upstream; shared scope and other bridge settings are not ours.
+        upstream = result.get("mcpServers", {}).get("swarm") if isinstance(result.get("mcpServers"), dict) else None
+        if (existing_root is None or type(result.get("multiProject", False)) is not bool
+                or not isinstance(upstream, dict) or upstream.get("mode") not in {"direct", "catalog"}
+                or not isinstance(upstream.get("command"), str) or not upstream["command"].strip()
+                or upstream.get("tools") not in (["swarm_status", "swarm_projects", "swarm_usage"],
+                                                 ["swarm_status", "swarm_projects", "swarm_usage", "swarm_hq_view"])):
+            raise ValueError("HQ requires the existing bound SWARM read-tool upstream")
+        args = upstream.get("args")
+        if (not isinstance(args, list) or len(args) not in (2, 6) or not all(isinstance(v, str) for v in args)
+                or Path(args[0]).resolve() != SCRIPT.resolve() or args[1] != "--stdio"
+                or (len(args) == 6 and args[2:] != hq_args)):
+            raise ValueError("Existing SWARM upstream arguments conflict; preserve its owner")
+        result["mcpServers"] = {**result["mcpServers"], "swarm": {**upstream,
+                                 "args": [*args[:2], *hq_args],
+                                 "tools": ["swarm_status", "swarm_projects", "swarm_usage", "swarm_hq_view"]}}
+        return result
     if result.get("multiProject", False) is not False:
         raise ValueError("Existing multiProject scope conflicts; use a separate config")
     imports = result.get("codexMcp", {})
@@ -78,11 +96,38 @@ def _credential_status(tunnel: object) -> str:
     return "file_shape_valid" if re.fullmatch(r"sk-[A-Za-z0-9_-]{20,}", value) else "file_malformed"
 
 
-def configure(path: Path, project_root: Path, *, write: bool) -> dict:
+def configure(path: Path, project_root: Path, *, write: bool,
+              hq_export: Path | None = None, hq_export_sha256: str | None = None) -> dict:
     project_root = project_root.expanduser().resolve()
     if not project_root.is_dir():
         raise ValueError(f"project root does not exist: {project_root}")
-    config = _desired(_load(path), project_root=project_root)
+    if (hq_export is None) != (hq_export_sha256 is None):
+        raise ValueError("HQ requires both an export and its exact SHA-256")
+    hq_args = None
+    if hq_export is not None:
+        candidate = hq_export.expanduser().absolute()
+        if not candidate.is_relative_to(project_root):
+            raise ValueError("HQ export is outside the existing project root")
+        import stat
+        for parent in (candidate, *candidate.parents):
+            info = parent.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise ValueError("HQ export path contains a link or reparse point")
+            if parent == project_root:
+                break
+        if not candidate.resolve().is_relative_to(project_root):
+            raise ValueError("HQ export is outside the existing project root")
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            from swarm_mcp import HQApp, MCPError
+        except ImportError:
+            raise ValueError("This SWARM adapter lacks the required HQ capability") from None
+        try:
+            HQApp(candidate, hq_export_sha256)
+        except (MCPError, OSError, ValueError):
+            raise ValueError("HQ export or SDK unavailable, changed or invalid") from None
+        hq_args = ["--hq-export", str(candidate), "--hq-export-sha256", hq_export_sha256]
+    config = _desired(_load(path), project_root=project_root, hq_args=hq_args)
     if write:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(path.name + ".swarm.tmp")
@@ -98,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_CODEXIFY_CONFIG)
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--bridge", help="explicit path to verified Codexify 1.3.0 executable")
+    parser.add_argument("--hq-export", type=Path, help="explicit root-confined pinned HQ export; preserves existing shared scope")
+    parser.add_argument("--hq-export-sha256", help="exact SHA-256 for --hq-export")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--write", action="store_true", help="write the scoped config; never create credentials")
     mode.add_argument("--check", action="store_true", help="check bootstrap prerequisites without writing")
@@ -118,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         errors.append("SWARM adapter missing")
     config = {}
     try:
-        config = configure(path, args.project_root, write=False)
+        config = configure(path, args.project_root, write=False, hq_export=args.hq_export, hq_export_sha256=args.hq_export_sha256)
     except (OSError, ValueError) as exc:
         # Do not echo parser details: an existing config may contain credentials.
         errors.append(str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else "Config unreadable or invalid JSON")
@@ -143,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.write:
         try:
-            configure(path, args.project_root, write=True)
+            configure(path, args.project_root, write=True, hq_export=args.hq_export, hq_export_sha256=args.hq_export_sha256)
         except (OSError, ValueError):
             print("Config write failed; existing config was not replaced by this operation.", file=sys.stderr)
             return 2

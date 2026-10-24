@@ -175,8 +175,9 @@ Use the shallowest structure that can finish the accepted objective through dele
 `CTRL_DIRECT` is retired; all production uses `CTRL_DELEGATED`. A small,
 low-risk atomic outcome belongs to a separate bounded producer, not CTRL. Multi-file or multi-surface work, runtime/API/auth/data,
 provider/deployment/device state, visual work, multiple proof gates, or
-independent review MUST open a visible senior Codex task/chat before CTRL does
-substantive work. That lane has its own cwd, owner, heartbeat, mutable surface,
+independent review requires a visible senior Codex task owner, not a new chat.
+Follow [visible owner reuse and host creation](references/hierarchy.md#visible-owner-reuse-and-host-creation).
+That lane has its own cwd, owner, heartbeat, mutable surface,
 and accepting route. Structural authority is exactly `CTRL`, `LEAD`, and
 `DOER`, but it is not fixed depth: a LEAD may produce directly, recruit a DOER
 for a bounded artifact, or recruit a nested LEAD when a subordinate boundary
@@ -190,9 +191,9 @@ for `NORMAL_SUBAGENT` when measured task economics favor it. The subagent stays
 inside its accountable owner and cannot own, hand off, review, or accept a
 durable lane. A capacity-forced degraded subagent records the exact host
 failure, immutable checkpoint, resumption marker, and `UNVERIFIED` gates. If a
-required visible task cannot be created, surface the exact blocker or a typed
+required eligible visible owner is unavailable, surface the exact blocker or a typed
 degraded route; never silently expand CTRL or subagent authority. `DESIGN`,
-`IMAGEGEN`, and `IMAGE_EDIT` always open a visible visual task. Product/UI
+`IMAGEGEN`, and `IMAGE_EDIT` use an eligible visible visual owner. Product/UI
 experience, interaction, mockup, and design-system work binds Designer;
 expressive illustration, concept art, media, motion, 3D, photography, or sound
 binds Artist. Profession changes perspective and craft, never authority.
@@ -242,7 +243,7 @@ when the host returns the actual Spark model and a matching host receipt.
 
 Any substantive lane—product implementation, storage recovery, deploy preparation,
 provider integration, design system, test/review ownership, or work with multiple
-checkpoints or delegation—must be a visible senior Codex task/chat with its own
+checkpoints or delegation—must have a visible senior Codex task owner with its own
 cwd, owner, and heartbeat. A hidden or short-lived subagent is only a bounded
 sidecar inspection or independent review; it cannot be the sole owner or bottleneck.
 The parent CTRL keeps unrelated senior lanes moving in parallel and integrates only
@@ -252,14 +253,16 @@ first. A successor is permitted only when the user-authorized topology allows it
 must carry an explicit custody/handoff; never silently duplicate, replace, rename,
 archive, or alter the old lane or user state.
 
-Materialize a visible task lane whenever durable ownership or interruption-safe
-resumption is required. Use a subagent only as short bounded capacity inside an existing lane: it remains eligible only for genuinely small, single-surface,
+Materialize a visible task lane only on explicit user request under the
+hierarchy's host-creation rule; otherwise reuse an eligible visible owner for
+durable ownership or interruption-safe resumption.
+Use a subagent only as short bounded capacity inside an existing lane: it remains eligible only for genuinely small, single-surface,
 low-risk `GENERAL` inspection or review and never substitutes for a qualifying durable task. It never gains lane ownership, handoff, heartbeat, acceptance, or
 host mutation authority. Hidden subagents are non-recursive leaves: routing facts
 that may need recruitment or recursive delegation require a visible owner. If a
 leaf discovers that need, it stops and returns `PROMOTE_TO_VISIBLE_TASK` with the
-remaining deliverable, custody boundary, and required proof; the parent reuses
-or creates the visible owner. For an authorized safe action with an ordinary
+remaining deliverable, custody boundary, and required proof; the parent follows
+the hierarchy's owner-reuse rule. For an authorized safe action with an ordinary
 local access failure, its eligible owner requests supported sandbox or access
 approval once before recording host-gate fallback or a blocker. Pending approval
 waits; do not cancel it or count it as route exhaustion. An actual denial remains
@@ -312,8 +315,9 @@ is small. Designer owns product experience, interaction, hierarchy, and design
 systems; Artist owns expressive media and craft. The assigned visual profession
 owns the candidate artifact and visual proof; CTRL routes the work, surfaces
 the decision set, waits at the user's approval boundary, and composes the
-accepted result. If the required visual lane cannot be
-materialized, keep the work blocked or explicitly degraded with open gates;
+accepted result. Follow the hierarchy's owner-reuse rule rather than creating
+a chat because the work is visual. If no eligible visual owner exists, retain
+the exact ownership gap and required decision;
 never fall back to CTRL production work.
 
 An explicit request for a mockup, UI mockup, screen option, or design option
@@ -372,6 +376,7 @@ Apply the [user expectation loop](references/review-contract.md#user-expectation
 at intake, delegation, recovery, and acceptance: identify the user and purpose,
 define observable success, and compare the final integrated result with that
 expectation. Carry this through the existing task contract for every role.
+Before advancing dependent work or claims, apply [prerequisite readiness](references/task-contract.md#prerequisite-readiness).
 
 Every SWARM agent and profession follows [runtime-recovery.md](references/runtime-recovery.md)
 when a failure, disputed blocker, uncertain permission, timeout, or repeated

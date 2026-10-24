@@ -50,6 +50,10 @@ DEFAULTS: dict[str, Any] = {
         "jev_model_selection": False,
         "min_reasoning": "none",
         "max_reasoning": "ultra",
+        "model_order": [],
+        "min_model": "",
+        "default_model": "",
+        "max_model": "",
     },
     "console": {
         "auto_start": True,
@@ -380,7 +384,7 @@ def _feedback_destination(data: dict[str, Any]) -> None:
         )
 
 
-def validate(raw: dict[str, Any]) -> None:
+def validate(raw: dict[str, Any], *, partial: bool = False) -> None:
     if not isinstance(raw, dict):
         raise ConfigError("the config root must be a TOML table")
     _expect_keys(raw, set(DEFAULTS), "root")
@@ -747,10 +751,61 @@ def validate(raw: dict[str, Any]) -> None:
     )
     if effective_parallel > effective_max:
         raise ConfigError("portfolio.default_parallel_tasks cannot exceed portfolio.max_active_tasks")
+    _model_policy(merge(raw), partial=partial)
+
+
+def _model_policy(effective: dict[str, Any], *, partial: bool = False) -> list[str]:
+    """An explicit preference order, never a model-name or availability ranking."""
+    execution = effective["execution"]
+    order = execution.get("model_order", [])
+    bounds = [execution.get(key, "") for key in ("min_model", "default_model", "max_model")]
+    if not isinstance(order, list) or len(order) > 32 or any(
+        not isinstance(model, str) or not model or model != model.strip() or len(model) > 64 or any(c in model for c in '\r\n\t') for model in order
+    ) or len(set(order)) != len(order):
+        raise ConfigError("execution.model_order must contain unique declared model IDs (at most 32)")
+    if any(not isinstance(model, str) or model != model.strip() or len(model) > 64 or any(c in model for c in '\r\n\t') for model in bounds):
+        raise ConfigError("model bounds must be exact model ID strings")
+    if partial:
+        return []  # Scope authority validates the fully inherited policy after merging.
+    if any(model not in effective["model_capabilities"] for model in order):
+        raise ConfigError("execution.model_order contains an undeclared model")
+    if not order and bounds == ["", "", ""]:
+        return []  # Historical profile selection remains unchanged until explicitly configured.
+    if any(not isinstance(model, str) or model not in order for model in bounds):
+        raise ConfigError("minimum, default and maximum models must belong to execution.model_order")
+    low, default, high = [order.index(model) for model in bounds]
+    if not low <= default <= high:
+        raise ConfigError("model policy requires minimum <= default <= maximum in the explicit order")
+    preferred = effective["models"][execution["usage_profile"]]["task_reasoning"]
+    supported = effective["model_capabilities"][bounds[1]].get("reasoning", REASONING_SCALE)
+    if preferred not in supported or not (REASONING_SCALE.index(execution["min_reasoning"]) <= REASONING_SCALE.index(preferred) <= REASONING_SCALE.index(execution["max_reasoning"])):
+        raise ConfigError("default reasoning conflicts with the selected model or reasoning bounds")
+    return order[low:high + 1]
+
+
+class _ModelProfile(dict):
+    """Ephemeral default provenance; never serialized as configuration or authority."""
+    def __init__(self, values):
+        super().__init__(values)
+        self.inherited = set(values)
+
+    def __setitem__(self, key, value):
+        self.inherited.discard(key)
+        super().__setitem__(key, value)
+
+    def update(self, *args, **kwargs):
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def __deepcopy__(self, memo):
+        copied = _ModelProfile(deepcopy(dict(self), memo))
+        copied.inherited = self.inherited.copy()
+        return copied
 
 
 def merge(raw: dict[str, Any]) -> dict[str, Any]:
     effective = deepcopy(DEFAULTS)
+    effective["models"] = {name: _ModelProfile(profile) for name, profile in effective["models"].items()}
     normalized = deepcopy(raw)
     normalized.get("portfolio", {}).pop("title_prefix", None)
 
@@ -957,7 +1012,15 @@ def resolve_role_assignment(
             raise ConfigError(f"role has no configured model pair: {role}")
         model_key, reasoning_key = "doer_model", "doer_reasoning"
     model, preferred = profile[model_key], profile[reasoning_key]
-    reasoning_is_explicit = explicit_reasoning is not None
+    allowed_models = _model_policy(effective)
+    # Only known inherited defaults may be replaced. Plain/serialized profiles
+    # have unknown provenance and are conservatively treated as explicit.
+    inherited = profile.inherited if isinstance(profile, _ModelProfile) else set()
+    if allowed_models and model_key in inherited:
+        model = effective["execution"]["default_model"]
+    if allowed_models and reasoning_key in inherited:
+        preferred = profile["task_reasoning"]
+    reasoning_is_explicit = explicit_reasoning is not None or (bool(allowed_models) and reasoning_key not in inherited)
     if custom_override is not None:
         model = custom_override.get("model", model)
         preferred = custom_override.get("reasoning", preferred)
@@ -968,6 +1031,8 @@ def resolve_role_assignment(
     if explicit_reasoning is not None:
         _reasoning_effort({"reasoning": explicit_reasoning}, "reasoning", "explicit assignment")
         preferred = explicit_reasoning
+    if allowed_models and model not in allowed_models:
+        raise ConfigError(f"explicit model {model} conflicts with the configured model range; choice was not changed")
     low = REASONING_SCALE.index(effective["execution"]["min_reasoning"])
     high = REASONING_SCALE.index(effective["execution"]["max_reasoning"])
     capability = effective["model_capabilities"].get(model)
@@ -988,12 +1053,31 @@ def resolve_role_assignment(
         if supported and preferred not in supported:
             raise ConfigError(f"explicit reasoning is not declared for model {model}: {preferred}")
         selected = REASONING_SCALE.index(preferred)
+        if allowed_models and not low <= selected <= high:
+            raise ConfigError("explicit reasoning conflicts with the configured range; choice was not changed")
     elif effective["turbo"]["enabled"]:
         selected = allowed[-1]
     else:
         selected = REASONING_SCALE.index(preferred) + (route_tier - 2)
         selected = min(allowed, key=lambda index: (abs(index - selected), index))
     return {"model": model, "reasoning": REASONING_SCALE[selected]}
+
+
+def resolve_speed_control(global_settings: dict[str, Any], *, project_override: bool | None = None,
+                          task_override: bool | None = None) -> dict[str, Any]:
+    """Resolve the existing speed preference; None means inherit, never off."""
+    value = global_settings["execution"]["fast_mode"]
+    if type(value) is not bool:
+        raise ConfigError("global speed preference must be boolean")
+    origin = "global"
+    for scope, override in (("global", value), ("project", project_override), ("task", task_override)):
+        if override is not None:
+            if type(override) is not bool:
+                raise ConfigError("speed override must be boolean or inherit (null)")
+            value, origin = override, scope
+    return {"fast_mode": value, "origin": origin,
+            "requested_service_tier": "fast" if value else "default",
+            "application_state": "pending-next-turn"}
 
 
 def resolve_model_assignment(

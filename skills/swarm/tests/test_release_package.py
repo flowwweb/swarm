@@ -39,6 +39,37 @@ SPEC.loader.exec_module(verifier)
 
 
 class ReleasePackageTests(unittest.TestCase):
+    def test_desktop_declaration_is_exact_and_requires_shipped_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.make_plugin(Path(directory))
+            manifest_path = root / '.codex-plugin/plugin.json'
+            manifest = json.loads(manifest_path.read_bytes())
+            manifest['mcpServers'] = './.mcp.json'
+            manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+            for relative in ('skills/swarm/scripts/swarm_mcp.py', 'skills/swarm/scripts/swarm_desktop.py',
+                             'skills/swarm/assets/ui/swarm-hq-snapshot.json'):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('{}', encoding='utf-8')
+            config = root / '.mcp.json'
+            entry = {'type': 'stdio', 'command': sys.executable,
+                     'args': ['-B', 'skills/swarm/scripts/swarm_desktop.py'], 'cwd': '.'}
+            config.write_text(json.dumps({'mcpServers': {'swarm': entry}}), encoding='utf-8')
+            package_builder.validate_plugin_manifest(root)
+            for field, invalid in (('command', 'cmd.exe'), ('command', 'C:/other/python.exe'),
+                                   ('args', ['-c', 'print(1)']), ('args', ['-B', '../swarm_desktop.py']),
+                                   ('args', entry['args'] + ['--extra']), ('cwd', '..'),
+                                   ('env', {'PYTHONPATH': 'elsewhere'})):
+                with self.subTest(field=field, invalid=invalid):
+                    config.write_text(json.dumps({'mcpServers': {'swarm': {**entry, field: invalid}}}), encoding='utf-8')
+                    with self.assertRaisesRegex(ValueError, 'stdio reader'):
+                        package_builder.validate_plugin_manifest(root)
+            config.write_text(json.dumps({'mcpServers': {'swarm': entry}}), encoding='utf-8')
+            snapshot = root / 'skills/swarm/assets/ui/swarm-hq-snapshot.json'
+            snapshot.unlink()
+            with self.assertRaisesRegex(ValueError, 'desktop component'):
+                package_builder.validate_plugin_manifest(root)
+
     def test_release_icons_reuse_exact_canonical_mascot(self):
         manifest = json.loads((REPOSITORY_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
         expected = {

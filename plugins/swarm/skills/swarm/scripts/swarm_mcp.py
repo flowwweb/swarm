@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Small read-only SWARM MCP adapter for a local coding bridge.
+"""Small SWARM projection and acknowledged Settings MCP adapter.
 
 The generic repository tools belong to the selected bridge (Codexify). This
-process only exposes projections that generic file and shell tools cannot name
-cleanly. It speaks newline-delimited JSON-RPC so it can be configured as a
+process exposes projections and delegates Settings writes to the existing config
+authority. It speaks newline-delimited JSON-RPC so it can be configured as a
 Codexify stdio upstream without another model or request broker.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
+import re
 import socket
+import stat
 import sys
 import time
 from pathlib import Path
@@ -25,9 +28,31 @@ REPO_ROOT = SCRIPT_ROOT.parents[3]
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
+HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
+HQ_SDK_SHA256 = "5c0a268e27193db388ce44c5ded528979289b5b7df1883d619d0a56a2433a01e"
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html":"4f70c9da747146c53924982db0ef283f7ab078cd5b16eb1da6652fe20dd1cff7","skills/swarm/assets/ui/swarm-hq-host.css":"b1d08c8dafd4e800697a8991f8f731ef77e35fbfeb0ad17271acfc4e09335d88","skills/swarm/assets/swarm-wordmark.png":"306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
 
 
 TOOLS: tuple[dict[str, Any], ...] = (
+    {
+        "name": "swarm_settings_read", "title": "Read SWARM Settings",
+        "description": "Read the existing redacted scoped config projection and revision. No host model change is implied.",
+        "inputSchema": {"type": "object", "properties": {"scope": {"type": "object"}}, "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
+    {
+        "name": "swarm_settings_save", "title": "Save SWARM Settings",
+        "description": "Submit an explicitly acknowledged scoped config edit through the existing revision/idempotency authority. Preserve the exact operation identity for uncertain retries.",
+        "inputSchema": {"type": "object", "properties": {
+            "scope": {"type": "object"}, "expected_revision": {"type": "string"},
+            "acknowledge": {"type": "boolean", "enum": [True]}, "text": {"type": "string"},
+            "operation_id": {"type": "string"}},
+            "required": ["scope", "expected_revision", "acknowledge", "text", "operation_id"],
+            "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
     {
         "name": "swarm_status",
         "title": "Read SWARM status",
@@ -56,6 +81,91 @@ class MCPError(Exception):
     pass
 
 
+class HQApp:
+    """Serve one explicitly pinned exporter artifact, never load live host state."""
+
+    def __init__(self, path: Path, expected_sha256: str, *, projects: bool = False) -> None:
+        if not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
+            raise MCPError("HQ export requires an exact SHA-256")
+        self.path, self.expected_sha256 = path, expected_sha256
+        self.projects = projects
+        self.uri = f"ui://swarm/hq/{hashlib.sha256(self.render().encode('utf-8')).hexdigest()}.html"
+
+    def read(self) -> dict[str, Any]:
+        info = self.path.lstat()
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise MCPError("HQ export must be a regular file")
+        with self.path.open("rb") as stream:
+            raw = stream.read(1048577)
+        if len(raw) > 1048576 or hashlib.sha256(raw).hexdigest() != self.expected_sha256:
+            raise MCPError("HQ export changed or exceeds its bound")
+        value = json.loads(raw)
+        if (not isinstance(value, dict) or value.get("status") != "READY_SOURCE_BOUND_SPACE_HTML_NOT_PUBLISHED"
+                or value.get("approval_verified") is not False or value.get("destination") is not None
+                or not isinstance(value.get("html"), str)
+                or not isinstance(value.get("snapshot_digest"), str)
+                or not re.fullmatch(r"sha256:[a-f0-9]{64}", value["snapshot_digest"])):
+            raise MCPError("HQ requires an unapproved read-only exporter artifact")
+        html = value["html"].encode("utf-8")
+        if (not html or len(html) > 262144 or value.get("size_bytes") != len(html)
+                or value.get("html_sha256") != hashlib.sha256(html).hexdigest()):
+            raise MCPError("HQ HTML identity or size mismatch")
+        return value
+
+    def tool(self) -> dict[str, Any]:
+        return {"name": "swarm_hq_view", "title": "SWARM" if self.projects else "Open SWARM source snapshot",
+                "description": ("Open the Projects shell and scoped Settings. Project observations are read-only; Settings saves require separate acknowledged revision-bound commands. No task authority or native placement is inferred." if self.projects else "Open the configured read-only compact HQ snapshot. No live status, task actions, approval or Space placement is inferred."),
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+                "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+                "_meta": {"ui": {"resourceUri": self.uri}, "openai/ui": {"entrypoints": [{"type": "global"}]}}}
+
+    def render(self) -> str:
+        value = self.read()
+        info = HQ_SDK_PATH.lstat()
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or info.st_size > 524288:
+            raise MCPError("HQ SDK must be a regular file")
+        raw = HQ_SDK_PATH.read_bytes()
+        if len(raw) > 524288 or hashlib.sha256(raw).hexdigest() != HQ_SDK_SHA256:
+            raise MCPError("HQ SDK changed or exceeds its bound")
+        sdk = raw.decode("utf-8")
+        if re.search(r"</script", sdk, re.IGNORECASE):
+            raise MCPError("HQ SDK cannot be embedded")
+        script = '\n<script type="module" data-swarm-mcp-sdk="' + HQ_SDK_SHA256 + '">' + sdk + '</script>\n'
+        html = value["html"]
+        if self.projects:
+            assets = {}
+            for name, digest in PROJECTS_ASSETS.items():
+                path = REPO_ROOT / name
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or info.st_size > 524288:
+                    raise MCPError("Projects asset must be a bounded regular file")
+                payload = path.read_bytes()
+                if hashlib.sha256(payload).hexdigest() != digest:
+                    raise MCPError("Projects asset identity mismatch")
+                assets[name] = payload
+            html = assets["skills/swarm/assets/ui/swarm-hq-projects.html"].decode("utf-8")
+            html = html.replace("__CSS__", assets["skills/swarm/assets/ui/swarm-hq-host.css"].decode("utf-8"))
+            html = html.replace("__WORDMARK__", "data:image/png;base64," + base64.b64encode(assets["skills/swarm/assets/swarm-wordmark.png"]).decode("ascii"))
+            html = html.replace('<script type="module">__SCRIPT__</script>', '')
+        # The original export stays immutable; only this MCP response gains the SDK.
+        document = html.replace('</body>', script + '</body>', 1) if '</body>' in html else html + script
+        if len(document.encode("utf-8")) > (1179648 if self.projects else 1048576):
+            raise MCPError("adapted HQ resource exceeds its bound")
+        return document
+
+    def resource(self) -> dict[str, Any]:
+        return {"contents": [{"uri": self.uri, "mimeType": "text/html;profile=mcp-app", "text": self.render(),
+                              "_meta": {"ui": {"csp": {"connectDomains": [], "resourceDomains": []}}}}]}
+
+    def result(self) -> dict[str, Any]:
+        value = self.read()
+        return {"content": [{"type": "text", "text": "Projects and Settings; host observations and acknowledged saves use separate existing tools. Native placement is unverified." if self.projects else "Read-only source snapshot; not live status, approval or verified Space placement."}],
+                "structuredContent": {"html_sha256": value["html_sha256"], "snapshot_digest": value["snapshot_digest"],
+                                      "served_html_sha256": hashlib.sha256(self.render().encode("utf-8")).hexdigest(),
+                                      "sdk_sha256": HQ_SDK_SHA256, "refresh": "EXPLICIT_HOST_READS_ACKNOWLEDGED_SETTINGS" if self.projects else "PINNED_SNAPSHOT_REEXPORT_REQUIRED",
+                                      "approval_verified": False, "live": False}, "isError": False}
+
+
 class SwarmProjection:
     def __init__(self, telemetry_path: Path = DEFAULT_TELEMETRY) -> None:
         self.codex_home = DEFAULT_CODEX_HOME.expanduser().resolve()
@@ -79,6 +189,10 @@ class SwarmProjection:
             raise MCPError("unknown tool")
         _validate_arguments(spec, arguments)
         app = self._load_app()
+        if name == "swarm_settings_read":
+            return app.config_projection(arguments.get("scope"))
+        if name == "swarm_settings_save":
+            return app.update_config_source(arguments)
         if name == "swarm_status":
             project_id = arguments.get("project_id")
             if project_id is not None and (not isinstance(project_id, str) or not project_id.strip()):
@@ -105,6 +219,8 @@ def _validate_arguments(spec: dict[str, Any], arguments: Any) -> None:
         field = schema["properties"][key]
         if (field["type"] == "string" and (not isinstance(value, str) or key != "content" and not value.strip())
                 or field["type"] == "integer" and type(value) is not int
+                or field["type"] == "boolean" and type(value) is not bool
+                or field["type"] == "object" and not isinstance(value, dict)
                 or "enum" in field and value not in field["enum"]):
             raise MCPError("argument has invalid type or value")
 
@@ -294,7 +410,8 @@ def _probe(root: Path, method: str, arguments: dict[str, Any]) -> dict[str, Any]
     raise MCPError(f"unknown probe tool: {method}")
 
 
-def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELEMETRY) -> int:
+def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELEMETRY,
+          hq_app: HQApp | None = None) -> int:
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
     if hasattr(sys.stdout, "reconfigure"):
@@ -305,7 +422,7 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
         {"name": "probe_write_file", "description": "Write one scratch probe file.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "content": {"type": "string"}}, "required": ["content"], "additionalProperties": False}},
         {"name": "probe_delete_file", "description": "Delete one scratch probe file.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": False}},
     ) if probe_root else ()
-    tools = (*TOOLS, *probe_tools)
+    tools = (*TOOLS, hq_app.tool()) if hq_app else (*TOOLS, *probe_tools)
     for line in sys.stdin:
         if not line.strip():
             continue
@@ -331,14 +448,33 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
                 raise MCPError("params must be an object")
             if method == "initialize":
                 result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "swarm-mcp", "version": "1.0.0"}}
+                if hq_app:
+                    result["capabilities"]["resources"] = {"listChanged": False}
             elif method == "tools/list":
                 result = {"tools": list(tools)}
+            elif method == "resources/list":
+                result = {"resources": [{"uri": hq_app.uri, "name": "swarm-hq", "mimeType": "text/html;profile=mcp-app"}] if hq_app else []}
+            elif method == "resources/read":
+                if not hq_app or params != {"uri": hq_app.uri}:
+                    raise MCPError("unknown HQ resource")
+                try:
+                    result = hq_app.resource()
+                except (OSError, ValueError):
+                    raise MCPError("HQ export unavailable or invalid") from None
             elif method == "tools/call":
                 name = params.get("name")
                 arguments = params.get("arguments", {})
                 spec = next((tool for tool in tools if tool["name"] == name), None)
                 if spec is None:
                     raise MCPError("unknown tool")
+                if name == "swarm_hq_view":
+                    try:
+                        _validate_arguments(spec, arguments)
+                        result = hq_app.result()
+                    except (MCPError, OSError, ValueError):
+                        result = {"content": [{"type": "text", "text": "HQ snapshot unavailable or invalid; refresh the configured exact export."}], "isError": True}
+                    print(json.dumps(_response(request_id, result), ensure_ascii=False, separators=(",", ":")), flush=True)
+                    continue
                 started = time.perf_counter()
                 try:
                     _validate_arguments(spec, arguments)
@@ -366,10 +502,23 @@ def main() -> int:
     parser.add_argument("--stdio", action="store_true", help="serve newline-delimited MCP JSON-RPC")
     parser.add_argument("--probe-root", type=Path, help="enable harmless scratch capability probe tools")
     parser.add_argument("--telemetry", type=Path, default=DEFAULT_TELEMETRY)
+    parser.add_argument("--hq-export", type=Path, help="explicit read-only Space exporter JSON; no automatic discovery")
+    parser.add_argument("--hq-export-sha256", help="exact exporter JSON identity; required with --hq-export")
+    parser.add_argument("--hq-projects", action="store_true", help="compose the existing Projects shell and scoped Settings")
     args = parser.parse_args()
     if not args.stdio:
         parser.error("--stdio is required")
-    return serve(probe_root=args.probe_root, telemetry_path=args.telemetry)
+    if (args.hq_export is None) != (args.hq_export_sha256 is None):
+        parser.error("--hq-export and --hq-export-sha256 must be supplied together")
+    if args.hq_projects and args.hq_export is None:
+        parser.error("--hq-projects requires the bound source export")
+    if args.hq_export is not None and args.probe_root is not None:
+        parser.error("HQ view-only mode cannot enable scratch probe tools")
+    try:
+        hq_app = HQApp(args.hq_export, args.hq_export_sha256, projects=args.hq_projects) if args.hq_export is not None else None
+    except (MCPError, OSError, ValueError):
+        parser.error("HQ exporter artifact unavailable or invalid")
+    return serve(probe_root=args.probe_root, telemetry_path=args.telemetry, hq_app=hq_app)
 
 
 if __name__ == "__main__":

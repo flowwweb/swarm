@@ -385,6 +385,7 @@ class AutoBridgeResult(NamedTuple):
     turn_started: bool = False
     terminal: bool = False
     reachable: bool = False
+    service_tier_receipt: Any = None
 
 
 def _auto_id(value: Any, label: str) -> str:
@@ -712,8 +713,10 @@ class CodexStdioBridge:
 
     def run(
         self, *, cwd: Path, instruction: str, thread_id: str = "",
-        retain_ids: Any = None,
+        retain_ids: Any = None, service_tier: str = "",
     ) -> AutoBridgeResult:
+        if not isinstance(service_tier, str) or service_tier not in {"", "default", "fast", "priority"}:
+            return AutoBridgeResult(False, failure_kind="SPEED_UNSUPPORTED")
         resolved_thread, resolved_turn = thread_id, ""
         turn_requested = False
         try:
@@ -726,12 +729,26 @@ class CodexStdioBridge:
                 if not resolved_thread: return AutoBridgeResult(False, failure_kind="MISSING_THREAD")
                 if retain_ids is not None: retain_ids(resolved_thread, "", True)
                 turn_requested = True
-                send({"method": "turn/start", "id": 2, "params": {"threadId": resolved_thread, "input": [{"type": "text", "text": instruction}], "cwd": str(cwd)}})
+                turn_request = self.adapter._turn_wire_request(
+                    thread_id=resolved_thread, instruction=instruction,
+                    instruction_digest=hashlib.sha256(instruction.encode("utf-8")).hexdigest(), cwd=str(cwd),
+                )
+                if service_tier:
+                    turn_request["params"]["serviceTier"] = "priority" if service_tier in {"fast", "priority"} else "default"
+                send(turn_request)
                 turn_message = receive(lambda item: item.get("id") == 2)
                 if turn_message.get("error") is not None: return AutoBridgeResult(False, resolved_thread, failure_kind="TURN_START_FAILED", transient=True)
                 resolved_turn = self._result_id(turn_message, "turn")
                 if not resolved_turn: return AutoBridgeResult(False, resolved_thread, failure_kind="MISSING_TURN", turn_started=True)
                 if retain_ids is not None: retain_ids(resolved_thread, resolved_turn, True)
+                tier_receipt = None
+                if isinstance(turn_message.get("result"), dict) and any(key in turn_message["result"] for key in ("service_tier", "serviceTier")):
+                    try:
+                        tier_receipt = self.adapter.translate_service_tier_receipt(
+                            turn_message, request_digest=hashlib.sha256(instruction.encode("utf-8")).hexdigest(), observed_at_ms=int(time.time() * 1000),
+                        )
+                    except ValueError:
+                        return AutoBridgeResult(False, resolved_thread, resolved_turn, failure_kind="SPEED_RECEIPT_INVALID", turn_started=True)
                 has_result = False
                 while True:
                     terminal = receive(lambda item: item.get("method") in {"turn/completed", "item/completed"})
@@ -747,7 +764,7 @@ class CodexStdioBridge:
                 event = self.adapter.translate_event(terminal)
                 status = event.status.casefold()
                 ok = status in {"completed", "complete"} and has_result
-                return AutoBridgeResult(ok, event.thread_id or resolved_thread, event.turn_id or resolved_turn, event.evidence_digest, "" if ok else "TURN_NO_RESULT" if status in {"completed", "complete"} else "TURN_FAILED", False, True, True, True)
+                return AutoBridgeResult(ok, event.thread_id or resolved_thread, event.turn_id or resolved_turn, event.evidence_digest, "" if ok else "TURN_NO_RESULT" if status in {"completed", "complete"} else "TURN_FAILED", False, True, True, True, tier_receipt)
 
             return self._session(cwd, transact)
         except (ConsoleError, OSError, TimeoutError, queue.Empty, subprocess.SubprocessError) as exc:
@@ -1033,11 +1050,13 @@ def _config_parse_text(
     elif declared_schema is not None and declared_schema != canonical_schema:
         raise ConsoleError("project config schema_version must match the canonical schema")
     validation_raw = copy.deepcopy(raw)
-    if scope_type == "project" and "schema_version" not in validation_raw:
+    if scope_type in {"project", "task"} and "schema_version" not in validation_raw:
         validation_raw["schema_version"] = canonical_schema
+    if scope_type == "task" and (set(raw) - {"execution"} or not isinstance(raw.get("execution", {}), dict) or set(raw.get("execution", {})) - {"fast_mode"}):
+        raise ConsoleError("task config may override only execution.fast_mode")
     try:
         normalized = module.normalize_legacy_task_role(validation_raw)
-        module.validate(normalized)
+        module.validate(normalized, partial=scope_type in {"project", "task"})
         effective = module.apply_turbo(module.merge(normalized))
     except Exception as exc:  # ConfigError is owned by the loaded canonical module.
         raise ConsoleError(f"config validation failed: {str(exc)[:256]}") from exc
@@ -2811,8 +2830,8 @@ class ConsoleStore:
     @staticmethod
     def _validate_execution_reservation_advance(retained: dict[str, Any], incoming: dict[str, Any]) -> None:
         """Reject stale or regressive reservation snapshots before the retained CAS write."""
-        for field in ("reservation_id", "task_id", "owner_id"):
-            if retained.get(field) != incoming.get(field):
+        for field in ("reservation_id", "task_id", "owner_id", "project_id", "settings_task_id"):
+            if retained.get(field, "") != incoming.get(field, ""):
                 raise ConsoleError("execution reservation conflicts with retained identity")
         retained_artifact = json.dumps(retained.get("artifact"), sort_keys=True, separators=(",", ":"))
         incoming_artifact = json.dumps(incoming.get("artifact"), sort_keys=True, separators=(",", ":"))
@@ -2876,6 +2895,8 @@ class ConsoleStore:
                     "changed_at_ms": generation.changed_at_ms,
                     "host_receipt_id": generation.host_receipt_id,
                 }
+                if generation.project_id:
+                    payload.update(project_id=generation.project_id, task_id=generation.task_id, inherit=generation.inherit)
                 encoded, digest = self._execution_payload(payload)
                 existing = connection.execute(
                     "SELECT payload_json, payload_digest FROM execution_config_generations WHERE generation_id = ?",
@@ -3079,6 +3100,14 @@ class ConsoleStore:
         elif result["last_disposition"] in {"WAIT_USER", "TERMINAL_BLOCKED"}:
             result["attention"] = {"kind": result["last_disposition"], "reason": result["release_condition"], "recovery_authority": result["responsible_authority"]}
         result["claim_limit"] = "Auto host completion is not material progress, proof, review, or acceptance."
+        if reservation is not None:
+            result["task_id"] = binding["task_id"]
+            result["speed_control"] = self.load_execution_ledger().speed_application(reservation.reservation_id)
+        elif latest is not None and latest.get("reservation_id"):
+            ledger = self.load_execution_ledger()
+            result["speed_control"] = ledger.speed_application(latest["reservation_id"])
+        else:
+            result["speed_control"] = None
         return result
 
     def enabled_auto_states(self) -> list[dict[str, Any]]:
@@ -3127,6 +3156,7 @@ class ConsoleStore:
 
     def claim_auto_dispatch(
         self, decision: dict[str, Any], generation: ExecutionConfigGeneration, *, now_ms: int,
+        scoped_generations: tuple[ExecutionConfigGeneration, ...] = (),
     ) -> dict[str, Any]:
         required = {
             "ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "request_id",
@@ -3171,18 +3201,47 @@ class ConsoleStore:
                 if existing.artifact != artifact:
                     raise ConsoleConflict("Auto dispatch identity conflicts with retained content")
                 return {"claimed": False, "reason": "REPLAY", "idempotency_key": identity}
-            latest = ledger.latest_generation
-            if latest is None:
-                ledger.observe_generation(generation)
-            elif latest.generation_id != generation.generation_id and generation.changed_at_ms > latest.changed_at_ms:
-                ledger.observe_generation(generation)
-            ledger.reserve(reservation_id, f"auto-operation-{identity}", values["owner_id"], artifact, observed_at_ms=now_ms)
+            self._observe_auto_speed(ledger, generation, scoped_generations, project_id=values["project_id"], task_id=values["task_id"])
+            ledger.reserve(reservation_id, f"auto-operation-{identity}", values["owner_id"], artifact, observed_at_ms=now_ms,
+                           project_id=values["project_id"], settings_task_id=values["task_id"])
             ledger.dispatch(reservation_id, digests["instruction_digest"], request_bytes, observed_at_ms=now_ms)
             self.persist_execution_ledger(ledger, now_ms=now_ms)
             with closing(self._connect()) as connection:
                 self._retain_auto_event(connection, event_kind="AUTO_DISPATCH", identity=identity, payload=payload, now_ms=now_ms)
                 connection.commit()
-        return {"claimed": True, "reservation_id": reservation_id, "idempotency_key": identity}
+        return {"claimed": True, "reservation_id": reservation_id, "idempotency_key": identity,
+                "speed_control": ledger.speed_application(reservation_id)}
+
+    @staticmethod
+    def _observe_auto_speed(ledger: ExecutionDispatchLedger, generation: ExecutionConfigGeneration,
+                            scoped: tuple[ExecutionConfigGeneration, ...], *, project_id: str, task_id: str) -> None:
+        if not isinstance(generation, ExecutionConfigGeneration) or generation.project_id or not isinstance(scoped, tuple):
+            raise ConsoleError("Auto requires one global generation and typed scoped observations")
+        scopes = set()
+        for item in scoped:
+            if not isinstance(item, ExecutionConfigGeneration) or item.project_id != project_id or item.task_id not in {"", task_id}:
+                raise ConsoleError("Auto speed generation does not match the authorized project/task")
+            if item.task_id in scopes:
+                raise ConsoleError("duplicate Auto speed scope")
+            scopes.add(item.task_id)
+        for item in (generation, *scoped):
+            try:
+                ledger.observe_generation(item)
+            except ValueError as exc:
+                raise ConsoleConflict(f"Auto speed observation is stale or conflicting: {exc}") from exc
+
+    def refresh_auto_speed(self, reservation_id: str, generation: ExecutionConfigGeneration,
+                           scoped: tuple[ExecutionConfigGeneration, ...], *, now_ms: int) -> None:
+        with self._lock:
+            ledger = self.load_execution_ledger()
+            reservation = ledger.reservation(reservation_id)
+            binding = self._auto_binding(reservation)
+            if binding is None or reservation.state is not ExecutionDispatchState.ACTIVE:
+                raise ConsoleConflict("Auto settings reconciliation requires the retained active binding")
+            if (reservation.project_id, reservation.settings_task_id) != (binding["project_id"], binding["task_id"]):
+                raise ConsoleError("legacy Auto settings scope is unverified; resolve on the next authorized operation")
+            self._observe_auto_speed(ledger, generation, scoped, project_id=binding["project_id"], task_id=binding["task_id"])
+            self.persist_execution_ledger(ledger, now_ms=now_ms)
 
     def retain_auto_host_ids(
         self, reservation_id: str, thread_id: str, turn_id: str, submission_started: bool = False, *, now_ms: int,
@@ -3244,7 +3303,7 @@ class ConsoleStore:
                     "method": "turn/completed",
                     "params": {"threadId": reservation.host_thread_id, "turnId": reservation.host_turn_id, "status": "completed" if result.ok else "failed"},
                 })
-                ledger.observe_event(reservation_id, event, observed_at_ms=now_ms)
+                ledger.observe_event(reservation_id, event, observed_at_ms=now_ms, served_tier=result.service_tier_receipt)
             elif not result.turn_started:
                 ledger.fail_transport(reservation_id, ExecutionFailureKind.TIMEOUT, observed_at_ms=now_ms)
             reservation.updated_at_ms = now_ms
@@ -3992,14 +4051,14 @@ class ConsoleStore:
             "updated_at_ms": int(row["updated_at_ms"]),
         }
 
-    def config_overlay(self, project_id: str) -> dict[str, Any] | None:
+    def config_overlay(self, project_id: str, *, scope_type: str = "project") -> dict[str, Any] | None:
         """Read the config namespace of the existing project overlay row."""
         project_id = _safe_metadata_text(project_id, "project_id", maximum=256)
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute(
                 "SELECT config_text, config_revision, config_updated_at_ms "
-                "FROM skill_scope_overlays WHERE scope_type = 'project' AND scope_id = ?",
-                (project_id,),
+                "FROM skill_scope_overlays WHERE scope_type = ? AND scope_id = ?",
+                (scope_type, project_id),
             ).fetchone()
         if row is None:
             return None
@@ -4268,6 +4327,7 @@ class ConsoleStore:
         operation_id: str,
         audit_payload: dict[str, Any],
         now_ms: int,
+        scope_type: str = "project",
     ) -> dict[str, Any]:
         project_id = _safe_metadata_text(project_id, "project_id", maximum=256)
         operation_id = _safe_metadata_text(operation_id, "operation_id", maximum=256)
@@ -4294,13 +4354,13 @@ class ConsoleStore:
                     connection.rollback()
                     raise ConsoleConflict("config operation identity conflicts with retained audit content")
                 connection.commit()
-                return self.config_overlay(project_id) or {
+                return self.config_overlay(project_id, scope_type=scope_type) or {
                     "project_id": project_id, "text": "", "config_revision": 0, "updated_at_ms": 0,
                 }
             row = connection.execute(
                 "SELECT config_text, config_revision FROM skill_scope_overlays "
-                "WHERE scope_type = 'project' AND scope_id = ?",
-                (project_id,),
+                "WHERE scope_type = ? AND scope_id = ?",
+                (scope_type, project_id),
             ).fetchone()
             current_text = "" if row is None else str(row["config_text"] or "")
             current_revision = 0 if row is None else int(row["config_revision"])
@@ -4314,21 +4374,21 @@ class ConsoleStore:
                     "scope_type, scope_id, revision, inheritance_enabled, profile, preferred_ids_json, updated_at_ms, "
                     "config_text, config_revision, config_updated_at_ms) VALUES (?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)",
                     (
-                        "project", project_id, "default", "[]", now_ms,
+                        scope_type, project_id, "default", "[]", now_ms,
                         text, next_revision, now_ms,
                     ),
                 )
             else:
                 connection.execute(
                     "UPDATE skill_scope_overlays SET config_text = ?, config_revision = ?, config_updated_at_ms = ? "
-                    "WHERE scope_type = 'project' AND scope_id = ?",
-                    (text, next_revision, now_ms, project_id),
+                    "WHERE scope_type = ? AND scope_id = ?",
+                    (text, next_revision, now_ms, scope_type, project_id),
                 )
             self._retain_config_event_unlocked(
                 connection, operation_id=operation_id, payload=audit_payload, now_ms=now_ms,
             )
             connection.commit()
-        return self.config_overlay(project_id) or {
+        return self.config_overlay(project_id, scope_type=scope_type) or {
             "project_id": project_id, "text": text, "config_revision": next_revision, "updated_at_ms": now_ms,
         }
 
@@ -8498,27 +8558,12 @@ class App:
         *,
         project_id: str,
         display_name: str,
+        root: Path | None = None,
     ) -> tuple[str, str | None, str]:
         """Validate the canonical schema-1 SWARM.md brief without returning its contents."""
         if PROJECT_BRIEF_MARKER not in text:
             return "INVALID", None, "schema marker is missing"
 
-        def reject_constant(value: str) -> None:
-            raise ValueError(f"non-finite JSON constant: {value}")
-
-        def finite_json(value: Any) -> bool:
-            if isinstance(value, float):
-                return math.isfinite(value)
-            if isinstance(value, list):
-                return all(finite_json(item) for item in value)
-            if isinstance(value, dict):
-                return all(
-                    isinstance(key, str) and finite_json(item)
-                    for key, item in value.items()
-                )
-            return True
-
-        documents: list[dict[str, Any]] = []
         blocks = re.findall(r"```json\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
         if len(blocks) != 1:
             return (
@@ -8526,35 +8571,12 @@ class App:
                 None,
                 "the root does not contain exactly one canonical project brief",
             )
-        for block in blocks:
-            try:
-                document = json.loads(block, parse_constant=reject_constant)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                return "INVALID", None, "the brief JSON is invalid"
-            if isinstance(document, dict) and PROJECT_BRIEF_REQUIRED_FIELDS.issubset(document):
-                documents.append(document)
-        if len(documents) != 1:
-            return (
-                "AMBIGUOUS" if len(documents) > 1 else "INVALID",
-                None,
-                "the root does not contain exactly one canonical project brief",
-            )
-        document = documents[0]
-        if (
-            not isinstance(document.get("schema_version"), int)
-            or isinstance(document.get("schema_version"), bool)
-            or document.get("schema_version") != 1
-            or not finite_json(document)
-        ):
-            return "INVALID", None, "the project brief schema is unsupported"
-        if not isinstance(document.get("updated_at"), str) or not document["updated_at"].strip():
-            return "INVALID", None, "the project brief timestamp is invalid"
-        for field in ("project", "objective", "repo", "authority", "ownership", "proof_acceptance"):
-            if not isinstance(document.get(field), dict):
-                return "INVALID", None, f"the project brief field {field} is invalid"
-        for field in ("users_outcomes", "milestones", "decisions", "risks_blockers", "links"):
-            if not isinstance(document.get(field), list):
-                return "INVALID", None, f"the project brief field {field} is invalid"
+        try:
+            document, digest = parse_project_brief_markdown(text, root=root)
+        except ProjectModelError as exc:
+            return "INVALID", None, str(exc)
+        if not isinstance(document["links"], list):
+            return "INVALID", None, "the project brief field links is invalid"
         project = document["project"]
         brief_id = App._host_project_text(project.get("id"), 256)
         purpose = App._host_project_text(project.get("purpose"), 4096)
@@ -8562,9 +8584,6 @@ class App:
             return "INVALID", None, "the project brief identity is invalid"
         if brief_id.casefold() not in {project_id.casefold(), display_name.casefold()}:
             return "INVALID", None, "the project brief belongs to another saved project"
-        digest = "sha256:" + hashlib.sha256(
-            json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
         return "KNOWN", digest, ""
 
     def _project_manifest_projection(
@@ -8680,6 +8699,7 @@ class App:
             text,
             project_id=record["id"],
             display_name=record["display_name"],
+            root=root,
         )
         manifest["status"] = brief_status
         manifest["digest"] = brief_digest
@@ -10021,7 +10041,7 @@ class App:
             return last_accepted()
         status, link = self._project_view_link_from_text(brief_text)
         def native_projection(selected_lens_ids=None):
-            model, source_digest = parse_project_brief_markdown(brief_text)
+            model, source_digest = parse_project_brief_markdown(brief_text, root=root)
             model_project_id = str(model["project"]["id"]).strip()
             if model_project_id.casefold() not in {
                 identity.casefold() for identity in self._canonical_project_identities(project_id)
@@ -10579,12 +10599,31 @@ class App:
         return min(candidates, default=((), None), key=lambda item: item[0])[1]
 
     def _auto_generation(self) -> ExecutionConfigGeneration:
-        _, effective, exists = load_config(self.config_path)
+        state = self._config_state({"type": "global"})
+        if not state["values_known"]:
+            raise ConsoleError("Auto global speed source is unavailable; dispatch remains gated")
+        effective, exists = state["effective"], state["global_exists"]
         execution = effective.get("execution") if isinstance(effective.get("execution"), dict) else {}
         changed_at_ms = int(self.config_path.stat().st_mtime_ns // 1_000_000) if exists else 0
         payload = {"fast_mode": bool(execution.get("fast_mode", False)), "changed_at_ms": changed_at_ms}
         digest = _auto_digest(payload)
         return ExecutionConfigGeneration(f"swarm-config-{digest}", payload["fast_mode"], "", "", changed_at_ms, f"config:{digest}")
+
+    def _auto_scoped_generations(self, project_id: str, task_id: str) -> tuple[ExecutionConfigGeneration, ...]:
+        observations = []
+        for scope in ({"type": "project", "project_id": project_id},
+                      {"type": "task", "project_id": project_id, "task_id": task_id}):
+            state = self._config_state(scope)
+            if not state["values_known"]:
+                raise ConsoleError("Auto speed source is unavailable; no global fallback")
+            value = (state["overlay_raw"] or {}).get("execution", {}).get("fast_mode")
+            overlay_id = state.get("overlay_id", project_id)
+            retained = self.store.config_overlay(overlay_id, scope_type=scope["type"])
+            changed_at_ms = 0 if retained is None else retained["updated_at_ms"]
+            digest = _auto_digest([scope, state["overlay_revision"], value, changed_at_ms])
+            observations.append(ExecutionConfigGeneration(f"scope-config-{digest}", value if value is not None else False,
+                "", "", changed_at_ms, f"config:{digest}", project_id, scope.get("task_id", ""), value is None))
+        return tuple(observations)
 
     def evaluate_auto_once(self, overview: dict[str, Any] | None = None) -> dict[str, Any]:
         states = self.store.enabled_auto_states()
@@ -10596,8 +10635,15 @@ class App:
         for state in states:
             self._auto_scope(state["ctrl_id"], state["project_id"])
             if state["in_flight"]:
+                speed_error = ""
+                try:
+                    with self.write_lock:
+                        self.store.refresh_auto_speed(state["reservation_id"], self._auto_generation(),
+                            self._auto_scoped_generations(state["project_id"], state["task_id"]), now_ms=int(time.time() * 1000))
+                except ConsoleError as exc:
+                    speed_error = str(exc)[:256]
                 if not state["thread_id"]:
-                    return {"dispatched": False, "reason": "UNREACHABLE_IN_FLIGHT", "state": state}
+                    return {"dispatched": False, "reason": "UNREACHABLE_IN_FLIGHT", "state": state, "speed_settings_error": speed_error or None}
                 result = self.auto_bridge.reconcile(
                     cwd=self._auto_project_root(state["project_id"]),
                     thread_id=state["thread_id"], turn_id=state["turn_id"],
@@ -10620,7 +10666,7 @@ class App:
                         payload, now_ms=int(time.time() * 1000),
                     )
                     reason = "IN_FLIGHT" if result.failure_kind == "TURN_ACTIVE" else "UNREACHABLE_IN_FLIGHT"
-                    return {"dispatched": False, "reason": reason, "state": self.store.auto_status(state["ctrl_id"], state["project_id"])}
+                    return {"dispatched": False, "reason": reason, "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "speed_settings_error": speed_error or None}
                 disposition = None if result.ok else {
                     "disposition": "WAIT_USER", "next_operation": "ADMIT_TERMINAL_FAILURE_BEFORE_RETRY",
                     "next_owner": state["ctrl_id"], "next_route": "",
@@ -10630,7 +10676,7 @@ class App:
                 completed = self.store.finish_auto_dispatch(
                     state["reservation_id"], result=result, disposition=disposition, now_ms=int(time.time() * 1000),
                 )
-                return {"dispatched": False, "reason": "RECONCILED", "state": completed}
+                return {"dispatched": False, "reason": "RECONCILED", "state": completed, "speed_settings_error": speed_error or None}
             if not state["enabled"] or state["stop_after_turn"]:
                 continue
             candidate = self._auto_candidate(state, overview, projection)
@@ -10658,7 +10704,9 @@ class App:
             )}
             decision["next_operation"] = candidate["disposition"]["next_operation"]
             decision["request_bytes"] = len(candidate["instruction"].encode("utf-8"))
-            claim = self.store.claim_auto_dispatch(decision, self._auto_generation(), now_ms=int(time.time() * 1000))
+            with self.write_lock:
+                claim = self.store.claim_auto_dispatch(decision, self._auto_generation(), now_ms=int(time.time() * 1000),
+                    scoped_generations=self._auto_scoped_generations(state["project_id"], candidate["task_id"]))
             if not claim["claimed"]:
                 if claim.get("reason") == "REPLAY":
                     if waiting is None:
@@ -10671,6 +10719,7 @@ class App:
                 try:
                     result = self.auto_bridge.run(
                         cwd=project_root, instruction=candidate["instruction"],
+                        service_tier=claim["speed_control"]["requested_service_tier"],
                         thread_id=retained_thread_id,
                         retain_ids=lambda thread_id, turn_id, submission_started: self.store.retain_auto_host_ids(
                             claim["reservation_id"], thread_id, turn_id, submission_started,
@@ -13504,16 +13553,20 @@ class App:
             if set(scope) != {"type"}:
                 raise ConsoleError("global config scope must contain only type=global")
             return {"type": "global"}
-        if scope_type != "project":
-            raise ConsoleError("config scope type must be global or project")
+        if scope_type not in {"project", "task"}:
+            raise ConsoleError("config scope type must be global, project or task")
         required = {"type", "project_id"}
+        if scope_type == "task":
+            required.add("task_id")
         if require_cursor:
             required.add("accepted_cursor")
         allowed = required if require_cursor else required | {"accepted_cursor"}
         if set(scope) != required and set(scope) != allowed:
             raise ConsoleError("project config scope requires exact project_id and accepted_cursor fields")
         project_id = _safe_metadata_text(scope.get("project_id"), "project_id", maximum=256)
-        result: dict[str, Any] = {"type": "project", "project_id": project_id}
+        result: dict[str, Any] = {"type": scope_type, "project_id": project_id}
+        if scope_type == "task":
+            result["task_id"] = _auto_id(scope["task_id"], "task_id")
         if "accepted_cursor" in scope:
             cursor = scope.get("accepted_cursor")
             if (
@@ -13547,11 +13600,14 @@ class App:
         root_binding = self._project_root_binding(record, root_owners)
         if root_binding.get("status") != "KNOWN":
             raise ConsoleError("config requires one unambiguous canonical project root")
+        if normalized["type"] == "task":
+            self._observed_task_root(record["id"], normalized["task_id"])
         return {
             "scope": {
-                "type": "project",
+                "type": normalized["type"],
                 "project_id": record["id"],
                 "accepted_cursor": copy.deepcopy(cursor),
+                **({"task_id": normalized["task_id"]} if normalized["type"] == "task" else {}),
             },
             "record": record,
             "cursor": cursor,
@@ -13623,6 +13679,23 @@ class App:
         module = load_config_module()
         global_state = self._config_global_state(module)
         scope_type = binding["scope"]["type"]
+        if scope_type == "task":
+            parent = self._config_state({k: v for k, v in binding["scope"].items() if k != "task_id"} | {"type": "project"}, require_cursor=require_cursor)
+            if parent["state"] != "KNOWN":
+                raise ConsoleError("task config requires a valid parent config")
+            # One existing overlay namespace, with a collision-free project/task key.
+            overlay_id = _config_sha256(json.dumps([parent["project_id"], binding["scope"]["task_id"]]).encode())
+            overlay = self.store.config_overlay(overlay_id, scope_type="task")
+            text = "" if overlay is None else overlay["text"]
+            raw, _, _ = _config_parse_text(module, text, scope_type="task")
+            effective = _config_merge_overlay(parent["effective"], raw)
+            return {**parent, "scope": binding["scope"], "effective": effective,
+                    "parent_revision": parent["revision"], "parent_effective": parent["effective"],
+                    "overlay_id": overlay_id, "overlay_raw": raw, "overlay_text": text, "raw_text": text,
+                    "overlay_revision": 0 if overlay is None else overlay["config_revision"],
+                    "revision": _config_scope_revision("task", overlay_id, binding["cursor"], parent["revision"], text),
+                    "source_kind": "task_config_overlay", "source_path": None,
+                    "project_speed_override": parent.get("overlay_raw", {}).get("execution", {}).get("fast_mode")}
         if scope_type == "global":
             raw_text = global_state["global_text"]
             revision = global_state["global_revision"]
@@ -13707,7 +13780,7 @@ class App:
         )
         safe_effective, _ = _config_redacted_settings(state["effective"])
         safe_global, _ = _config_redacted_settings(state["global_effective"])
-        overlay_raw = state.get("overlay_raw") if state["scope"]["type"] == "project" else None
+        overlay_raw = state.get("overlay_raw") if state["scope"]["type"] in {"project", "task"} else None
         descriptors = _config_descriptor_rows(
             module,
             defaults_effective,
@@ -13718,6 +13791,19 @@ class App:
             scope_type=state["scope"]["type"],
             values_known=bool(state["values_known"]),
         )
+        speed = module.resolve_speed_control(
+            state["global_effective"],
+            project_override=(state.get("project_speed_override") if state["scope"]["type"] == "task" else
+                              (overlay_raw or {}).get("execution", {}).get("fast_mode")),
+            task_override=(overlay_raw or {}).get("execution", {}).get("fast_mode") if state["scope"]["type"] == "task" else None,
+        )
+        if not state["values_known"]:
+            speed = {"fast_mode": None, "origin": None, "requested_service_tier": None, "application_state": "failed"}
+        for row in descriptors:
+            if row["key"] == "execution.fast_mode":
+                row["source"] = speed["origin"]
+            if state["scope"]["type"] == "task" and row["key"] != "execution.fast_mode":
+                row["editable"] = False
         overridden_paths = sorted(
             path
             for path, _ in _config_leaf_items(overlay_raw or {})
@@ -13733,7 +13819,7 @@ class App:
         }
         scope = copy.deepcopy(state["scope"])
         project = None
-        if state["scope"]["type"] == "project":
+        if state["scope"]["type"] in {"project", "task"}:
             project = {
                 "id": state["record"]["id"],
                 "display_name": state["record"]["display_name"],
@@ -13741,6 +13827,9 @@ class App:
                 "root_binding": copy.deepcopy(state["root_binding"]),
             }
         warning = (
+            "Task speed follows its project unless explicitly overridden; all other settings remain inherited."
+            if state["scope"]["type"] == "task"
+            else
             "This project has no config overrides; it inherits global values."
             if state["scope"]["type"] == "project" and not overridden_paths
             else "Project overrides stop following global changes for the listed paths; all other paths continue inheriting global values."
@@ -13768,6 +13857,11 @@ class App:
             "opaque_placeholders": placeholders,
             "validation": validation,
             "settings": safe_effective,
+            "speed_control": {**speed, "override": (state["global_raw"] if scope["type"] == "global" else overlay_raw or {}).get("execution", {}).get("fast_mode"),
+                              "scope": scope, "parent_revision": state.get("parent_revision", state["global_revision"]),
+                              "operation_field": "speed_operation",
+                              "operations": ["inherit", "override", "replace_override"],
+                              "claim_limit": "Persisted preference only; application needs exact host evidence."},
             "effective_settings": safe_effective,
             "global_settings": safe_global,
             "overridden_paths": overridden_paths,
@@ -14078,7 +14172,7 @@ class App:
 
     def update_config_source(self, payload: dict[str, Any]) -> dict[str, Any]:
         required = {"scope", "expected_revision", "acknowledge", "text", "operation_id"}
-        if not isinstance(payload, dict) or set(payload) != required:
+        if not isinstance(payload, dict) or set(payload) not in (required, required | {"speed_operation"}):
             raise ConsoleError("config update requires exact scope, expected_revision, acknowledge, text, and operation_id fields")
         if payload["acknowledge"] is not True:
             raise ConsoleError("config update requires acknowledge=true")
@@ -14096,15 +14190,14 @@ class App:
             raise ConsoleError("config text is invalid or oversized")
         binding = self._config_scope_binding(payload["scope"], require_cursor=True)
         state = self._config_state(binding["scope"], require_cursor=True)
-        request_digest = _config_sha256(text_bytes)
+        speed_operation = payload.get("speed_operation")
+        if "speed_operation" in payload and speed_operation not in {"inherit", "override", "replace_override"}:
+            raise ConsoleError("speed operation must be inherit, override or replace_override")
+        request_digest = _config_sha256(text_bytes if speed_operation is None else json.dumps([speed_operation, text], separators=(",", ":")).encode())
         retained = self.store.config_event(operation_id)
         replay = self._config_replay_receipt(
-            retained,
-            action="config_update",
-            operation_id=operation_id,
-            scope=state["scope"],
-            expected_revision=expected_revision,
-            request_digest=request_digest,
+            retained, action="config_update", operation_id=operation_id, scope=state["scope"],
+            expected_revision=expected_revision, request_digest=request_digest,
         )
         if replay is not None:
             projection = self._config_projection_from_state(state)
@@ -14113,22 +14206,39 @@ class App:
         if expected_revision != state["revision"]:
             raise ConsoleConflict("config revision changed; reload before saving")
         resolved_text = _config_resolve_opaque_text(text, state["raw_text"], state["revision"])
+        if "speed_operation" in payload:
+            before = tomllib.loads(state["raw_text"])
+            after, _, _ = _config_parse_text(state["module"], resolved_text, scope_type=state["scope"]["type"])
+            without_speed = lambda raw: {key: value for key, value in _config_leaf_items(raw) if key != "execution.fast_mode"}
+            if without_speed(before) != without_speed(after):
+                raise ConsoleError("speed operation cannot change any other setting")
+            present = _config_value_present(before, "execution.fast_mode")
+            if speed_operation == "override" and present:
+                raise ConsoleConflict("explicit override exists; select replace_override")
+            if speed_operation == "replace_override" and not present:
+                raise ConsoleConflict("no explicit override exists to replace")
+            next_value = _config_value_at(after, "execution.fast_mode")
+            if speed_operation == "inherit":
+                if _config_value_present(after, "execution.fast_mode"):
+                    raise ConsoleError("inherit requires removing the speed override")
+            elif type(next_value) is not bool:
+                raise ConsoleError("speed override requires a boolean")
         _, next_normalized, next_effective = _config_parse_text(
             state["module"], resolved_text, scope_type=state["scope"]["type"],
         )
-        if state["scope"]["type"] == "project":
+        if state["scope"]["type"] in {"project", "task"}:
             # The validator's effective result is default-filled.  Merge only
             # the submitted normalized partial overlay so future global
             # changes continue to flow through non-overridden paths.
-            next_effective = _config_merge_overlay(state["global_effective"], next_normalized)
+            next_effective = _config_merge_overlay(state.get("parent_effective", state["global_effective"]), next_normalized)
             next_effective = state["module"].apply_turbo(next_effective)
             try:
                 state["module"].validate(copy.deepcopy(next_effective))
             except Exception as exc:
                 raise ConsoleError(f"project config validation failed: {str(exc)[:256]}") from exc
             new_revision = _config_scope_revision(
-                "project", state["project_id"], state["cursor"],
-                state["global_revision"], resolved_text,
+                state["scope"]["type"], state.get("overlay_id", state["project_id"]), state["cursor"],
+                state.get("parent_revision", state["global_revision"]), resolved_text,
             )
         else:
             new_revision = _config_sha256(resolved_text.encode("utf-8"))
@@ -14153,11 +14263,12 @@ class App:
             )
         else:
             self.store.update_config_overlay(
-                state["project_id"], resolved_text,
+                state.get("overlay_id", state["project_id"]), resolved_text,
                 expected_config_revision=state["overlay_revision"],
                 operation_id=operation_id,
                 audit_payload=audit,
                 now_ms=int(time.time() * 1000),
+                scope_type=state["scope"]["type"],
             )
         with self.overview_lock:
             self._store_generation += 1
@@ -14186,6 +14297,9 @@ class App:
             raise ConsoleError("config reset requires exact scope, expected_revision, acknowledge, and operation_id fields")
         if payload["acknowledge"] is not True:
             raise ConsoleError("config reset requires acknowledge=true")
+        if isinstance(payload["scope"], dict) and payload["scope"].get("type") == "task":
+            # Empty task overlay explicitly restores inheritance, using the same CAS/audit path.
+            return self.update_config_source({**payload, "text": ""})
         self._recover_config_transactions()
         operation_id = _auto_id(payload["operation_id"], "operation_id")
         expected_revision = self._config_revision(payload["expected_revision"])
@@ -14689,7 +14803,7 @@ class App:
         if _is_reparse_point(root) or _is_reparse_point(path) or not path.is_file() or path.stat().st_size > 512 * 1024:
             raise ConsoleError("Flow requires a bounded regular project brief")
         try:
-            document, digest = parse_project_brief_markdown(path.read_text(encoding="utf-8"))
+            document, digest = parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=root)
             if document["project"]["id"] not in self._canonical_project_identities(project_id):
                 raise ConsoleError("Flow brief belongs to another project")
             if operation != "read" and payload["expected_digest"] != digest:
@@ -14704,7 +14818,7 @@ class App:
                 digest = mutate_project_brief(path, expected_digest=digest, operation="create", collection="flow_definitions",
                     record_id=definition["id"], changes={key: value for key, value in definition.items() if key != "id"},
                     updated_at=datetime.now(UTC).isoformat())
-                document, current_digest = parse_project_brief_markdown(path.read_text(encoding="utf-8"))
+                document, current_digest = parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=root)
                 if current_digest != digest:
                     raise ConsoleConflict("Flow changed after saving; reload to reconcile")
             result = {"ok": True, "project_id": project_id, "source_digest": digest,
@@ -14732,7 +14846,7 @@ class App:
                         project_id=project_id, ctrl_id=document["authority"].get("ctrl_id") or node["owner_id"], role_scope="DOER_SINGLE",
                         milestones=[{"milestone_id": node["id"], "order": 0, "title": labels["objective"], "verification_policy": "flow-required-proof", "supersedes_milestone_id": None}],
                         blocks=[{"block_id": "flow-output", "milestone_id": node["id"], "order": 0, "title": labels["completion"], "verification_policy": "flow-required-proof", "estimate_minutes": None, "weight": None, "supersedes_block_id": None}]) if ready else None}
-                if parse_project_brief_markdown(path.read_text(encoding="utf-8"))[1] != digest:
+                if parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=root)[1] != digest:
                     raise ConsoleConflict("Flow changed while preparing the preview; reload")
             return result
         except ProjectModelError as exc:
@@ -16696,8 +16810,10 @@ class Handler(BaseHTTPRequestHandler):
             scope = {"type": "global"}
         elif set(query) == {"scope", "project_id"} and query.get("scope", "").casefold() == "project":
             scope = {"type": "project", "project_id": query.get("project_id", "")}
+        elif set(query) == {"scope", "project_id", "task_id"} and query.get("scope", "").casefold() == "task":
+            scope = {"type": "task", "project_id": query["project_id"], "task_id": query["task_id"]}
         else:
-            raise ConsoleError("config GET accepts no query or exact scope=global/project selection")
+            raise ConsoleError("config GET accepts exact global, project or project/task scope selection")
         projection = getattr(self.server.app, "config_projection", None)
         if callable(projection):
             payload = projection(scope)

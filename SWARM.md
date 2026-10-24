@@ -4,7 +4,7 @@
 ```json
 {
   "schema_version": 1,
-  "updated_at": "2026-09-14T00:00:00Z",
+  "updated_at": "2026-10-19T11:27:45.934046+00:00",
   "project": {
     "id": "swarm",
     "purpose": "Turn Codex into a coordinated AI engineering team with a self-maintaining project harness for plans, ownership, artifacts, proof, and decisions."
@@ -24,27 +24,39 @@
   },
   "repo": {
     "canonical": "skills/swarm",
-    "surfaces": ["runtime contracts", "doctrine", "configuration", "focused tests"],
+    "surfaces": [
+      "runtime contracts",
+      "doctrine",
+      "configuration",
+      "focused tests"
+    ],
     "architecture": "One root SWARM.md declares project intent and ordered milestones; one Ledger records material truth; one universal host-authorized connector submits work; HQ derives the control surface without owning state."
   },
   "authority": {
     "ctrl": "owns intake, topology, shared-surface coordination, and composed acceptance",
     "backlog": "SWARM.md owns ordered intent and release conditions; the Ledger owns observed state and proof; HQ is a derived projection only",
-    "constraints": ["Codex host owns execution", "user state wins", "independent review stays separate", "ChatGPT routes require exact host-observed capability and authorization receipts"]
+    "constraints": [
+      "Codex host owns execution",
+      "user state wins",
+      "independent review stays separate",
+      "ChatGPT routes require exact host-observed capability and authorization receipts"
+    ]
   },
   "milestones": [
     {
       "id": "ledger-p1-acceptance",
       "state": "review_required",
-      "owner": "01a02240-41f5-7f30-aac9-358b4e8d2813",
+      "owner": null,
       "artifact": "069de0e1e573ffbcb29706f228b0f52f16a7be89",
       "release_condition": "Independent exact-object ACCEPT confirms outer outcome-digest binding, null/omitted replay parity, no pre-failure cursor or retry mutation, canonical/plugin parity, and clean custody.",
-      "note": "Implementation is frozen and ancestral to current source; producer proof was interrupted by the owner's Codex usage limit."
+      "note": "Implementation is frozen and ancestral to current source."
     },
     {
       "id": "project-manifest-doctrine",
       "state": "ready_next",
-      "depends_on": ["ledger-p1-acceptance"],
+      "depends_on": [
+        "ledger-p1-acceptance"
+      ],
       "owner": "existing Persistence/source LEAD",
       "release_condition": "One concise canonical/plugin doctrine contract defines the root brief, optional digest-bound domain manifests, stable identities, Ledger authority, HQ projection rules, compatibility, and focused contrasts without a new store or service.",
       "note": "Much of the runtime already exists; this slice consolidates and locks the governing contract."
@@ -52,7 +64,9 @@
     {
       "id": "chatgpt-codex-connection",
       "state": "in_progress",
-      "depends_on": ["ledger-p1-acceptance"],
+      "depends_on": [
+        "ledger-p1-acceptance"
+      ],
       "owner": "source integration lane",
       "release_condition": "An existing local MCP bridge is selected, the thin SWARM adapter and setup path are tested, and the remaining Secure MCP Tunnel plus ordinary ChatGPT write/read-back proof is explicitly tracked as an external acceptance gate.",
       "note": "Codexify is the selected bridge; SWARM owns only read-only domain projections and bounded local telemetry."
@@ -60,23 +74,28 @@
     {
       "id": "lean-core-composed-review",
       "state": "planned",
-      "depends_on": ["project-manifest-doctrine", "chatgpt-codex-connection"],
-      "owner": "01a0317c-1c9a-7490-805f-f50b803c7985",
+      "depends_on": [
+        "project-manifest-doctrine",
+        "chatgpt-codex-connection"
+      ],
+      "owner": null,
       "release_condition": "Independent hostile simplicity review finds no material duplicate authority, competing state, broken role boundary, uncovered regression, or unsupported claim; focused and mirror proofs pass on one immutable source object."
     },
     {
       "id": "hq-contract-handoff",
       "state": "planned",
-      "depends_on": ["lean-core-composed-review"],
-      "owner": "01a046b7-a279-7b43-a871-76c0ff4d7c3b",
+      "depends_on": [
+        "lean-core-composed-review"
+      ],
+      "owner": null,
       "release_condition": "The separate HQ CTRL receives the accepted source SHA/tree/parent, schemas, exact paths, proof, review verdicts, and claim limits before package, activation, or browser work."
     },
     {
       "id": "hq-live-delivery",
       "state": "in_progress_separate_lane",
-      "owner": "01a046b7-a279-7b43-a871-76c0ff4d7c3b",
+      "owner": null,
       "release_condition": "HQ source and plugin mirrors are coherent, the accepted package is activated, and fresh loopback plus Chrome evidence proves the intended control surface.",
-      "note": "Live localhost currently serves an older shell; HQ owns reconciliation and deployment."
+      "note": "HQ owns reconciliation and deployment; served-runtime freshness remains subject to separate acceptance evidence."
     }
   ],
   "decisions": [
@@ -88,13 +107,8 @@
     "A design set has exactly one selected candidate; every other candidate is rejected after selection."
   ],
   "ownership": {
-    "ctrl": "01a046f8-dfef-7351-a9b1-9fe41a8cd594",
-    "lanes": [
-      "Persistence/source: 01a02240-41f5-7f30-aac9-358b4e8d2813",
-      "Architecture/review: 01a0317c-1c9a-7490-805f-f50b803c7985",
-      "Security: 01a02dbf-cc38-7df0-a8f1-82a7d909b36c",
-      "Separate HQ/UI CTRL: 01a046b7-a279-7b43-a871-76c0ff4d7c3b"
-    ]
+    "ctrl": null,
+    "lanes": []
   },
   "proof_acceptance": {
     "basis": "typed artifact-bound proof and independent acceptance",
@@ -102,7 +116,7 @@
   },
   "risks_blockers": [
     "Ledger candidate 069de0e is not independently accepted yet.",
-    "The Persistence LEAD hit its Codex usage limit before returning the final immutable receipt.",
+    "The final immutable receipt is required before the source handoff is complete.",
     "Codexify is not installed on the current host, so Secure MCP Tunnel setup and live ordinary-Chat write/read-back remain unverified.",
     "HQ live localhost serves an older shell and source/plugin UI mirrors are under separate reconciliation.",
     "Host transport and live execution receipts remain external gates when not observed."

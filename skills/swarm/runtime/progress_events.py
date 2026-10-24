@@ -223,7 +223,7 @@ EXPECTED_OBSERVATION_FIELDS = frozenset({
     "artifact_digest", "source_cursor", "route_digest", "outcome", "evidence_receipt_ids",
 })
 EXPECTED_DUE_EVENTS = frozenset({"MATERIAL_EVENT", "TURN_COMPLETION", "LEASE_EXPIRY", "USER_STEER"})
-NON_MATERIAL_RECORD_TYPES = frozenset({"EXPECTED_RECEIPT", "REQUEST_LIFECYCLE", "TASK_HANDOFF", "CONNECTOR"})
+NON_MATERIAL_RECORD_TYPES = frozenset({"EXPECTED_RECEIPT", "REQUEST_LIFECYCLE", "TASK_HANDOFF", "CONNECTOR", "TICKET_IDENTITY"})
 CONNECTOR_RECEIPT_FIELDS = frozenset({
     "schema_version", "record_type", "receipt_id", "command_id", "receipt_index",
     "idempotency_key", "command_digest", "payload_digest",
@@ -2383,12 +2383,33 @@ def task_creation_binding_event(
     return validate_progress_material_event(payload).canonical_payload()
 
 
+def _ticket_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    _exact_fields(payload, frozenset({"schema_version", "record_type", "project_id", "project_code", "assignments"}), "ticket identity")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1 or payload["record_type"] != "TICKET_IDENTITY":
+        raise ProgressEventError("unsupported ticket identity schema")
+    if not isinstance(payload["project_id"], str) or _safe_id(payload["project_id"], "ticket project") != payload["project_id"]:
+        raise ProgressEventError("ticket project id must be canonical text")
+    if not isinstance(payload["project_code"], str) or re.fullmatch(r"[A-Z]{1,4}", payload["project_code"]) is None:
+        raise ProgressEventError("ticket project code requires 1-4 ASCII letters")
+    assignments = payload["assignments"]
+    if not isinstance(assignments, dict) or not assignments or len(assignments) > 1000:
+        raise ProgressEventError("ticket assignments require 1-1000 retained tasks")
+    for task, number in assignments.items():
+        if not isinstance(task, str) or _safe_id(task, "ticket task") != task:
+            raise ProgressEventError("ticket task id must be canonical text")
+        _positive_int(number, "ticket number")
+    if len(set(assignments.values())) != len(assignments):
+        raise ProgressEventError("duplicate ticket number")
+    return payload
+
+
 def _empty_progress_projection() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "cursor": {"event_seq": 0, "event_id": None, "event_digest": None},
         "events": {},
         "dedupe": {},
+        "ticket_identities": {},
         "scopes": {},
         "blocks": {},
         "latest_material_signatures": {},
@@ -2535,6 +2556,10 @@ class Ledger:
         elif kind == "TASK_HANDOFF":
             event = validate_task_handoff_event(raw_event)
             identity, digest = event["event_id"], _task_handoff_digest(event)
+        elif kind == "TICKET_IDENTITY":
+            event = _ticket_identity(raw_event)
+            digest = hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            identity = "ticket-identity-" + digest
         else:
             event = _validate_connector_receipt(raw_event)
             identity, digest = event["receipt_id"], _connector_receipt_digest(event)
@@ -2545,6 +2570,72 @@ class Ledger:
     @staticmethod
     def _is_non_material_record(raw_event: Any) -> bool:
         return isinstance(raw_event, dict) and raw_event.get("record_type") in NON_MATERIAL_RECORD_TYPES
+
+    @staticmethod
+    def _apply_ticket_identity(projection: dict[str, Any], event: dict[str, Any], event_seq: int, event_digest: str) -> None:
+        identities = projection["ticket_identities"]
+        project, code = event["project_id"], event["project_code"]
+        if any(key != project and row["project_code"] == code for key, row in identities.items()):
+            raise ProgressEventError("ticket project code already belongs to another project in this Ledger")
+        current = identities.setdefault(project, {"project_code": code, "assignments": {}})
+        if current["project_code"] != code:
+            raise ProgressEventError("retained ticket project code cannot be renamed")
+        existing = current["assignments"]
+        if set(existing) & set(event["assignments"]):
+            raise ProgressEventError("retained ticket assignment cannot be overwritten")
+        start = max(existing.values(), default=0) + 1
+        if sorted(event["assignments"].values()) != list(range(start, start + len(event["assignments"]))):
+            raise ProgressEventError("ticket numbers must append contiguously")
+        existing.update(event["assignments"])
+        projection["cursor"] = {"event_seq": event_seq, "event_id": "ticket-identity-" + event_digest, "event_digest": event_digest}
+
+    def assign_ticket_ids(self, project_id: str, project_code: str, task_ids: tuple[str, ...]) -> dict[str, Any]:
+        """Explicit migration/allocation in the existing Ledger; never a read-side write."""
+        project_id = _safe_id(project_id, "ticket project")
+        if not isinstance(project_code, str) or re.fullmatch(r"[A-Za-z]{1,4}", project_code) is None:
+            raise ProgressEventError("ticket project code requires 1-4 ASCII letters")
+        code = project_code.upper()
+        if not isinstance(task_ids, tuple) or not task_ids or len(task_ids) > 1000:
+            raise ProgressEventError("ticket allocation requires 1-1000 unique task ids")
+        for task in task_ids:
+            if not isinstance(task, str) or _safe_id(task, "ticket task") != task:
+                raise ProgressEventError("ticket task id must be canonical text")
+        if len(set(task_ids)) != len(task_ids):
+            raise ProgressEventError("ticket allocation requires unique task ids")
+        with self._state.locked():
+            retained_tasks: dict[tuple[str, str], int] = {}
+            projection, records = self._replay_unlocked(ticket_tasks=retained_tasks)
+            # Reuse the validated replay index; never revalidate every material event.
+            observed = {task: seq for (project, task), seq in retained_tasks.items() if project == project_id}
+            if not set(task_ids) <= set(observed):
+                raise ProgressEventError("ticket task must already exist in the exact project Ledger")
+            identities = projection["ticket_identities"]
+            if any(key != project_id and row["project_code"] == code for key, row in identities.items()):
+                raise ProgressEventError("ticket project code already belongs to another project in this Ledger")
+            current = identities.get(project_id, {"project_code": code, "assignments": {}})
+            if current["project_code"] != code:
+                raise ProgressEventError("retained ticket project code cannot be renamed")
+            pending = sorted(set(task_ids) - set(current["assignments"]), key=lambda task: (observed[task], task))
+            if pending:
+                start = max(current["assignments"].values(), default=0) + 1
+                event = _ticket_identity({"schema_version": 1, "record_type": "TICKET_IDENTITY", "project_id": project_id, "project_code": code,
+                    "assignments": {task: start + index for index, task in enumerate(pending)}})
+                digest = hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                seq = len(records) + 1
+                self._apply_ticket_identity(projection, event, seq, digest)
+                encoded = json.dumps({"event_seq": seq, "event_digest": digest, "event": event}, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+                self._state.path.parent.mkdir(parents=True, exist_ok=True)
+                # Reuse the existing atomic replacement primitive: a failed write
+                # leaves the old Ledger intact, including every historical byte.
+                self._state.replace_bytes_unlocked(self._state.read_bytes_unlocked() + encoded)
+                self._write_projection_unlocked(projection)
+            assignments = projection["ticket_identities"][project_id]["assignments"]
+            result = {"status": "APPENDED" if pending else "REPLAY", "project_id": project_id,
+                      "display_ids": {task: f"{code}-{assignments[task]}" for task in task_ids}, "cursor": projection["cursor"]}
+        if pending:
+            with self._condition:
+                self._condition.notify_all()
+        return result
 
     @staticmethod
     def _apply_connector_receipt(projection: dict[str, Any], event: dict[str, Any], event_seq: int, event_digest: str) -> None:
@@ -3224,8 +3315,9 @@ class Ledger:
         projection["cursor"] = {"event_seq": event_seq, "event_id": event.event_id, "event_digest": event.digest}
         return check
 
-    def _replay_unlocked(self) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    def _replay_unlocked(self, *, ticket_tasks: dict[tuple[str, str], int] | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         projection = _empty_progress_projection()
+        retained_tasks = ticket_tasks if ticket_tasks is not None else {}
         self._retry_topology = RetryTopologyLedger()
         records: list[dict[str, Any]] = []
         payload = self._state.read_bytes_unlocked()
@@ -3257,6 +3349,10 @@ class Ledger:
                 elif kind == "TASK_HANDOFF":
                     self._apply_task_handoff(projection, event, expected_seq)
                     self._apply_handoff_expected(projection, event, expected_seq, event_digest)
+                elif kind == "TICKET_IDENTITY":
+                    if any((event["project_id"], task) not in retained_tasks for task in event["assignments"]):
+                        raise ProgressEventError("ticket task must already exist in the exact project Ledger")
+                    self._apply_ticket_identity(projection, event, expected_seq, event_digest)
                 else:
                     self._apply_connector_receipt(projection, event, expected_seq, event_digest)
             else:
@@ -3265,6 +3361,8 @@ class Ledger:
                     retained_event=(expected_seq, record["event_digest"]),
                 )
                 self._apply(projection, event, expected_seq)
+                if event.topology_node_kind == "BLOCK" or event.task_manifest is not None:
+                    retained_tasks.setdefault((event.project_id, event.task_id), expected_seq)
             records.append(replayed_record)
         return projection, records
 
@@ -4012,7 +4110,21 @@ class Ledger:
         if not scoped or start < scoped[0][1].observed_at_ms or end > scoped[-1][1].observed_at_ms or state == "UNKNOWN":
             token_issues.add("USAGE_SCOPE_WINDOW_UNCOVERED")
         token_known = len(samples) == 1 and not token_issues
+        # Tickets are a view of retained task identity, never another backlog.
+        # Owner IDs remain owner IDs: they are not inferred host chat identities.
+        identity_known = bool(events or definitions) and "TASK_SCOPE_CONFLICT" not in issues
+        ticket_id = ("ticket-" + hashlib.sha256(json.dumps(
+            [project_id, task_id], separators=(",", ":")).encode()).hexdigest()) if identity_known else None
+        activity = [{**reference(seq, event), "block_id": event.block_id,
+            "task_id": event.task_id, "owner_id": event.owner_id,
+            "scope_version": event.scope_version, "event_kind": event.event_kind.value,
+            "lifecycle_state": event.lifecycle_state.value, "attempt": event.attempt,
+            "observed_at_ms": event.observed_at_ms, "source": event.source}
+            for seq, event in events if identity_known and start <= event.observed_at_ms <= end]
         result = {"project_id": project_id, "ctrl_id": ctrl_id, "task_id": task_id,
+            "ticket_id": ticket_id, "activity": activity,
+            "display_id": (f"{projection['ticket_identities'][project_id]['project_code']}-{projection['ticket_identities'][project_id]['assignments'][task_id]}"
+                if identity_known and task_id in projection["ticket_identities"].get(project_id, {}).get("assignments", {}) else None),
             "scope_version": scope_version, "window": {"start_ms": start, "end_ms": end},
             "cursor": projection["cursor"], "coverage": {"state": state, "closed_ms": known if covered and state != "UNKNOWN" else None,
                 "unknown_ms": unknown, "reasons": sorted(issues)},

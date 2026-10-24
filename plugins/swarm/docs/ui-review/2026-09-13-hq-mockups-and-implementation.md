@@ -8,9 +8,7 @@ This pass applies the approved compact HQ treatment to Settings and reduces repe
 
 Implemented in `console/static/app.js` and `console/static/styles.css`: three essential cards (Workflow, Usage saver, Appearance), with scope and advanced controls behind one drawer. The old duplicate static title was removed from `console/static/index.html` so the page has one Settings heading.
 
-![Live Settings implementation](../../artifacts/hq-mockups-2026-09-13/live-settings.png)
-
-This live capture is from `http://127.0.0.1:4788/#settings` after the onboarding dialog was dismissed in a clean browser profile. It shows the shared SWARM chrome, one Settings title, populated icons, three cards, and the collapsed advanced drawer.
+Runtime captures containing private project data are not included in the public source. A public implementation comparison requires synthetic, SWARM-only fixtures; the reference alone does not establish current runtime acceptance.
 
 ## Roles — reusable library
 

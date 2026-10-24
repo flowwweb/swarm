@@ -8,7 +8,7 @@ The capture run exercised the local console, onboarding, all seven top-level rou
 
 | Surface | Rendered state | Review result |
 | --- | --- | --- |
-| Overview | 5 projects listed; active host work visible; three metrics remain unavailable | Layout is clean; data binding is incomplete |
+| Overview | Private captures not retained publicly | No public runtime proof |
 | Agents | Empty accepted roster with observed host tasks below | Honest separation, but no accepted agent hierarchy |
 | Roles | Three-column mascot library with closed detail accordions | Desktop is scannable; Architect asset blocker is visible |
 | Review | Proof list with actions | Dense but usable; project scope prompt is clear |
@@ -21,9 +21,9 @@ The capture run exercised the local console, onboarding, all seven top-level rou
 
 ## Overview
 
-![Overview — desktop live render](./screenshots/2026-09-12/screen-overview.png)
+The historical desktop Overview capture contains private portfolio and activity data and is not retained in the public source.
 
-The overview now uses the intended four-stat header and a compact project table. The current feed confirms five projects and zero accepted lanes, while Needs attention, TBR, and Usage remaining correctly stay `UNKNOWN` because the backing readings are not available.
+The intended Overview uses a four-stat header and a compact project table. Current project counts, accepted lanes and metric availability require separate accepted runtime evidence.
 
 ## Agents
 
@@ -43,9 +43,9 @@ The mobile role cards now keep the 44px circular mascot and the role name in sep
 
 ## Review
 
-![Review — desktop live render](./screenshots/2026-09-12/screen-review.png)
+The historical Review capture contains private workflow data and is not retained in the public source.
 
-Proof items and actions are visible in one review list. The screen is populated with pending evidence records from the local store.
+A public Review comparison requires synthetic, SWARM-only evidence. No current runtime acceptance is established by this section.
 
 ## Assets
 
@@ -97,13 +97,13 @@ The five slides use the same dark SWARM shell, typography, orange action, and pr
 
 ## Mobile overview
 
-![Overview — mobile live render](./screenshots/2026-09-12/screen-overview-mobile.png)
+The historical mobile Overview capture contains private portfolio and activity data and is not retained in the public source.
 
-The mobile shell keeps the compact header, project switcher, four metrics, project list, and bottom navigation. The same unavailable data states are preserved on mobile.
+The intended mobile shell keeps the compact header, project switcher, four metrics, project list, and bottom navigation. A current responsive comparison requires privacy-reviewed evidence.
 
 ## Findings
 
-1. **P1 — Accepted hierarchy is still missing.** The live overview reports zero accepted lanes and the Agents view reports no accepted CTRL/LEAD/DOER. Observed host tasks are rendered separately, so the UI is truthful but the required canonical hierarchy is not yet connected to live project records.
+1. **P1 — Accepted hierarchy requires fresh proof.** The removed Overview captures cannot establish current accepted lanes. Observed host tasks must remain distinct from accepted CTRL/LEAD/DOER records; a current hierarchy claim requires accepted project records.
 2. **P1 — Usage Saver relay is not externally proven.** The setting is enabled locally, but the relay telemetry is historical and the native connector still requires reauthentication. No current ChatGPT relay write/read-back receipt exists.
 3. **P1 — Usage and TBR readings are unavailable.** The cards and modal render the correct unknown state, but no live allowance, burn rate, or projected exhaustion can be claimed.
 4. **P2 — Project ledgers are sparse.** The project list and host work render, but current milestone, progress, ETA, and next gate are absent for the captured project.

@@ -16,6 +16,8 @@ view derived from an evidence-backed design constitution.
 
 ## Rules
 
+- Bind visual work through [visible owner reuse and host creation](hierarchy.md#visible-owner-reuse-and-host-creation).
+- For reference delivery or a failed input method, follow [reference consumption](runtime-recovery.md#reference-consumption) before generation or review.
 - Aim for the smallest change that creates the largest impact for the user.
 - Make the real task obvious before adding explanation or decoration.
 - Give every screen one clear primary decision; progressively disclose detail.

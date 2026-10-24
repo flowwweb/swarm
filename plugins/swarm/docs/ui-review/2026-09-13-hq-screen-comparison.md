@@ -1,19 +1,19 @@
 # SWARM HQ screen comparison — 2026-09-13
 
-This report puts the approved visual references beside the latest captured implementation evidence. Desktop comparisons are stacked so each surface can be inspected at full width. Mobile comparisons use two columns. Mockups describe the intended visual contract; live captures show what the local console rendered at capture time. They do not replace telemetry or provider receipts.
+This historical report retains visual references and implementation notes. Runtime captures containing private project data are excluded from the public source. Remaining historical images have not completed privacy review and do not establish current runtime, telemetry or provider acceptance.
 
 ## Coverage at a glance
 
 | Surface | Desktop reference | Desktop live capture | Mobile reference | Mobile live capture | Evidence status |
 | --- | --- | --- | --- | --- | --- |
-| Overview | Console overview reference | Current tall HQ overview | None checked in | 2026-09-12 capture | Reference plus live render; mobile mockup missing |
-| Swarm hierarchy | Hierarchy reference | Hierarchy section in current overview | None checked in | Covered by overview mobile capture | Reference plus live section |
-| Agents | Agents reference | Observed host-task view | None checked in | None checked in | Reference plus live render |
+| Overview | Console overview reference | Not retained publicly | None checked in | Not retained publicly | Reference only; no public runtime capture |
+| Swarm hierarchy | Hierarchy reference | Not retained publicly | None checked in | Not retained publicly | No current runtime evidence |
+| Agents | Agents reference | Not retained publicly | None checked in | None checked in | Reference only |
 | Roles | Roles reference | 2026-09-12 live roles view | Roles mobile reference | 2026-09-12 live roles view | Desktop and mobile pair |
-| Review | Review reference | 2026-09-12 live review view | None checked in | None checked in | Reference plus live render |
+| Review | Review reference | Not retained publicly | None checked in | None checked in | Reference only |
 | Assets | Approved assets reference | 2026-09-12 live assets view | None checked in | None checked in | Reference plus live render |
 | Diagnostics | Approved diagnostics reference | 2026-09-12 live diagnostics view | None checked in | None checked in | Reference plus live render |
-| Settings | Approved settings reference | Current live settings view | None checked in | None checked in | Reference plus live render |
+| Settings | Approved settings reference | Not retained publicly | None checked in | None checked in | Reference only |
 | Project detail | Kanban/project reference | 2026-09-12 live project detail | None checked in | None checked in | Closest reference plus live render |
 | Chat panel | No separate approved mockup artifact | 2026-09-12 live chat panel | None checked in | None checked in | Live evidence only |
 | Usage detail | No separate approved modal mockup artifact | 2026-09-12 live usage modal | None checked in | None checked in | Live/reference capture only |
@@ -31,9 +31,9 @@ The 2026-09-12 images are historical live captures. The 2026-09-13 images are th
 
 **Live implementation capture**
 
-![Current HQ overview capture](../../artifacts/hq-mockups-2026-09-13/live-overview.png)
+No public runtime capture is retained for this desktop surface.
 
-The reference establishes the four-stat header, project table, token burn-rate treatment, and hierarchy area. The current capture is a tall viewport, so it is useful for data binding and hierarchy review but is not a pixel-size comparison to the desktop reference.
+The reference establishes the four-stat header, project table, token burn-rate treatment, and hierarchy area. Current data binding requires separate accepted runtime evidence.
 
 ### Swarm hierarchy
 
@@ -43,9 +43,9 @@ The reference establishes the four-stat header, project table, token burn-rate t
 
 **Live implementation capture**
 
-![Current overview hierarchy section](../../artifacts/hq-mockups-2026-09-13/live-overview.png)
+No public runtime capture is retained for this section.
 
-The live image is the current overview capture with the Swarm hierarchy and observed host-task rows in the same page. The reference is the explicit tree contract: Swarm manager, role leads, doer work, progress, and ETA.
+The reference defines the intended tree. An observed hierarchy, progress or ETA requires accepted project records; this reference is not runtime proof.
 
 ### Agents
 
@@ -55,9 +55,9 @@ The live image is the current overview capture with the Swarm hierarchy and obse
 
 **Live implementation capture**
 
-![Agents with observed host tasks](../../artifacts/hq-mockups-2026-09-13/live-agents-observed-host-tasks.png)
+No public runtime capture is retained for this surface.
 
-The live state separates observed host tasks from accepted CTRL, LEAD, and DOER records. That distinction is intentional: the screen must not invent an accepted hierarchy when the project feed has not supplied one.
+The implementation must distinguish observed host tasks from accepted CTRL, LEAD, and DOER records. It must not invent an accepted hierarchy when the project feed has not supplied one.
 
 ### Roles
 
@@ -79,9 +79,9 @@ Roles are the premade role library. They do not own task progress. Detail text s
 
 **Live implementation capture**
 
-![Review live capture](../../docs/ui-review/screenshots/2026-09-12/screen-review.png)
+The historical Review capture contains private workflow data and is not retained in the public source.
 
-The review surface keeps proof, status, and quick actions together. The live capture is from the earlier 2026-09-12 browser run.
+The reference keeps proof, status, and quick actions together. A current runtime comparison requires separate, privacy-reviewed evidence.
 
 ### Assets
 
@@ -115,7 +115,7 @@ The compact health summary, three checks, recent signals, and Run checks action 
 
 **Live implementation capture**
 
-![Settings live capture](../../artifacts/hq-mockups-2026-09-13/live-settings.png)
+No public runtime capture is retained for this surface.
 
 The implementation keeps Workflow, Usage saver, and Appearance visible first. Scope and advanced controls stay behind the compact settings path.
 
@@ -240,11 +240,11 @@ The mobile reference and live capture keep role identity, the circular mascot, a
   </tr>
   <tr>
     <td>No separate approved mobile overview mockup is checked in.</td>
-    <td><img src="../../docs/ui-review/screenshots/2026-09-12/screen-overview-mobile.png" alt="Overview mobile live capture"></td>
+    <td>The private mobile Overview capture is not retained publicly.</td>
   </tr>
 </table>
 
-The live mobile capture is evidence of responsive rendering only. It should not be treated as a missing design approval.
+No public mobile Overview capture remains. Responsive rendering and design approval require separate, privacy-reviewed evidence.
 
 ## Artifact gaps to close
 

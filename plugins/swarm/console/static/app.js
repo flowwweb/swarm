@@ -276,7 +276,7 @@ function onboardingConfigurationMarkup() {
   const status = pending ? 'Saving ' + pending + ' setting' + (pending === 1 ? '' : 's') + '…' : failures.length ? (failures[0].error || 'A setting was not saved.') : 'Changes are saved when acknowledged by SWARM.';
   const binding = { attribute: "data-config-key", control: true };
   const mode = onboardingConfigDraft("automation.mode", automation.mode || "standard");
-  const fast = onboardingConfigDraft("execution.fast_mode", execution.fast_mode === true);
+  const fast = onboardingConfigDraft("execution.fast_mode", execution.fast_mode);
   const life = onboardingConfigDraft("lifecycle.task_lifetime_hours", lifecycle.task_lifetime_hours);
   return '<section class="settings-essentials onboarding-config-essentials"><header class="settings-essentials-head"><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3><p>Execution-first defaults, shared with Settings.</p></div></header><div class="settings-toggle-grid">' + settingsSwitch("automation.mode", mode, "Auto mode", "SWARM keeps eligible work moving until it needs you.", { trueValue: "standard", falseValue: "manual", editable: configEditable("automation.mode") && !state.onboardingConfigPending.has("automation.mode"), binding }) + settingsSwitch("telemetry.enabled", onboardingConfigDraft("telemetry.enabled", settings.telemetry?.enabled === true), "Share SWARM usage with Flowwweb", "Send usage and failure events, models, tokens and estimated API costs. No conversation text, source code, paths or personal identifiers. Optional; disable anytime. Events expire after 90 days.", { editable: configEditable("telemetry.enabled") && !state.onboardingConfigPending.has("telemetry.enabled"), binding }) + '</div><div class="settings-run-controls">' +
     settingsSpeedMarkup({ value: fast, editable: configEditable("execution.fast_mode") && !state.onboardingConfigPending.has("execution.fast_mode"), binding, name: "onboarding-speed" }) + settingsTaskLifeMarkup({ value: life, editable: Number.isInteger(lifecycle.task_lifetime_hours) && configEditable("lifecycle.task_lifetime_hours") && !state.onboardingConfigPending.has("lifecycle.task_lifetime_hours"), binding, id: "onboarding-task-life" }) + '</div></section>' +
@@ -3368,27 +3368,107 @@ function projectArtifactAssociations(projection) {
   return associations;
 }
 
-function projectWorkRowMarkup(row, associations, { summary = false } = {}) {
-  const owner = typeof row.owner_id === "string" && row.owner_id.trim() ? row.owner_id.trim() : "Unknown";
-  const progress = row.progress == null ? "" : '<span class="project-work-progress"><progress max="100" value="' + row.progress + '" aria-label="' + escapeHTML(row.label + " progress") + '"></progress><span>' + escapeHTML(String(row.progress) + "%") + '</span></span>';
-  const artifacts = (associations.get(row.id) || []).map((artifact) => '<span class="project-work-artifact" data-artifact-association="' + escapeHTML(row.id) + '" aria-label="Artifact ' + escapeHTML(artifact.label) + ' associated with ' + escapeHTML(row.label) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-paperclip"></use></svg>' + escapeHTML(artifact.label) + '</span>').join("");
-  const tag = summary ? "span" : "div";
-  return '<' + tag + ' class="project-work-row" role="row" data-work-kind="' + row.kind + '" data-work-id="' + escapeHTML(row.id) + '"><span class="project-work-name" role="cell"><span class="project-work-kind">' + escapeHTML(humanize(row.kind)) + '</span><strong>' + escapeHTML(row.label) + '</strong><small>' + escapeHTML(row.id) + '</small>' + (artifacts ? '<span class="project-work-artifacts">' + artifacts + '</span>' : '') + '</span><span role="cell">' + escapeHTML(owner) + '</span><span role="cell">' + progress + '</span></' + tag + '>';
+// Display aliases only; the exact recorded state stays in row details and is never read from titles.
+const PROJECT_WORK_STATES = new Map([
+  ["ACTIVE", ["active", "In progress"]], ["IN_PROGRESS", ["active", "In progress"]], ["RUNNING", ["active", "In progress"]], ["RETRYING", ["active", "Retrying"]],
+  ["CANCELLED_BY_USER", ["cancelled", "Cancelled"]], ["SETTLING_PROOF", ["review", "Settling proof"]], ["SUPERSEDED", ["cancelled", "Superseded"]],
+  ["BLOCKED", ["blocked", "Blocked"]], ["SCOPED_BLOCKED", ["blocked", "Blocked"]], ["FAILED", ["failed", "Failed"]], ["CANCELLED", ["cancelled", "Cancelled"]], ["CANCELED", ["cancelled", "Cancelled"]],
+  ["REVIEW", ["review", "Needs review"]], ["NEEDS_REVIEW", ["review", "Needs review"]], ["REVIEW_GATED", ["review", "Needs review"]],
+  ["WAITING_DEPENDENCY", ["waiting", "Waiting on dependency"]], ["WAITING_FOR_DEPENDENCY", ["waiting", "Waiting on dependency"]], ["WAITING_FOR_CAPACITY", ["waiting", "Waiting on capacity"]], ["WAITING_EXTERNAL", ["waiting", "Waiting on external"]],
+  ["PLANNED", ["planned", "Planned"]], ["QUEUED", ["planned", "Queued"]], ["QUEUED_NOT_STARTED", ["planned", "Queued"]], ["NOT_STARTED", ["planned", "Not started"]],
+  ["DONE", ["done", "Done"]], ["COMPLETE", ["done", "Done"]], ["COMPLETED", ["done", "Done"]], ["VERIFIED", ["done", "Verified"]], ["ACCEPTED", ["accepted", "Accepted"]],
+]);
+const PROJECT_WORK_GLYPHS = new Map([
+  ["done", '<path d="M6.5 10.3l2.3 2.3 4.7-5"></path>'],
+  ["blocked", '<path d="M10 6.2v4.4M10 13.5v.3"></path>'],
+  ["failed", '<path d="M7.4 7.4l5.2 5.2M12.6 7.4l-5.2 5.2"></path>'],
+  ["cancelled", '<path d="M6.8 13.2l6.4-6.4"></path>'],
+]);
+
+function projectWorkspaceIsWork(view) {
+  return view?.renderer === "table" && view?.mode === "records" && !Array.isArray(view?.content?.records);
+}
+
+function projectWorkState(row) {
+  const source = row?.declared_state ?? row?.status;
+  const exact = typeof source === "string" ? source.trim() : "";
+  if (!exact) return { exact: "", tone: "unknown", label: "State not recorded" };
+  const known = PROJECT_WORK_STATES.get(exact.toUpperCase());
+  if (known) return { exact, tone: known[0], label: known[1] };
+  const scoped = /^ACCEPTED_(.+)$/.exec(exact.toUpperCase());
+  const words = value => value.toLowerCase().replaceAll("_", " ");
+  return scoped ? { exact, tone: "scoped", label: "Accepted · " + words(scoped[1]) } : { exact, tone: "unknown", label: words(exact).replace(/^./, letter => letter.toUpperCase()) };
+}
+
+function projectWorkOwner(row) {
+  return typeof row.owner_id === "string" && row.owner_id.trim() ? row.owner_id.trim() : "";
+}
+
+function projectWorkPercent(row) {
+  return row.progress == null ? null : new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(row.progress) + "%";
+}
+
+function projectWorkRingMarkup(row, tone) {
+  const value = row.progress == null ? "" : '<circle class="project-work-ring-value" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="' + escapeHTML(String(row.progress)) + ' 100" transform="rotate(-90 10 10)"></circle>';
+  return '<svg class="project-work-ring' + (row.progress == null ? " is-unmeasured" : "") + '" data-tone="' + tone + '" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><circle class="project-work-ring-track" cx="10" cy="10" r="7.5" pathLength="100"></circle>' + value + (PROJECT_WORK_GLYPHS.get(tone) || "") + '</svg>';
+}
+
+function projectWorkBarMarkup(row) {
+  if (row.progress == null) return '<span class="project-work-bar is-unmeasured" role="img" aria-label="' + escapeHTML(row.label + " progress unmeasured") + '"></span>';
+  return '<span class="project-work-bar" role="progressbar" aria-label="' + escapeHTML(row.label + " progress") + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + escapeHTML(String(row.progress)) + '"><i style="width:' + escapeHTML(String(row.progress)) + '%"></i></span>';
+}
+
+function projectWorkFactsMarkup(row, state, associations) {
+  const facts = [
+    ["Record", '<code>' + escapeHTML(row.id) + '</code>'],
+    ["Owner", escapeHTML(projectWorkOwner(row) || "Not recorded")],
+    ["Progress", escapeHTML(projectWorkPercent(row) ? projectWorkPercent(row) + " measured" : "Unmeasured")],
+    ["State", state.exact ? '<code>' + escapeHTML(state.exact) + '</code>' : "Not recorded"],
+  ];
+  if (row.kind !== "milestone") facts.push(["Latest update", "Not bound in this view"], ["Gates", "Not recorded in this view"]);
+  const artifacts = (associations.get(row.id) || []).map((artifact) => '<li class="project-work-artifact" data-artifact-association="' + escapeHTML(row.id) + '" aria-label="Artifact ' + escapeHTML(artifact.label) + ' associated with ' + escapeHTML(row.label) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-paperclip"></use></svg>' + escapeHTML(artifact.label) + '</li>').join("");
+  facts.push(["Evidence", artifacts ? '<ul class="project-work-artifacts">' + artifacts + '</ul>' : "No associated artifact"]);
+  return '<dl class="project-work-facts">' + facts.map(([term, value]) => '<div><dt>' + term + '</dt><dd>' + value + '</dd></div>').join("") + '</dl>';
+}
+
+function projectWorkItemMarkup(row, children, associations) {
+  const state = projectWorkState(row);
+  const milestone = row.kind === "milestone";
+  const nested = children.get(row.id) || [];
+  const meta = "";
+  const spoken = milestone ? "Milestone" : humanize(row.kind) + ", progress " + (projectWorkPercent(row) || "unmeasured");
+  const summary = '<summary class="project-work-line">' + projectWorkRingMarkup(row, state.tone) + '<span class="project-work-title"><strong>' + escapeHTML(row.label) + '</strong>' + meta + '</span><span class="project-work-state" data-tone="' + state.tone + '">' + escapeHTML(state.label) + '</span><span class="project-work-chevron" aria-hidden="true"></span><span class="sr-only">' + escapeHTML(spoken) + '</span>' + (milestone ? projectWorkBarMarkup(row) : "") + '</summary>';
+  const list = nested.length ? '<ol class="project-work-children" aria-label="' + escapeHTML(row.label + (milestone ? " tasks" : " blocks")) + '">' + nested.map((child) => '<li>' + projectWorkItemMarkup(child, children, associations) + '</li>').join("") + '</ol>' : milestone ? '<p class="project-work-empty">No tasks are recorded under this milestone.</p>' : "";
+  const facts = projectWorkFactsMarkup(row, state, associations);
+  const body = milestone ? list + '<details class="project-work-meta"><summary>Milestone details</summary>' + facts + '</details>' : facts + list;
+  return '<details class="project-work-item is-' + row.kind + '" data-work-kind="' + row.kind + '" data-work-id="' + escapeHTML(row.id) + '" data-work-state="' + escapeHTML(state.exact) + '" data-tone="' + state.tone + '"' + (milestone && nested.length ? " open" : "") + '>' + summary + '<div class="project-work-body">' + body + '</div></details>';
+}
+
+function projectWorkSourceMarkup(view, projection, count) {
+  const status = typeof projection?.status === "string" && projection.status.trim() ? projection.status.trim() : "UNKNOWN";
+  const facts = [["View", view?.id || "Not bound"], ["Projection", "table/records · content.rows"], ["Projection status", status], ["Accepted rows", count == null ? "Rejected as malformed" : String(count)]];
+  return '<details class="project-work-source"><summary>Source <span>read-only snapshot</span></summary><dl>' + facts.map(([term, value]) => '<div><dt>' + term + '</dt><dd><code>' + escapeHTML(value) + '</code></dd></div>').join("") + '</dl><p>' + escapeHTML(projection?.claim_limit || "Project view is read-only.") + '</p></details>';
+}
+
+function projectWorkGoalMarkup(view) {
+  const goal = view?.content?.declared_goal;
+  const sources = Array.isArray(view?.sources) ? view.sources.filter((source) => source.pointer === "/objective" && /^sha256:[a-f0-9]{64}$/.test(source.digest || "")) : [];
+  const bound = goal?.source_pointer === "/objective" && typeof goal.text === "string" && goal.text.trim() && sources.length === 1;
+  return '<details class="project-work-goal" aria-label="Goal"><summary><span>Goal</span><strong>' + escapeHTML(bound ? goal.text : "Unavailable") + '</strong></summary>' + (bound ? '<small>Declared objective · read-only snapshot</small>' : '<small>No accepted objective is bound to this view.</small>') + '</details>';
 }
 
 function projectWorkspaceWorkMarkup(view) {
+  const projection = currentProjectView();
   const rows = projectWorkRows(view);
-  if (!rows) return '<p class="empty-state" role="status">Work unavailable. The accepted hierarchy projection is malformed.</p>';
-  const associations = projectArtifactAssociations(currentProjectView());
+  if (!rows) return '<p class="empty-state" role="status">Work unavailable. The accepted hierarchy projection is malformed.</p>' + projectWorkSourceMarkup(view, projection, null);
+  const associations = projectArtifactAssociations(projection);
   const children = new Map();
   rows.forEach((row) => { const list = children.get(row.parentId) || []; list.push(row); children.set(row.parentId, list); });
-  const render = (row) => {
-    const nested = children.get(row.id) || [];
-    if (row.kind === "block" || !nested.length) return projectWorkRowMarkup(row, associations);
-    return '<details class="project-work-group is-' + row.kind + '" open><summary>' + projectWorkRowMarkup(row, associations, { summary: true }) + '</summary><div class="project-work-children" role="rowgroup">' + nested.map(render).join("") + '</div></details>';
-  };
+  const roots = children.get(null) || [];
   const blockState = view.content.blocks_state === "UNKNOWN" ? '<p class="project-work-notice" role="status">Block details are unavailable in this accepted project model.</p>' : "";
-  return '<section class="project-work" role="table" aria-label="Milestones, tasks, and blocks"><header class="project-work-row" role="row"><span role="columnheader">Work</span><span role="columnheader">Owner or agent</span><span role="columnheader">Progress</span></header>' + blockState + '<div role="rowgroup">' + (children.get(null) || []).map(render).join("") + '</div></section>';
+  const goal = projectWorkGoalMarkup(view);
+  const list = roots.length ? '<ol class="project-work-list">' + roots.map((row) => '<li>' + projectWorkItemMarkup(row, children, associations) + '</li>').join("") + '</ol>' : '<p class="empty-state" role="status">No accepted milestones or tasks are recorded.</p>';
+  return '<section class="project-work" aria-label="Milestones, tasks, and blocks">' + goal + '<h3 class="project-work-heading">Milestones</h3>' + blockState + list + projectWorkSourceMarkup(view, projection, rows.length) + '</section>';
 }
 
 function projectWorkspaceArtifactsMarkup(view) {
@@ -3426,7 +3506,8 @@ function projectViewFreshnessMarkup(projection) {
 }
 
 function projectWorkspaceTabMarkup(view, projection = currentProjectView()) {
-  return '<section class="project-ui"><header class="project-ui-toolbar"><div><p class="eyebrow">Project view</p><h2>' + escapeHTML(view.label) + '</h2></div></header>' + projectViewFreshnessMarkup(projection) + projectWorkspaceViewMarkup(view) + '<p class="project-ui-claim">' + escapeHTML(projection?.claim_limit || "Project view is read-only.") + '</p></section>';
+  const claim = projectWorkspaceIsWork(view) ? "" : '<p class="project-ui-claim">' + escapeHTML(projection?.claim_limit || "Project view is read-only.") + '</p>';
+  return '<section class="project-ui"><header class="project-ui-toolbar"><div><p class="eyebrow">Project view</p><h2>' + escapeHTML(view.label) + '</h2></div></header>' + projectViewFreshnessMarkup(projection) + projectWorkspaceViewMarkup(view) + claim + '</section>';
 }
 
 function projectViewMarkup() {
@@ -3445,7 +3526,7 @@ function projectViewMarkup() {
   return '<section class="project-ui"><header class="project-ui-toolbar"><div><p class="eyebrow">Digest-bound project view</p><h2>' + escapeHTML(projection.tab.label || "UI") + '</h2></div><div class="segmented-control" aria-label="UI view mode">' + modeItems.map((item) => {
     const selected = item.id === mode;
     return '<button type="button" data-project-ui-mode="' + escapeHTML(item.id) + '" aria-pressed="' + String(selected) + '" class="' + (selected ? "is-selected" : "") + '">' + escapeHTML(item.label) + '</button>';
-  }).join("") + '</div></header>' + projectViewFreshnessMarkup(projection) + content + '<p class="project-ui-claim">' + escapeHTML(projection.claim_limit || "Project UI is read-only.") + '</p></section>';
+  }).join("") + '</div></header>' + projectViewFreshnessMarkup(projection) + content + (workspaceView && projectWorkspaceIsWork(workspaceView) ? "" : '<p class="project-ui-claim">' + escapeHTML(projection.claim_limit || "Project UI is read-only.") + '</p>') + '</section>';
 }
 
 function projectProgressQueueProjection(progress) {
@@ -3579,6 +3660,11 @@ function projectTabMarkup(tab, progress, nodes) {
   const milestones = projectMilestones(blocks);
   if (tab === "overview") {
     const efficiency = verifiedYieldItem("project", selectedProgressProjectId());
+    const workView = workspaceViews.find((view) => view.id === "view.project.work" && projectWorkspaceIsWork(view));
+    if (workView) {
+      const projectName = projectGroups().find((group) => group.id === selectedProgressProjectId())?.label;
+      return '<section class="panel project-hq-progress" aria-label="Project Progress"><h2>' + (projectName ? escapeHTML(projectName) + ' · ' : '') + 'Progress</h2>' + projectViewFreshnessMarkup(currentProjectView()) + projectWorkspaceWorkMarkup(workView) + '</section>' + projectHostWorkMarkup() + projectProgressQueueMarkup(progress) + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><h2>Latest updates</h2>' + projectFeedMarkup(4) + '</section>';
+    }
     return projectHostWorkMarkup() + '<section class="project-overview-grid">' + (embeddedView ? '<section class="panel project-model-snapshot"><header class="overview-section-head"><div><p class="eyebrow">Project brief snapshot</p><h2>' + escapeHTML(embeddedView.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(embeddedView) + '</section>' : "") + projectProgressQueueMarkup(progress) + projectMilestonesMarkup(milestones) + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><header class="overview-section-head"><div><p class="eyebrow">Material events</p><h2>Latest updates</h2></div><p>Newest first</p></header>' + projectFeedMarkup(4) + '</section></section>';
   }
   if (tab === "roadmap") return (embeddedView ? '<section class="project-model-snapshot"><header class="overview-section-head"><div><p class="eyebrow">Project brief snapshot</p><h2>' + escapeHTML(embeddedView.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(embeddedView) + '</section>' : "") + '<section class="project-roadmap">' + (milestones.length ? milestones.map(([id, items], index) => '<article><span>' + String(index + 1) + '</span><div><h3>' + escapeHTML(id) + '</h3><p>' + escapeHTML(items.length + " block" + (items.length === 1 ? "" : "s") + " · " + milestoneSummary(items).admitted + " admitted") + '</p></div></article>').join("") : '<p class="empty-state">No roadmap receipts yet.</p>') + '</section>';
@@ -5713,11 +5799,24 @@ function descriptorBooleanSwitch(key, label, help, options = {}) {
 
 function settingsSpeedMarkup(options = {}) {
   const key = "execution.fast_mode";
-  const fast = (options.value ?? settingsDraftValue(key, false)) === true;
-  const editable = options.editable ?? settingsConfigEditable(key);
+  const config = state.config;
+  const scope = currentSettingsScope();
+  const current = state.configStatus === "current" && config?.state === "KNOWN" && config.available === true && Boolean(config.revision)
+    && config.scope?.type === scope.type && (scope.type === "global" || (scope.type === "project" && config.scope.project_id === scope.id && Boolean(config.scope.accepted_cursor)));
+  const requested = current ? (options.value ?? settingsDraftValue(key, undefined)) : undefined;
+  const fast = typeof requested === "boolean" ? requested : null;
+  const speed = config?.speed_control;
+  const bound = current && JSON.stringify(speed?.scope) === JSON.stringify(config.scope)
+    && typeof speed?.fast_mode === "boolean" && speed.fast_mode === config.settings?.execution?.fast_mode
+    && (speed.override === null ? speed.origin === "global" : typeof speed.override === "boolean" && speed.override === speed.fast_mode && speed.origin === scope.type);
+  const origin = bound ? (speed.override === null ? "Inherited from " + speed.origin + "." : speed.origin === "global" ? "Global default." : "Override for this " + speed.origin + ".") : "Origin unknown.";
+  const outcomes = { "pending-next-turn": "Pending next turn.", "provider-applied": "Applied by provider.", unsupported: "Unavailable on this execution surface.", failed: "Failed." };
+  const application = !bound || fast === null ? "unknown" : fast !== speed.fast_mode ? "unsaved" : Object.hasOwn(outcomes, speed.application_state) ? speed.application_state : "unknown";
+  const outcome = application === "unsaved" ? "Unsaved preference; not applied." : outcomes[application] || "Unknown.";
+  const editable = current && fast !== null && (options.editable ?? settingsConfigEditable(key));
   const binding = options.binding?.attribute || "data-settings-draft-key";
   const choice = (label, selected, value, disabled = false) => '<label><input type="radio" name="' + escapeHTML(options.name || "settings-speed") + '" ' + binding + '="' + key + '" data-config-value="' + String(value) + '"' + (options.binding?.control ? ' data-onboarding-control="speed-' + label.toLowerCase() + '"' : '') + (selected ? ' checked' : '') + ((!editable || disabled) ? ' disabled' : '') + ' aria-label="' + escapeHTML(label) + '"><span>' + escapeHTML(label) + '</span></label>';
-  return '<fieldset class="settings-segmented"><legend>Speed</legend><div>' + choice("Default", !fast, false) + choice("Fast", fast, true) + '</div>' + (editable ? '' : '<small>Speed is read-only in this scope.</small>') + '</fieldset>';
+  return '<fieldset class="settings-segmented"><legend>Speed</legend><div>' + choice("Default", fast === false, false) + choice("Fast", fast === true, true) + '</div><small>Requested: ' + (fast === null ? 'Unknown' : fast ? 'Fast' : 'Default') + '. Saved origin: ' + escapeHTML(origin) + '</small><small role="status" data-speed-state="' + application + '">Application: ' + escapeHTML(outcome) + '</small>' + (editable ? '' : '<small>Speed is read-only in this scope.</small>') + '</fieldset>';
 }
 
 function settingsTaskLifeMarkup(options = {}) {

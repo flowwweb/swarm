@@ -80,6 +80,25 @@ LEAD for a durable subordinate boundary. Each DOER owns one bounded artifact.
 Every role may use non-recursive leaf subagents for sidecar inspection, review,
 or analysis inside its own accountable boundary.
 
+### Visible owner reuse and host creation
+
+Reuse an existing eligible visible owner whose profession, authority, scope and
+custody fit the work, including visual production. Task category alone requires
+neither a new chat nor another approval. Continuing authorized work with that
+owner needs no reconfirmation.
+
+Create or fork a new visible chat only on explicit user request through the
+host task API. A runtime topology plan or profession label is not that request.
+If no eligible owner exists, retain the exact ownership gap and ask only for
+the smallest user decision needed to proceed; never fall back to CTRL production
+or a hidden substitute owner. Existing custody, role and permission boundaries
+still apply.
+
+Independent review uses a separate eligible owner from the producer. Reuse an
+existing reviewer when independent custody fits; the producer and its LEAD
+cannot review their own artifact. User-reserved artifact approval remains a
+separate boundary, not a reason to reconfirm an already-authorized assignment.
+
 ### CTRL is an operator, not a producer
 
 CTRL owns user conversation, intake, task contracts, routing, dependencies,
@@ -111,33 +130,30 @@ objective, and scope. A plugin-runtime request is non-authoritative. Missing,
 mismatched, replayed, or in-process-only evidence emits a human-authority
 blocker and no host action. Same-identity
 restore is not CTRL creation; Researcher, Architect, LEAD, DOER, and REVIEW are
-ordinary subordinate roles and do not consume CTRL authorization.
+ordinary subordinate roles and do not consume CTRL-specific authorization;
+new chats still follow the host-creation rule above.
 
-Create or promote a visible accountable child whenever independent or resumable
-ownership, a separate mutable surface or artifact, worktree isolation,
-independent heartbeat, review, or handoff, a cross-lane dependency, user-visible
-delivery, or interruption-safe resumption matters. CTRL materializes a LEAD for
-the project boundary; a LEAD materializes a DOER for its durable artifact; a
-DOER may keep bounded sidecars. A subagent never replaces a warranted LEAD or
+Independent ownership or interruption-safe resumption, a separate mutable surface or artifact,
+worktree isolation, heartbeat, review, handoff, cross-lane dependency or
+user-visible delivery requires a fitting visible owner. Bind the existing LEAD
+or DOER under the reuse rule above; a new chat needs the explicit user request.
+A DOER may keep bounded sidecars. A subagent never replaces a warranted LEAD or
 DOER merely because it is easier to spawn.
 
 For root CTRL, small bounded `GENERAL` work may use an internal subagent when
 it has one surface, low risk, no durable boundary, and measured economics that
-favor the shortcut. Medium or large work opens a visible Codex task with
-the smallest required `CTRL`, `LEAD`, and `DOER` authority shape so the lane can
-own its own leaf subagents. LEAD depth is evidence-driven rather than fixed.
-`DESIGN`,
-`IMAGEGEN`, mockups, and image edits always open a visible Designer or Artist
-task according to the typed visual ownership; `CTRL -> SUBAGENT` is not a
-substitute for that visual lane, even when a role label names the profession.
-If the required task cannot be materialized, record the
-exact capability blocker or degraded `UNVERIFIED` route; do not silently
-generate the visual artifact in a subagent.
+favor the shortcut. Medium or large work binds the smallest fitting visible
+`CTRL`, `LEAD`, and `DOER` ownership shape; LEAD depth is evidence-driven.
+`DESIGN`, `IMAGEGEN`, mockups and image edits reuse an eligible visible Designer
+or Artist according to typed visual ownership. `CTRL -> SUBAGENT` is not a
+substitute for that owner, even when a role label names the profession. An
+unavailable owner follows the exact ownership-gap rule above, not automatic
+chat creation or hidden visual production.
 
 Use this routing order:
 
 1. Keep one atomic outcome with the current owner when coordination costs more.
-2. Open a visible task lane when a durable boundary above applies.
+2. Bind a fitting visible owner for a durable boundary under the reuse rule above.
 3. Add a subagent only for bounded small `GENERAL` capacity within its current
    accountable owner or an already-open lane; never for visual artifact production.
 
@@ -156,11 +172,11 @@ owner before dispatch. If a bounded subagent discovers further decomposition,
 recruitment, separate mutable surface, resumable ownership, heartbeat, review,
 handoff, cross-lane dependency, or user-visible delivery, it stops and returns
 the typed `PROMOTE_TO_VISIBLE_TASK` outcome with the exact remaining deliverable,
-custody boundary, and required proof. The parent reuses or creates the visible
-owner; the subagent cannot expand, recruit recursively, hand off, own a lane
+custody boundary, and required proof. The parent follows the visible-owner reuse
+rule; the subagent cannot expand, recruit recursively, hand off, own a lane
 heartbeat, review, or accept.
 
-If the host cannot create a required visible task, record the exact capability
+If no eligible visible owner is available, record the exact ownership/capability
 blocker. A degraded subagent remains under the current accountable owner and
 must bind an immutable checkpoint, task-topology resumption marker, and every
 affected gate as `UNVERIFIED`; it cannot satisfy ownership, handoff, independent
@@ -179,8 +195,8 @@ request and result, never performs the producer's action.
 Choose the evidence-backed initial topology before the first mutable handoff.
 Recompute it only when material task evidence changes an ownership, dependency,
 integration, or acceptance fact; user direction remains the highest constraint.
-For a game objective, use the registered game-studio graph and materialize its
-independent design, engineering, art, and audio lanes before the integrated
+For a game objective, use the registered game-studio graph and bind its
+independent design, engineering, art, and audio owners before the integrated
 playtest/QA and release gates. Medium and large lanes are visible Codex tasks;
 subagents are only bounded capacity inside those lanes.
 
@@ -220,7 +236,8 @@ design-system work, test/review ownership, and any lane with a separate mutable
 surface or artifact, durable/resumable ownership, independent progress or review,
 worktree isolation, a cross-lane dependency, user-visible delivery, or multiple
 checkpoints/delegation are substantive: they require a visible senior Codex
-task/chat with its own cwd, owner, and heartbeat. Hidden or short-lived subagents
+task owner with its own cwd and heartbeat, following the reuse rule above.
+Hidden or short-lived subagents
 are only bounded sidecar inspection or non-authoritative review assistance; they
 cannot own, accept, hand off, or maintain a lane heartbeat. The parent CTRL keeps unrelated senior
 lanes moving in parallel and integrates only exact receipts. A missing due material
@@ -357,8 +374,9 @@ is a shape defect, and a bounded delegated artifact uses a DOER. More direct CTR
 remains a soft preference, not a hard team-size ceiling. This catches accidental
 LEAD crowds without preventing justified independent boundaries.
 
-Materialize each justified LEAD, persistent SPECIALIST, DOER, TASK, SUBTASK, and
-independent REVIEW as a host task when the host supports it. Materialize ASSIST
+For explicit user-requested creation, materialize each justified LEAD,
+persistent SPECIALIST, DOER, TASK, SUBTASK and independent REVIEW only through
+the host task API. Otherwise bind the existing eligible host identity. Materialize ASSIST
 and ADVISOR only for their bounded assignment. Never create a role to fill a
 tree, and never treat an internal subagent as a durable owner.
 

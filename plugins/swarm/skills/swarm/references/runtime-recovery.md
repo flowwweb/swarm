@@ -26,21 +26,26 @@ the next decision; it never resets the user's objective, history, or authority.
    that attempt, not every tool, target, provider, or task. Verify the intended
    surface directly; a working browser login and broken browser control can
    coexist. If the cause remains unknown, say so and narrow the affected scope.
-4. **Choose a different next action.** Correct invalid syntax or inputs, use an
-   already-authorized capability for an ordinary execution failure, or continue
-   an independent owned deliverable. State what changed and why it should help.
-   Honor the existing typed retry budget; changing wording, shells, or parameters
-   without new evidence is the same tactic. An explicit policy denial is not an
-   invitation to route the same prohibited operation through another tool.
-5. **Verify and correct the record.** Check the intended result and partial
-   effects, retract any disproved blocker, and resume the original objective.
-   A successful probe proves only its scope. For cleanup, success requires the
-   exact authorized target's post-state and measured free space; a command exit
-   or a revised explanation does not prove reclaimed bytes.
+4. **Repair the cause.** Turn a clear, authorized causal repair into bounded work
+   for the existing owner. Correct the input, dependency or environment that the
+   evidence identifies, then verify that repair. Honor the existing typed retry
+   budget per failure context: exhausting an unchanged command is not exhaustion
+   of distinct permitted causal repairs. New material evidence, not changed
+   wording or shells, permits re-entry. Pending approval waits; an actual denial
+   still prohibits the denied action through another route.
+5. **Retry the original operation.** A healthy dependency or successful repair is
+   not proof that the original operation succeeded. Retry that exact operation
+   within its authority, verify its intended result and partial effects, and clear
+   only the blocker disproved by that evidence. An unresolved or denied repair
+   leaves its dependent criteria open. For cleanup, success requires the exact
+   authorized target's post-state and measured free space, not just command exit.
 
 Complete this loop with either a verified advance or an exact remaining blocker
 and its release condition. Do not end with another plan when an authorized next
-action is available. Keep unaffected owned work moving.
+action is available. Hold only tasks dependent on the exact unresolved cause;
+continue safe ready work through existing owners and capacity elsewhere. The
+agreed product goal and milestone acceptance criteria define 100% completion.
+Activity, dependency health or an unapproved scope reduction cannot satisfy them.
 
 ## When the same confusion survives
 
@@ -65,6 +70,28 @@ post-state. The facts are that this attempt failed and reclaimed space is
 unverified. Check the exact rejection and target, then inspect other authorized
 targets read-only. Continue only a permitted route; neither assume all cleanup
 is forbidden nor bypass the rejection by repackaging the same denied deletion.
+
+## Reference consumption
+
+Choose the simplest authorized consumer path before transferring a reference.
+Reference identity and actual consumption are separate proofs:
+
+- For a URL-capable consumer, use the authorized reference directly when it can
+  consume that exact asset/version; there is no mandatory download.
+- For a file-only consumer, deliver the same authorized asset/version through
+  its supported file input, verify its identity, then prove it was actually
+  consumed. A saved file or supplied URL alone is not consumption proof.
+- On a technical method failure, use one bounded supported authorized alternative
+  that preserves the same reference identity, then verify consumption. If it
+  fails, retain the exact blocker; a different method grants no new authority.
+- Stop the affected route on an actual access denial, credential-bearing URL,
+  new permission or unapproved cost: no downgrade, alternate-agent bypass or
+  blind retry. Never forward credential-bearing URLs to another consumer.
+  Report the exact boundary and required authority without exposing credentials.
+
+Use the existing task's evidence to bind the reference identity, consumer and
+observed use. Identity without observed consumption remains unverified; it cannot
+pass the existing fidelity or acceptance gate. No new receipt store is needed.
 
 ## Authorized local access recovery
 

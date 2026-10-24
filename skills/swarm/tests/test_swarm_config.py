@@ -19,6 +19,103 @@ SPEC.loader.exec_module(config)
 
 
 class SwarmConfigTests(unittest.TestCase):
+    def test_model_policy_preserves_explicit_profile_pair_and_conflicts(self) -> None:
+        policy = {"model_order": ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"],
+                  "min_model": "gpt-6-luna", "default_model": "gpt-6-sol", "max_model": "gpt-6-astra"}
+        raw = {"execution": policy, "models": {"medium": {"lead_model": "gpt-6-astra", "lead_reasoning": "medium"}}}
+        effective = config.merge(raw)
+        before = deepcopy(effective)
+        for settings in (effective, deepcopy(effective), json.loads(json.dumps(effective))):
+            for tier in (1, 2, 3):
+                self.assertEqual(config.resolve_role_assignment(settings, "lead", route_tier=tier),
+                                 {"model": "gpt-6-astra", "reasoning": "medium"})
+        self.assertEqual(effective, before)
+        for bound in ({"max_model": "gpt-6-sol"}, {"min_reasoning": "high"}):
+            settings = config.merge({**raw, "execution": {**policy, **bound}})
+            with self.assertRaisesRegex(config.ConfigError, "choice was not changed"):
+                config.resolve_role_assignment(settings, "lead")
+        # A written value equal to the factory default is still explicit.
+        settings = config.merge({"execution": {**policy, "default_model": "gpt-6-astra"},
+                                 "models": {"medium": {"lead_model": "gpt-6-sol", "lead_reasoning": "medium"}}})
+        self.assertEqual(config.resolve_role_assignment(settings, "lead"), {"model": "gpt-6-sol", "reasoning": "medium"})
+        settings = config.merge({"execution": policy})
+        settings["models"]["medium"]["lead_model"] = "gpt-6-astra"
+        settings["models"]["medium"]["lead_reasoning"] = "medium"
+        self.assertEqual(config.resolve_role_assignment(deepcopy(settings), "lead"), {"model": "gpt-6-astra", "reasoning": "medium"})
+        settings["models"]["medium"].update(lead_model="gpt-6-sol", lead_reasoning="medium")
+        settings["execution"]["default_model"] = "gpt-6-astra"
+        self.assertEqual(config.resolve_role_assignment(deepcopy(settings), "lead"), {"model": "gpt-6-sol", "reasoning": "medium"})
+        from console.server import _config_merge_overlay
+        inherited = config.merge({"execution": policy})
+        project = _config_merge_overlay(inherited, {"execution": {"default_model": "gpt-6-astra"}})
+        self.assertEqual(config.resolve_role_assignment(project, "lead")["model"], "gpt-6-astra")
+        explicit_project = _config_merge_overlay(effective, {"execution": {"default_model": "gpt-6-luna"}})
+        self.assertEqual(config.resolve_role_assignment(explicit_project, "lead"), {"model": "gpt-6-astra", "reasoning": "medium"})
+        for role in ("roles", "professions"):
+            target = "lead" if role == "roles" else "developer"
+            with self.subTest(scope=role):
+                locked = config.merge({"execution": policy, role: {target: {"model": "gpt-6-astra", "reasoning": "medium"}}})
+                self.assertEqual(config.resolve_role_assignment(locked, target), {"model": "gpt-6-astra", "reasoning": "medium"})
+                locked["execution"]["min_reasoning"] = "high"
+                with self.assertRaisesRegex(config.ConfigError, "choice was not changed"):
+                    config.resolve_role_assignment(locked, target)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text('[execution]\nmodel_order=["gpt-6-luna","gpt-6-sol","gpt-6-astra"]\nmin_model="gpt-6-luna"\ndefault_model="gpt-6-sol"\nmax_model="gpt-6-astra"\n[models.medium]\nlead_model="gpt-6-astra"\nlead_reasoning="medium"\n', encoding="utf-8")
+            self.assertEqual(config.resolve_role_assignment(config.load(path)[0], "lead"), {"model": "gpt-6-astra", "reasoning": "medium"})
+
+    def test_explicit_model_order_drives_routing_without_name_ranking(self) -> None:
+        raw = {"execution": {"model_order": ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"],
+                "min_model": "gpt-6-sol", "default_model": "gpt-6-luna", "max_model": "gpt-6-luna"}}
+        config.validate(raw)
+        config.validate({"execution": {"default_model": "gpt-6-astra"}}, partial=True)
+        with self.assertRaises(config.ConfigError):
+            config.validate({"execution": {"default_model": "gpt-6-astra"}})
+        with self.assertRaises(config.ConfigError):
+            config.validate({"execution": {"default_model": 1}}, partial=True)
+        effective = config.merge(raw)
+        self.assertEqual(config.resolve_model_assignment(effective, "lead", surface="codex_task")["model"], "gpt-6-luna")
+        self.assertEqual(config.resolve_model_assignment(effective, "lead", surface="codex_task", explicit_model="gpt-6-sol")["model"], "gpt-6-sol")
+        before = deepcopy(effective)
+        invalid_reasoning = deepcopy(raw)
+        invalid_reasoning["models"] = {"medium": {"task_reasoning": "ultra"}}
+        with self.assertRaisesRegex(config.ConfigError, "default reasoning conflicts"):
+            config.validate(invalid_reasoning)
+        with self.assertRaisesRegex(config.ConfigError, "choice was not changed"):
+            config.resolve_model_assignment(effective, "lead", surface="codex_task", explicit_model="gpt-6-astra")
+        self.assertEqual(effective, before)
+        effective["roles"]["lead"] = {"model": "gpt-6-astra"}
+        with self.assertRaisesRegex(config.ConfigError, "choice was not changed"):
+            config.resolve_role_assignment(effective, "lead")
+        for change in ({"model_order": ["unknown"]}, {"model_order": ["gpt-6-sol", "gpt-6-sol"]},
+                       {"min_model": "gpt-6-astra"}, {"default_model": "gpt-6-astra"},
+                       {"model_order": "gpt-6-sol"}):
+            with self.subTest(change=change), self.assertRaises(config.ConfigError):
+                config.validate({"execution": {**raw["execution"], **change}})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text('[execution]\nmodel_order = ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]\nmin_model = "gpt-6-sol"\ndefault_model = "gpt-6-luna"\nmax_model = "gpt-6-luna"\n', encoding="utf-8")
+            restarted, _ = config.load(path)
+            self.assertEqual(config.resolve_model_assignment(restarted, "lead", surface="codex_task")["model"], "gpt-6-luna")
+
+    def test_speed_hierarchy_inherits_without_changing_other_controls(self) -> None:
+        settings = config.merge({})
+        before = deepcopy(settings)
+        self.assertEqual(config.resolve_speed_control(settings)["fast_mode"], False)
+        for project, task, expected, origin in ((True, None, True, "project"), (True, False, False, "task"), (None, None, False, "global")):
+            with self.subTest(project=project, task=task):
+                result = config.resolve_speed_control(settings, project_override=project, task_override=task)
+                self.assertEqual((result["fast_mode"], result["origin"]), (expected, origin))
+                self.assertEqual(result["application_state"], "pending-next-turn")
+        settings["execution"]["fast_mode"] = True
+        self.assertTrue(config.resolve_speed_control(settings)["fast_mode"])
+        self.assertFalse(config.resolve_speed_control(settings, task_override=False)["fast_mode"])
+        settings["execution"]["fast_mode"] = False
+        self.assertEqual(settings, before)
+        for invalid in (0, "false", [], {}):
+            with self.assertRaises(config.ConfigError):
+                config.resolve_speed_control(settings, task_override=invalid)
+
     def test_guided_interview_default_override_and_validation(self) -> None:
         self.assertTrue(config.merge({})["init"]["guided_interview"])
         effective, exists = config.load(config.TEMPLATE_PATH)

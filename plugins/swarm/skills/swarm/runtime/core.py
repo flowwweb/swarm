@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from graphlib import CycleError, TopologicalSorter
 from hashlib import sha256
 import json
 import os
@@ -828,6 +829,10 @@ class ProofPlan:
     def __post_init__(self):
         if self.schema_version!=2 or not self.planner_version.strip() or not isinstance(self.tier,ConsequenceTier) or not isinstance(self.artifact,ArtifactIdentity): raise InvariantError("proof plan requires schema v2, planner version, tier, and artifact")
         if len({gate.id for gate in self.gates})!=len(self.gates) or any(not isinstance(gate,GateSpec) for gate in self.gates): raise InvariantError("proof plan gates must be distinct typed specs")
+        gate_ids={gate.id for gate in self.gates}
+        if any(any(not isinstance(dependency,str) or dependency not in gate_ids for dependency in gate.dependencies) or len(set(gate.dependencies))!=len(gate.dependencies) for gate in self.gates): raise InvariantError("gate dependencies must be distinct declared gate identities")
+        try: tuple(TopologicalSorter({gate.id:gate.dependencies for gate in self.gates}).static_order())
+        except CycleError as error: raise InvariantError("gate dependencies must be acyclic") from error
         payload={"schema":self.schema_version,"planner":self.planner_version,"tier":self.tier.value,"artifact":self.artifact.key(),"gates":[(gate.id,gate.proof_class.value,gate.executor.value,gate.argv,gate.working_scope,gate.input_closure_digest,gate.environment_fingerprint,gate.dependencies,gate.cache_policy.value,gate.freshness_seconds,gate.flake_policy.value,gate.timeout_seconds) for gate in self.gates],"reviews":[(item.scope.value,tuple(value.value for value in item.combined_with),item.reason) for item in self.reviews],"claims":[(item.claim.name,item.claim.proof_class.value,item.status.value) for item in self.claim_matrix],"reasons":[(item.item,item.reason,item.selected) for item in self.reasons],"early":(self.early_stop.stop_on_required_failure,self.early_stop.stop_when_sufficient,self.early_stop.optional_confidence_gates),"legacy":self.legacy}
         expected=sha256(json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode("utf-8")).hexdigest()
         if self.plan_digest and self.plan_digest!=expected: raise InvariantError("proof plan digest does not match its canonical inputs")
@@ -3251,7 +3256,11 @@ class Swarm:
         plan=contract.proof_plan
         if plan is None: return contract.required_gates
         now=int(time.time())
-        return tuple(gate for gate in contract.required_gates if (receipt:=t.gate_receipts.get(gate)) is None or not receipt.current_for(self._gate_capability,task_id,gate,contract.artifact,current,plan,self._gate_spec(contract,gate),now))
+        specs={spec.id:spec for spec in plan.gates}; satisfied=set()
+        for gate in TopologicalSorter({spec.id:spec.dependencies for spec in plan.gates}).static_order():
+            spec=specs[gate]; receipt=t.gate_receipts.get(gate)
+            if set(spec.dependencies).issubset(satisfied) and receipt is not None and receipt.current_for(self._gate_capability,task_id,gate,contract.artifact,current,plan,spec,now): satisfied.add(gate)
+        return tuple(gate for gate in contract.required_gates if gate not in satisfied)
     def open_claims(self, task_id:str) -> tuple[str,...]:
         task=self.tasks[task_id]; contract=task.acceptance_contract
         if contract is None or contract.proof_plan is None or contract.artifact is None: return ()

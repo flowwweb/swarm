@@ -63,6 +63,19 @@ and contributes no progress. Exact replay is a no-op. Scheduling gates remain
 `WAITING`; terminal `HARD_BLOCKED` is valid only with retained scoped route
 exhaustion, release condition, responsible authority, and smallest solution.
 
+## Human handoff
+
+Use four short fields: **Desired outcome**, **Next action**, **Essential constraints**,
+and **Completion evidence**. Write complete sentences with normal spacing, include
+only relevant evidence, and link existing records rather than copying registers.
+**Sent** means the handoff was submitted. **Received** requires the actual recipient
+to acknowledge the outcome and next action; a transport acknowledgement is not
+receipt. **In progress** requires an observed work update. **Blocked** names the
+exact impediment and release condition. **Verified done** requires the declared
+completion evidence and applicable acceptance, not an acknowledgement or activity.
+CTRL verifies the recipient's acknowledgement and retains both the sending and
+receiving turn IDs with the existing handoff record.
+
 ## Delegated return gate
 
 Task creation, dispatch success, commentary, timeout, silence, empty or
@@ -271,6 +284,16 @@ or accept work. ChatGPT Work requires the exact host workspace/project and
 ordinary SWARM ownership, proof, and review. This route persists no prompt or
 response.
 
+## Prerequisite readiness
+
+A dependent action or completion claim may advance only when its prerequisites
+are verified for the exact artifact and target environment. Missing prerequisites
+block that step; independent work continues. Declare the dependencies in the
+existing task graph or proof plan before dispatch. Recheck their current receipts
+at execution and acceptance: wrong-version, stale, unverified or wrong-class
+evidence cannot satisfy them. Source/unit/fixture proof remains that proof class,
+not installation, deployment, loaded-version, live-test or dogfood acceptance.
+
 The deterministic ProofPlan binds changed surfaces, declared claims, authority
 boundaries, dependency reach, incidents, runtime signals, repository
 capabilities, consequence tier, exact commands and environments, gates, reviews, and claim coverage.
@@ -279,9 +302,7 @@ input closure, environment, authority, timing, attempt history, stability, and
 proof class. Stable exact-input evidence may be re-observed and adopted, but it
 never transfers review or acceptance authority. A plan revision adopts only
 receipts whose gate specification and full binding still match; changed or new
-gates reopen. Gate dependencies stop downstream work after an upstream failure
-or timeout, so a blocked plan does not spend capacity proving a result it cannot
-accept. Every declared claim remains
+gates reopen. Every declared claim remains
 open until a current receipt of its matching proof class exists. Gate receipts use only `PASS`,
 `FAIL`, or `TIMEOUT`; timeout never passes and allows at most one typed
 same-state transient retry. Source-semantic review cannot close the lane. A material defect found
