@@ -1090,6 +1090,112 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(Ledger(self.root).reserve_connector_command(command, expected_revision=0)["status"], "REPLAY")
         self.assertEqual(self.ledger._state.path.read_bytes(), retained)
 
+    def builtin_developer_versions(self):
+        current = next(item for item in self.role_manifests() if item["id"] == "developer")
+        older = build_role_manifest("developer", self.role_draft(current, accent="#234567"), "builtin", current["provenance"])
+        self.assertNotEqual(current["version"], older["version"])
+        return older, current
+
+    @staticmethod
+    def role_assignment(manifest, label, *, expected=None, kind="ROLE_ASSIGNMENT_BOUND", observed_at_ms=1):
+        identity = f"{kind.lower()}-{label}"
+        return role_material_event(
+            kind, event_id=identity, dedupe_key=identity, role_id="developer", manifest=manifest,
+            expected_active_version=manifest["version"] if expected is None else expected,
+            assignment_task_id=label if kind == "ROLE_ASSIGNMENT_BOUND" else None,
+            provenance=f"install:{label}", observed_at_ms=observed_at_ms,
+        )
+
+    def retain_material_lines(self, *payloads) -> bytes:
+        """Write retained history exactly as replay verifies it; no Ledger write path is used."""
+        import json
+        path = self.ledger._state.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_bytes() if path.exists() else b""
+        start = len(existing.splitlines()) + 1
+        lines = b"".join(json.dumps({
+            "event_seq": start + offset,
+            "event_digest": hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                                      separators=(",", ":")).encode("utf-8")).hexdigest(),
+            "event": payload,
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+            for offset, payload in enumerate(payloads))
+        path.write_bytes(existing + lines)
+        return path.read_bytes()
+
+    def test_retained_builtin_assignment_snapshots_replay_exactly_without_moving_active_role(self) -> None:
+        older, current = self.builtin_developer_versions()
+        self.ledger.append(self.role_assignment(older, "task-a"))
+        later = self.role_assignment(current, "task-b", observed_at_ms=2)
+        before = self.ledger._state.path.read_bytes()
+        with self.assertRaisesRegex(ProgressEventError, "expected active version is stale"):
+            self.ledger.append(later)
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        retained = self.retain_material_lines(later)
+        projection = Ledger(self.root).replay()
+        role = projection["role_manifests"]["developer"]
+        self.assertEqual(role["active_version"], older["version"])
+        self.assertEqual(sorted(role["versions"]), sorted([older["version"], current["version"]]))
+        self.assertEqual({task: projection["role_assignments"][task]["manifest_version"] for task in ("task-a", "task-b")},
+                         {"task-a": older["version"], "task-b": current["version"]})
+        self.assertEqual(projection["role_assignments"]["task-b"]["event_id"], later["event_id"])
+        self.assertEqual(Ledger(self.root).replay(), projection)
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+        # Retained history never authorizes a fresh write against the newer snapshot.
+        with self.assertRaisesRegex(ProgressEventError, "expected active version is stale"):
+            Ledger(self.root).append(self.role_assignment(current, "task-c", observed_at_ms=3))
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+
+    def test_retained_role_history_outside_builtin_snapshots_stays_strict(self) -> None:
+        import copy
+        older, current = self.builtin_developer_versions()
+        override = build_role_manifest("developer", self.role_draft(current, accent="#345678"), "user_override", ["host:revision"])
+        revised = build_role_manifest("developer", self.role_draft(older, accent="#456789"), "user_override", ["host:revision"])
+        self.ledger.append(self.role_assignment(older, "task-a"))
+        base = self.ledger._state.path.read_bytes()
+        tampered = copy.deepcopy(self.role_assignment(current, "task-b", observed_at_ms=2))
+        tampered["topology"]["role_manifest"]["manifest"]["purpose"] = "Changed without a new content version."
+        unknown = copy.deepcopy(self.role_assignment(current, "task-b", observed_at_ms=2))
+        unknown["topology"]["role_manifest"]["unexpected"] = True
+        cases = {
+            "expected is neither active nor its snapshot": self.role_assignment(current, "task-b", expected="builtin:" + "0" * 64, observed_at_ms=2),
+            "reset is not an assignment snapshot": self.role_assignment(current, "reset-b", kind="ROLE_MANIFEST_RESET", observed_at_ms=2),
+            "revise stays concurrent": self.role_assignment(revised, "revise-b", kind="ROLE_MANIFEST_REVISE", expected=current["version"], observed_at_ms=2),
+            "override assignment stays concurrent": self.role_assignment(override, "task-b", observed_at_ms=2),
+            "same version different content": tampered,
+            "unknown role payload field": unknown,
+        }
+        path = self.ledger._state.path
+        for label, payload in cases.items():
+            with self.subTest(label):
+                path.write_bytes(base)
+                retained = self.retain_material_lines(payload)
+                with self.assertRaises(ProgressEventError):
+                    Ledger(self.root).replay()
+                self.assertEqual(path.read_bytes(), retained)
+
+    def test_role_revision_concurrency_survives_retained_builtin_snapshots(self) -> None:
+        older, current = self.builtin_developer_versions()
+        self.ledger.append(self.role_assignment(older, "task-a"))
+        retained = self.retain_material_lines(self.role_assignment(current, "task-b", observed_at_ms=2))
+        revised = build_role_manifest("developer", self.role_draft(older, accent="#456789"), "user_override", ["host:revision"])
+
+        def revise(expected, event_id):
+            return role_material_event(
+                "ROLE_MANIFEST_REVISE", event_id=event_id, dedupe_key=event_id, role_id="developer",
+                manifest=revised, expected_active_version=expected, assignment_task_id=None,
+                provenance="host:revision", observed_at_ms=3)
+
+        with self.assertRaisesRegex(ProgressEventError, "expected active version is stale"):
+            Ledger(self.root).append(revise(current["version"], "revise-stale"))
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+        self.assertEqual(Ledger(self.root).append(revise(older["version"], "revise-current"))["status"], "appended")
+        projection = Ledger(self.root).replay()
+        self.assertEqual(projection["role_manifests"]["developer"]["active_version"], revised["version"])
+        self.assertEqual(projection["role_assignments"]["task-b"]["manifest_version"], current["version"])
+        with self.assertRaisesRegex(ProgressEventError, "expected active version is stale"):
+            Ledger(self.root).append(revise(older["version"], "revise-again"))
+
     @staticmethod
     def event(
         event_id: str,

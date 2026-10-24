@@ -2899,7 +2899,7 @@ class Ledger:
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _apply_role_payload(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
+    def _apply_role_payload(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int, *, replay: bool = False) -> None:
         payload = event.role_manifest
         if payload is None:
             return
@@ -2920,7 +2920,15 @@ class Ledger:
             }
             roles[role_id] = role
         if event.event_kind is not ProgressEventKind.ROLE_MANIFEST_CREATE and role["active_version"] != payload["expected_active_version"]:
-            raise ProgressEventError("role manifest expected active version is stale")
+            # A retained assignment pins the builtin snapshot installed when it was bound. Replay keeps
+            # that exact snapshot without moving or racing the active definition; new writes stay strict.
+            historical_builtin = (
+                replay and event.event_kind is ProgressEventKind.ROLE_ASSIGNMENT_BOUND
+                and manifest["source"] == "builtin"
+                and payload["expected_active_version"] == manifest["version"]
+            )
+            if not historical_builtin:
+                raise ProgressEventError("role manifest expected active version is stale")
         retained = role["versions"].get(manifest["version"])
         if retained is not None and retained != manifest:
             raise ProgressEventError("role manifest version conflicts with retained content")
@@ -3037,7 +3045,7 @@ class Ledger:
         projection["task_creation_operations_by_task"][binding["task_id"]] = operation_id
 
     @staticmethod
-    def _apply_topology_record(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
+    def _apply_topology_record(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int, *, replay: bool = False) -> None:
         events = projection["events"]
         dedupe = projection["dedupe"]
         conflict: dict[str, Any] | None = None
@@ -3068,7 +3076,7 @@ class Ledger:
             projection["topology_conflicts"].append(conflict)
         else:
             Ledger._apply_task_creation_binding(projection, event, event_seq)
-            Ledger._apply_role_payload(projection, event, event_seq)
+            Ledger._apply_role_payload(projection, event, event_seq, replay=replay)
             Ledger._apply_identity_payload(projection, event, event_seq)
             if event.material_update_sentence is not None:
                 projection["latest_material_signatures"][Ledger._material_key(event)] = Ledger._material_signature(event)
@@ -3362,7 +3370,7 @@ class Ledger:
         projection["dedupe"][event.dedupe_key] = event.semantic_digest
         projection["cursor"] = {"event_seq": event_seq, "event_id": event.event_id, "event_digest": event.digest}
 
-    def _apply(self, projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> dict[str, Any] | None:
+    def _apply(self, projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int, *, replay: bool = False) -> dict[str, Any] | None:
         check = None
         if event.expected_observation is not None:
             check = self._apply_expected_observation(
@@ -3384,7 +3392,7 @@ class Ledger:
                 Ledger._retain_event_identity_only(projection, event, event_seq)
                 return check
         if event.schema_version == 2:
-            Ledger._apply_topology_record(projection, event, event_seq)
+            Ledger._apply_topology_record(projection, event, event_seq, replay=replay)
             return check
         events = projection["events"]
         dedupe = projection["dedupe"]
@@ -3533,7 +3541,7 @@ class Ledger:
                     raw_event,
                     retained_event=(expected_seq, record["event_digest"]),
                 )
-                self._apply(projection, event, expected_seq)
+                self._apply(projection, event, expected_seq, replay=True)
                 if event.topology_node_kind == "BLOCK" or event.task_manifest is not None:
                     retained_tasks.setdefault((event.project_id, event.task_id), expected_seq)
             records.append(replayed_record)
