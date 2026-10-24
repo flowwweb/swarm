@@ -269,7 +269,7 @@ def validate_plugin_manifest(root: Path, files: dict[str, str] | None = None) ->
         }}}
         desktop = {"mcpServers": {"swarm": {
             "type": "stdio", "command": sys.executable,
-            "args": ["-B", "${PLUGIN_ROOT}/skills/swarm/scripts/swarm_desktop.py"], "cwd": "${PLUGIN_ROOT}",
+            "args": ["-B", "skills/swarm/scripts/swarm_desktop.py"], "cwd": ".",
         }}}
         if declaration == desktop:
             for relative in ("skills/swarm/scripts/swarm_desktop.py",
