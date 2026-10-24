@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "1.0.12+codex.20261024.auto-tickets-usage",
+  "version": "1.0.13+codex.20261024.package-relative-startup",
   "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",
