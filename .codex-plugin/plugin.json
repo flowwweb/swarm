@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "1.0.14+codex.20261024.scoped-library-support",
+  "version": "1.0.15+codex.20261024.bound-task-lifecycle",
   "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",
