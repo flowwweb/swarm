@@ -22,7 +22,7 @@ export function projectDetail(raw,id) {
     seenTasks.add(t.id);return true;
   });
   const taskText=(value,max)=>typeof value==='string'&&value.trim()&&Array.from(value).length<=max&&!/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value)?value.trim():null;
-  const taskRows=tasksAvailable?scope.tasks.map(t=>{
+  const taskRows=tasksAvailable?[...scope.tasks].sort((a,b)=>Number(b.state==='ACTIVE')-Number(a.state==='ACTIVE')).map(t=>{
     const candidateId=taskText(t.display_id,64);
     const displayId=candidateId&&/^[A-Z]{1,4}-[1-9][0-9]*$/.test(candidateId)?candidateId:null,label=taskText(t.label,160);
     return {id:t.id,name:[displayId,label].filter(Boolean).join(' \u00b7 ')||'Task '+t.id,

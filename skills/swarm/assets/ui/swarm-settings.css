@@ -7,7 +7,7 @@
 .swarm-settings .settings-row,.swarm-settings section,.swarm-settings footer{border-color:var(--line)}
 .swarm-settings button,.swarm-settings select,.swarm-settings input[type=text]{color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:7px;font:inherit;min-height:44px;padding:8px 12px;max-width:100%;width:100%;min-width:0}
 .swarm-settings input[type=text]{font-size:12px}.swarm-settings button[type=submit]{background:var(--accent);color:#171717}
-#settings-page{min-width:0}#settings-page:not([hidden]){display:grid;grid-template-rows:44px minmax(0,1fr);gap:8px;height:100dvh;overflow:hidden}#settings-page>button{justify-self:start}#settings-page>.swarm-settings{min-height:0;overflow:auto;overscroll-behavior:contain;width:100%}
+#settings-page{min-width:0}#settings-page:not([hidden]){display:grid;grid-template-rows:44px auto;gap:8px}#settings-page>button{justify-self:start}#settings-page>.swarm-settings{min-width:0;width:100%}
 .settings-button.selected{background:color-mix(in srgb,var(--fg) 7%,transparent);box-shadow:inset 2px 0 var(--accent)}
-@media(max-width:700px){#settings-page:not([hidden]){height:calc(100dvh - 80px)}}
+
 @media(max-width:700px){.swarm-settings .settings-row:has(input[type=text]){grid-template-columns:1fr}.swarm-settings .settings-row:has(input[type=text]) input{grid-row:3;grid-column:1}.swarm-settings .settings-scope{flex-wrap:wrap}.swarm-settings .settings-scope select{width:100%}}
