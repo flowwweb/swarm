@@ -83,6 +83,27 @@ class SwarmMCPTests(unittest.TestCase):
         self.assertFalse(event["success"])
         self.assertNotIn("Planning note", json.dumps(event))
 
+        wire["params"]["arguments"] = {**request, "expected_digest":assigned["source_digest"],
+            "assignment":{**assignment, "version":2, "label":"\ud800"}}
+        with patch.object(mcp.SwarmProjection, "_load_app", return_value=projection._app), patch.object(sys, "stdin", io.StringIO(json.dumps(wire))), patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+            mcp.serve(telemetry_path=fixture.root / "mcp-test.jsonl")
+        result = json.loads(output.getvalue())["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["structuredContent"]["state"], "REJECTED")
+        self.assertEqual(brief.read_bytes(), before)
+        self.assertNotIn("ud800", (fixture.root / "mcp-test.jsonl").read_text())
+
+    def test_existing_settings_unavailable_is_not_promoted_to_library_error(self):
+        app = Mock()
+        app.config_projection.return_value = {"ok": False, "state": "UNAVAILABLE"}
+        wire = {"jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{"name":"swarm_settings_read", "arguments":{}}}
+        with tempfile.TemporaryDirectory() as directory, patch.object(mcp.SwarmProjection, "_load_app", return_value=app), patch.object(sys, "stdin", io.StringIO(json.dumps(wire))), patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+            mcp.serve(telemetry_path=Path(directory) / "events.jsonl")
+        result = json.loads(output.getvalue())["result"]
+        self.assertFalse(result["isError"])
+        self.assertEqual(result["structuredContent"], {"ok":False, "state":"UNAVAILABLE"})
+
     @contextmanager
     def support_resource(self, root, body):
         """Exercise the real pinned image admission with an isolated template."""

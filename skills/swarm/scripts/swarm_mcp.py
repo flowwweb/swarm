@@ -29,7 +29,7 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "817a541061bebfbc57b18fa009434902ff28851e5d3009d7ec859ff9dbfa5afc"
+HQ_SDK_SHA256 = "0d0ba308801be41be5510ff63757f82077eec81b9cbe3547a5fcf9f0c8399250"
 PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "b020c4681e9c31d851040f3dfa2f0b8cdba6292180486d9b6823409c218906f9", "skills/swarm/assets/ui/swarm-hq-host.css": "1f24aa9615601b5e3fc21bd093a5d5ab28ced69cae476ce7c700ec4ad246b215", "skills/swarm/assets/swarm-wordmark.png": "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
 
 
@@ -609,7 +609,7 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
                     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                     if len(encoded.encode("utf-8")) > 262144:
                         raise MCPError("projection exceeds 262144 bytes; narrow the requested scope")
-                    rejected = value.get("ok") is False
+                    rejected = name in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign"} and value.get("ok") is False
                     _telemetry(telemetry_path, tool=name, started=started, ok=not rejected,
                                result_bytes=len(encoded.encode("utf-8")), error="projection_rejected" if rejected else "")
                     result = {"content": [{"type": "text", "text": encoded}], "structuredContent": value, "isError": rejected}

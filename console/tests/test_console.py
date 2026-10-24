@@ -108,6 +108,77 @@ class SwarmConsoleTests(unittest.TestCase):
             with self.subTest(retained=changes), self.assertRaises(console.ProjectModelError):
                 console.parse_project_brief_markdown(markdown_fixture(corrupt))
 
+    def test_assignment_history_257_and_unicode_rejection_are_atomic(self) -> None:
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        app = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
+        initial = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        saved = app.project_flow_command(dict(operation="save", project_id="project:alpha",
+            expected_digest=initial["source_digest"], definition=initial["starter"], acknowledge=True))
+        flow = saved["definitions"][0]
+        role = next(r for r in app.role_manifest_projection()["roles"] if r["id"] == "manager")
+        draft = dict(version=1, subject_kind="ROLE", subject_id="manager", subject_version=role["active_version"],
+            ctrl_id=None, flow_id=flow["id"], flow_version=flow["version"], flow_digest=flow["digest"],
+            label="Kanji \u6f22\u5b57", notes="Retain every version", repeat_count=1)
+        identity = {key: draft[key] for key in ("subject_kind", "subject_id", "ctrl_id")}
+        document, _ = console.parse_project_brief_markdown(brief.read_text(encoding="utf-8"))
+        history = []
+        for version in range(1, 257):
+            record = {**draft, "version":version, "id":"assignment-" + console._auto_digest(identity)}
+            history.append({**record, "digest":"sha256:" + console._auto_digest(record)})
+        document["flow_assignments"] = history
+        brief.write_text(markdown_fixture(document), encoding="utf-8")
+        current = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        result = app.project_flow_command(dict(operation="assign", project_id="project:alpha",
+            expected_digest=current["source_digest"], assignment={**draft, "version":257}, acknowledge=True))
+        self.assertEqual(result["assignments"][:256], history)
+        self.assertEqual(result["assignments"][-1]["version"], 257)
+        retained = brief.read_bytes()
+        restarted = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
+        self.assertEqual(restarted.project_flow_command(dict(operation="read", project_id="project:alpha")), result)
+        for bad in ("\ud800", "\udfff"):
+            with self.subTest(unicode=repr(bad)), self.assertRaises(console.ConsoleError):
+                restarted.project_flow_command(dict(operation="assign", project_id="project:alpha",
+                    expected_digest=result["source_digest"], assignment={**draft, "version":258, "notes":bad}, acknowledge=True))
+            self.assertEqual(brief.read_bytes(), retained)
+        with mock.patch.dict(console.parse_project_brief_markdown.__globals__, {"_MAX_BRIEF_BYTES":len(retained)+1}):
+            with self.assertRaises(console.ConsoleError):
+                restarted.project_flow_command(dict(operation="assign", project_id="project:alpha",
+                    expected_digest=result["source_digest"], assignment={**draft, "version":258}, acknowledge=True))
+        self.assertEqual(brief.read_bytes(), retained)
+        self.assertEqual(app.auto_bridge.mock_calls, [])
+        self.assertEqual(restarted.auto_bridge.mock_calls, [])
+
+        # A byte budget, not a version quota, refuses oversized readback before write.
+        document, _ = console.parse_project_brief_markdown(brief.read_text(encoding="utf-8"))
+        bounded = []
+        for version in range(1, 258):
+            record = {**draft, "version":version, "notes":"x" * 2000,
+                "id":"assignment-" + console._auto_digest(identity)}
+            record["digest"] = "sha256:" + console._auto_digest(record)
+            try:
+                console._require_flow_projection_budget([flow], [*bounded, record])
+            except console.ConsoleError:
+                break
+            bounded.append(record)
+        self.assertTrue(bounded)
+        self.assertLess(len(bounded), 257)
+        document["flow_assignments"] = bounded
+        brief.write_text(markdown_fixture(document), encoding="utf-8")
+        current = restarted.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        retained = brief.read_bytes()
+        from skills.swarm.scripts.swarm_mcp import SwarmProjection
+        projection = SwarmProjection()
+        projection._app = restarted
+        complete = projection.call("swarm_library_read", {"project_id":"project:alpha", "kind":"ROLE"})
+        self.assertLessEqual(len(json.dumps(complete, ensure_ascii=False, separators=(",", ":")).encode("utf-8")), 262144)
+        with self.assertRaisesRegex(console.ConsoleError, "readback limit; nothing was saved"):
+            restarted.project_flow_command(dict(operation="assign", project_id="project:alpha",
+                expected_digest=current["source_digest"], acknowledge=True,
+                assignment={**draft, "version":len(bounded)+1, "notes":"x" * 2000}))
+        self.assertEqual(brief.read_bytes(), retained)
+
     def test_role_customization_restart_and_unowned_assignment_fields(self) -> None:
         app = console.App(self.codex_home, self.config)
         role = next(item for item in app.role_manifest_projection()["roles"] if item["id"] == "manager")

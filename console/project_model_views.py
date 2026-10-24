@@ -79,6 +79,10 @@ def create_flow_draft() -> dict[str, Any]:
     return {"id": "create", "version": 1, "objective": "Create a useful, verified result", "nodes": nodes}
 
 
+def _flow_text(value: str) -> bool:
+    return not any((ord(c) < 32 and c not in "\n\t") or 0xD800 <= ord(c) <= 0xDFFF for c in value)
+
+
 def validate_flow_assignment(value: Any, definitions: list[dict[str, Any]]) -> dict[str, Any]:
     """Project-scoped preferences only; repetition never grants dispatch authority."""
     fields = {"id", "version", "subject_kind", "subject_id", "subject_version", "ctrl_id",
@@ -101,7 +105,7 @@ def validate_flow_assignment(value: Any, definitions: list[dict[str, Any]]) -> d
     if type(value["repeat_count"]) is not int or not 1 <= value["repeat_count"] <= 2**53 - 1:
         raise ProjectModelError("Flow repetition must be a positive JSON-safe integer")
     for key, limit in (("label", 160), ("notes", 2048)):
-        if not isinstance(value[key], str) or len(value[key]) > limit or any(ord(c) < 32 and c not in "\n\t" for c in value[key]):
+        if not isinstance(value[key], str) or len(value[key]) > limit or not _flow_text(value[key]):
             raise ProjectModelError("Flow assignment customization is invalid")
     identity = {k: value[k] for k in ("subject_kind", "subject_id", "ctrl_id")}
     if value["id"] != "assignment-" + _digest(identity):
@@ -122,7 +126,7 @@ def validate_flow_definition(value: Any) -> dict[str, Any]:
         return isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", item) is not None
 
     def text(item: Any) -> bool:
-        return isinstance(item, str) and 0 < len(item.strip()) <= 2048 and not any(ord(char) < 32 and char not in "\n\t" for char in item)
+        return isinstance(item, str) and 0 < len(item.strip()) <= 2048 and _flow_text(item)
 
     def tokens(items: Any) -> bool:
         return isinstance(items, list) and len(items) <= 64 and all(token(item) for item in items) and len(set(items)) == len(items)
@@ -370,7 +374,8 @@ def parse_project_brief_markdown(text: str, *, project_id: str | None = None,
             raise ProjectModelError("project brief contains a duplicate Flow version")
         identities.add(identity)
     assignments = document.get("flow_assignments", [])
-    if not isinstance(assignments, list) or len(assignments) > 256:
+    # Preserve every version within the existing bounded brief and readback budget.
+    if not isinstance(assignments, list):
         raise ProjectModelError("project brief Flow assignments are invalid")
     assignment_versions = {}
     for assignment in assignments:

@@ -398,6 +398,13 @@ def _auto_id(value: Any, label: str) -> str:
     return text
 
 
+def _require_flow_projection_budget(definitions: list, assignments: list) -> None:
+    # Reserve 64 KiB of the existing MCP bound for the inventory/envelope.
+    value = dict(definitions=definitions, assignments=assignments, starter=create_flow_draft())
+    if len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 196608:
+        raise ConsoleError("Flow history reached its readback limit; nothing was saved")
+
+
 def _auto_digest(payload: Any) -> str:
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -14893,6 +14900,8 @@ class App:
                 identity = {key: draft[key] for key in ("subject_kind", "subject_id", "ctrl_id")}
                 record = {**draft, "id": "assignment-" + _auto_digest(identity)}
                 record = validate_flow_assignment({**record, "digest": "sha256:" + _auto_digest(record)}, document.get("flow_definitions", []))
+                _require_flow_projection_budget(document.get("flow_definitions", []),
+                    [*document.get("flow_assignments", []), record])
                 self._require_flow_assignment_subject(project_id, record)
                 digest = mutate_project_brief(path, expected_digest=digest, operation="create", collection="flow_assignments",
                     record_id=record["id"], changes={key: value for key, value in record.items() if key != "id"},
@@ -14907,6 +14916,8 @@ class App:
                 if not isinstance(draft, dict) or set(draft) != {"id", "version", "objective", "nodes"}:
                     raise ConsoleError("Flow draft fields are invalid")
                 definition = validate_flow_definition({**draft, "digest": "sha256:" + _auto_digest(draft)})
+                _require_flow_projection_budget([*document.get("flow_definitions", []), definition],
+                    document.get("flow_assignments", []))
                 digest = mutate_project_brief(path, expected_digest=digest, operation="create", collection="flow_definitions",
                     record_id=definition["id"], changes={key: value for key, value in definition.items() if key != "id"},
                     updated_at=datetime.now(UTC).isoformat())
