@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "1.0.10+codex.20261024.tickets-settings",
+  "version": "1.0.11+codex.20261024.project-tickets",
   "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",

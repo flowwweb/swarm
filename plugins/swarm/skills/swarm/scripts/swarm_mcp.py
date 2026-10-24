@@ -29,8 +29,8 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "5c0a268e27193db388ce44c5ded528979289b5b7df1883d619d0a56a2433a01e"
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html":"4f70c9da747146c53924982db0ef283f7ab078cd5b16eb1da6652fe20dd1cff7","skills/swarm/assets/ui/swarm-hq-host.css":"b1d08c8dafd4e800697a8991f8f731ef77e35fbfeb0ad17271acfc4e09335d88","skills/swarm/assets/swarm-wordmark.png":"306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
+HQ_SDK_SHA256 = "c02b1fdccb8130af7b224fb0367a7c025dddeb405ca193c987f6f246d7ab419d"
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html":"faf99e195b45632928d03770cf16efe8d31a917d4aa6d8f114f5f49680b405dd","skills/swarm/assets/ui/swarm-hq-host.css":"8f8c220167fe79a7b7c9fec0da284d0f34eb6ef537c5f08e4e6cfd7ee0f328ce","skills/swarm/assets/swarm-wordmark.png":"306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
 
 
 TOOLS: tuple[dict[str, Any], ...] = (
@@ -244,18 +244,19 @@ def _compact_overview(view: dict[str, Any]) -> dict[str, Any]:
     compact_analytics["burn_rate"] = {key: burn[key] for key in ("tokens_per_minute", "source", "token_field", "label") if key in burn}
     progress = view.get("progress", {}) if isinstance(view.get("progress"), dict) else {}
     compact_progress = dict(progress)
-    for scope in ("all_projects", "projects"):
+    for scope in ("all_projects", "projects", "controllers"):
         if isinstance(progress.get(scope), dict):
             scope_value = progress[scope]
-            if scope == "projects":
+            if scope in {"projects", "controllers"}:
                 compact_progress[scope] = {
-                    str(project_id): _compact_progress_scope(project_value)
+                    str(project_id): _compact_progress_scope(project_value, identity=scope == "projects" and project_id == metrics.get("accepted_scope_id"))
                     for project_id, project_value in list(scope_value.items())[:128]
                     if isinstance(project_value, dict)
                 }
-                for project_value in compact_progress[scope].values():
-                    project_value.pop("tasks", None)
-                    project_value.pop("truncated", None)
+                for project_id, project_value in compact_progress[scope].items():
+                    if scope == "projects" and project_id != metrics.get("accepted_scope_id"):
+                        project_value.pop("tasks", None)
+                        project_value.pop("truncated", None)
             else:
                 compact_progress[scope] = _compact_progress_scope(scope_value)
     return {
@@ -273,14 +274,14 @@ def _compact_overview(view: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _compact_progress_scope(scope: dict[str, Any]) -> dict[str, Any]:
+def _compact_progress_scope(scope: dict[str, Any], *, identity: bool = False) -> dict[str, Any]:
     compact = {key: scope[key] for key in ("scope", "status", "counts", "progress", "progress_display", "current_milestone", "measurement_status", "unmeasured_reason") if key in scope}
     milestone = compact.get("current_milestone")
     if isinstance(milestone, dict):
         compact["current_milestone"] = {key: milestone[key] for key in ("state", "reason", "name") if key in milestone}
     tasks = scope.get("tasks", scope.get("task_rows", []))
     if isinstance(tasks, list):
-        compact["tasks"] = [_pick(task, ("id", "project_id", "state", "blocked", "blocker", "progress", "progress_display", "latest_proof_receipt")) for task in tasks[:128] if isinstance(task, dict)]
+        compact["tasks"] = [_pick(task, ("id", "project_id", "state", "blocked", "blocker", "progress", "progress_display", "latest_proof_receipt") + (("display_id", "label") if identity else ())) for task in tasks[:128] if isinstance(task, dict)]
         compact["truncated"] = len(tasks) > 128
     return compact
 

@@ -29,6 +29,26 @@ def call(process: subprocess.Popen[str], request: dict) -> dict:
 
 
 class SwarmMCPTests(unittest.TestCase):
+    def test_selected_project_preserves_retained_ticket_fields_only_in_its_scope(self):
+        row = {"id": "host-task", "project_id": "project-a", "state": "active",
+               "display_id": "SWRM-1", "label": "Retained task name", "private": "omit"}
+        view = {"overview_metrics": {"accepted_scope_id": "project-a", "accepted_cursor": {"digest": "bound"}},
+                "progress": {"task_identity": {"digest": "ledger-bound"}, "projects": {
+                    "project-a": {"tasks": [row]}, "project-b": {"tasks": [{**row, "project_id": "project-b"}]}}}}
+        view["progress"]["all_projects"] = {"tasks": [row]}
+        view["progress"]["controllers"] = {"ctrl-a": {"tasks": [row]}}
+        result = mcp._compact_overview(view)
+        self.assertEqual(result["progress"]["projects"]["project-a"]["tasks"], [{k: v for k, v in row.items() if k != "private"}])
+        self.assertNotIn("tasks", result["progress"]["projects"]["project-b"])
+        self.assertEqual(result["progress"]["task_identity"], {"digest": "ledger-bound"})
+        for selected in ("project-a", "all"):
+            view["overview_metrics"]["accepted_scope_id"] = selected
+            compact = mcp._compact_overview(view)["progress"]
+            for aggregate in (compact["all_projects"], compact["controllers"]["ctrl-a"]):
+                self.assertEqual(aggregate["tasks"], [{k: v for k, v in row.items() if k not in {"private", "display_id", "label"}}])
+        view["overview_metrics"]["accepted_scope_id"] = "all"
+        self.assertTrue(all("tasks" not in scope for scope in mcp._compact_overview(view)["progress"]["projects"].values()))
+
     def test_projects_shell_composes_settings_without_rewriting_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
             path, digest, _ = self.hq_export(Path(directory))

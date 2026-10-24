@@ -13138,6 +13138,71 @@ class App:
                 ),
             })
 
+    def _with_ticket_identity(self, view: dict[str, Any]) -> dict[str, Any]:
+        """Join retained tickets only to the existing validated creation binding."""
+        view = copy.deepcopy(view)
+        try:
+            ledger = self.progress_ledger.replay()
+        except (ProgressEventError, OSError, ValueError):
+            ledger = None
+        identities: dict[str, dict[str, Any]] = {}
+        if ledger is not None:
+            bindings: dict[str, list[dict[str, Any]]] = {}
+            for binding in ledger["task_creation_bindings"].values():
+                bindings.setdefault(binding["task_id"], []).append(binding)
+            for node in view.get("nodes", []):
+                task_id, project_id = node.get("id"), node.get("project_id")
+                matches = bindings.get(task_id, [])
+                identity = node.get("manifest_identity") or {}
+                if not isinstance(identity, dict):
+                    continue
+                state = ledger["task_manifests"].get(task_id, {})
+                manifest = state.get("versions", {}).get(state.get("active_version"), {})
+                ticket = ledger["ticket_identities"].get(project_id, {})
+                number = ticket.get("assignments", {}).get(task_id)
+                code, label = ticket.get("project_code"), manifest.get("task_name")
+                if (len(matches) != 1 or matches[0]["project_id"] != project_id
+                        or identity.get("identity_kind") != "TASK_CREATION_BINDING"
+                        or identity.get("binding_event_id") != matches[0]["event_id"]
+                        or identity.get("binding_event_digest") != matches[0]["event_digest"]
+                        or manifest.get("task_id") != task_id or manifest.get("project_id") != project_id
+                        or identity.get("manifest_version") != manifest.get("manifest_version")
+                        or identity.get("manifest_digest") != manifest.get("manifest_digest")
+                        or type(number) is not int or number < 1
+                        or not isinstance(code, str) or not re.fullmatch(r"[A-Z]{1,4}", code)
+                        or not isinstance(label, str) or not label.strip()):
+                    continue
+                identities[task_id] = {
+                    "project_id": project_id, "display_id": f"{code}-{number}", "label": label,
+                    "binding_event_digest": matches[0]["event_digest"],
+                    "manifest_digest": manifest["manifest_digest"],
+                }
+        progress = view.get("progress", {})
+        scopes = [progress.get("all_projects", {})]
+        scopes.extend(progress.get("projects", {}).values())
+        scopes.extend(progress.get("controllers", {}).values())
+        used: dict[str, dict[str, Any]] = {}
+        for scope in scopes:
+            for row in scope.get("tasks", []):
+                row.pop("display_id", None)
+                row.pop("label", None)
+                identity = identities.get(row.get("id"))
+                if identity is not None and identity["project_id"] == row.get("project_id"):
+                    row.update({key: identity[key] for key in ("display_id", "label")})
+                    used[row["id"]] = identity
+        source = {"state": "KNOWN" if ledger is not None else "UNAVAILABLE",
+                  "ledger_cursor": ledger["cursor"] if ledger is not None else None,
+                  "bindings": used}
+        digest = hashlib.sha256(json.dumps(source, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        progress["task_identity"] = {"state": source["state"], "digest": digest, "ledger_cursor": source["ledger_cursor"]}
+        metrics = view.get("overview_metrics", {})
+        cursor = metrics.get("accepted_cursor")
+        if isinstance(cursor, dict) and cursor.get("digest"):
+            metrics["accepted_cursor"] = {**cursor, "digest": hashlib.sha256(json.dumps(
+                {"overview": cursor, "task_identity": digest}, sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest()}
+        return view
+
     def overview(self, project_id: str | None = None) -> dict[str, Any]:
         # Never call _host_overview while holding overview_lock. The refresh
         # path owns overview_refresh_lock before publishing under overview_lock.
@@ -13153,8 +13218,10 @@ class App:
                 self._view_fingerprint = self._overview_revision
                 self._view_store_generation = self._store_generation
             if not project_id or project_id.casefold() in {"all", "all-projects"}:
-                return self._view
-            return self._project_view(self._view, project_id)
+                result = self._view
+            else:
+                result = self._project_view(self._view, project_id)
+        return self._with_ticket_identity(result)
 
     def daily_report(self) -> dict[str, Any]:
         """Return the latest immutable host snapshot without rebuilding the decorated HQ view."""

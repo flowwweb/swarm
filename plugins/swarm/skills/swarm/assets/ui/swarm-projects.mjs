@@ -15,7 +15,20 @@ export function projectDetail(raw,id) {
   const scope=raw.progress?.projects?.[id];
   const bound=scope?.scope?.project_id===id;
   const m=bound?scope.current_milestone:null;
-  return {updated:Number.isSafeInteger(p.updated_at)&&p.updated_at>0?p.updated_at:null,
+  if(raw?.overview_metrics?.accepted_scope_id!==id||raw.overview_metrics.accepted_cursor?.scope_id!==id||!raw.overview_metrics.accepted_cursor?.digest)throw Error('Project cursor mismatch');
+  const seenTasks=new Set();
+  const tasksAvailable=bound&&Array.isArray(scope.tasks)&&scope.tasks.every(t=>{
+    if(!t||t.project_id!==id||typeof t.id!=='string'||!t.id.trim()||seenTasks.has(t.id))return false;
+    seenTasks.add(t.id);return true;
+  });
+  const taskText=(value,max)=>typeof value==='string'&&value.trim()&&Array.from(value).length<=max&&!/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value)?value.trim():null;
+  const taskRows=tasksAvailable?scope.tasks.map(t=>{
+    const candidateId=taskText(t.display_id,64);
+    const displayId=candidateId&&/^[A-Z]{1,4}-[1-9][0-9]*$/.test(candidateId)?candidateId:null,label=taskText(t.label,160);
+    return {id:t.id,name:[displayId,label].filter(Boolean).join(' \u00b7 ')||'Task '+t.id,
+      status:typeof t.state==='string'&&t.state.trim()?t.state:'Unknown'};
+  }):[];
+  return {taskRows,tasksAvailable,tasksTruncated:tasksAvailable&&scope.truncated===true,updated:Number.isSafeInteger(p.updated_at)&&p.updated_at>0?p.updated_at:null,
     milestone:m?.state==='KNOWN'&&typeof m.name==='string'?m.name:null,
     tasks:bound&&Number.isSafeInteger(scope.counts?.tasks)?scope.counts.tasks:null,
     progress:bound&&scope.measurement_status==='measured'&&Number.isFinite(scope.progress)?scope.progress:null,

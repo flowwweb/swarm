@@ -3167,6 +3167,62 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn(("root", "bound-agent"), {(edge["source"], edge["target"]) for edge in topology["agent_edges"]})
         self.assertEqual(console.App(self.codex_home, self.config).overview()["topology"], topology)
 
+        # Production overview joins only explicit retained creation/ticket identity.
+        before_ticket = app.overview("project:alpha")
+        self.assertTrue(all("display_id" not in row for row in before_ticket["progress"]["projects"]["project:alpha"]["tasks"]))
+        app.progress_ledger.assign_ticket_ids("project:alpha", "SWRM", ("bound-agent",))
+        ledger_bytes = app.progress_ledger._state.path.read_bytes()
+        scoped = app.overview("project:alpha")
+        rows = scoped["progress"]["projects"]["project:alpha"]["tasks"]
+        bound = next(row for row in rows if row["id"] == "bound-agent")
+        self.assertEqual((bound["id"], bound["display_id"], bound["label"]), ("bound-agent", "SWRM-1", "Topology implementation"))
+        self.assertTrue(all("display_id" not in row and "label" not in row for row in rows if row["id"] != "bound-agent"))
+        self.assertNotEqual(before_ticket["overview_metrics"]["accepted_cursor"], scoped["overview_metrics"]["accepted_cursor"])
+        restarted = console.App(self.codex_home, self.config).overview("project:alpha")
+        self.assertEqual(restarted["progress"]["task_identity"], scoped["progress"]["task_identity"])
+        self.assertEqual(next(row for row in restarted["progress"]["projects"]["project:alpha"]["tasks"] if row["id"] == "bound-agent"), bound)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_bytes)
+        for field, value in (("project_id", "wrong-project"), ("manifest_digest", "0" * 64)):
+            hostile = copy.deepcopy(app._view)
+            node = next(row for row in hostile["nodes"] if row["id"] == "bound-agent")
+            (node if field == "project_id" else node["manifest_identity"])[field] = value
+            hidden = app._with_ticket_identity(hostile)
+            self.assertTrue(all("display_id" not in row and "label" not in row
+                                for row in hidden["progress"]["projects"]["project:alpha"]["tasks"]))
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_bytes)
+
+        # Defensive joins do not trust stale/ambiguous identity shapes or row labels.
+        for mutation in ("shape", "version", "duplicate", "foreign-ticket", "spoof"):
+            retained = copy.deepcopy(app.progress_ledger.replay())
+            hostile = copy.deepcopy(app._view)
+            node = next(row for row in hostile["nodes"] if row["id"] == "bound-agent")
+            if mutation == "shape":
+                node["manifest_identity"] = "invalid"
+            elif mutation == "version":
+                node["manifest_identity"]["manifest_version"] = "stale-version"
+            elif mutation == "duplicate":
+                binding = next(item for item in retained["task_creation_bindings"].values() if item["task_id"] == "bound-agent")
+                retained["task_creation_bindings"]["duplicate"] = copy.deepcopy(binding)
+            elif mutation == "foreign-ticket":
+                retained["ticket_identities"]["foreign-project"] = retained["ticket_identities"].pop("project:alpha")
+            else:
+                node["manifest_identity"] = {}
+                for scope in hostile["progress"]["projects"].values():
+                    for row in scope.get("tasks", []):
+                        row.update(display_id="FAKE-1", label="Spoofed")
+            with mock.patch.object(app.progress_ledger, "replay", return_value=retained):
+                hidden = app._with_ticket_identity(hostile)
+            self.assertTrue(all("display_id" not in row and "label" not in row
+                                for row in hidden["progress"]["projects"]["project:alpha"]["tasks"]), mutation)
+            self.assertNotEqual(hidden["overview_metrics"]["accepted_cursor"], scoped["overview_metrics"]["accepted_cursor"], mutation)
+        with mock.patch.object(app.progress_ledger, "replay", side_effect=console.ProgressEventError("corrupt retained record")):
+            unavailable = app._with_ticket_identity(app._view)
+        self.assertEqual(unavailable["progress"]["task_identity"]["state"], "UNAVAILABLE")
+        self.assertTrue(all("display_id" not in row and "label" not in row
+                            for row in unavailable["progress"]["projects"]["project:alpha"]["tasks"]))
+        self.assertNotEqual(unavailable["overview_metrics"]["accepted_cursor"], scoped["overview_metrics"]["accepted_cursor"])
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_bytes)
+
     def test_topology_ambiguous_and_cycle_edges_fail_closed_without_ports(self) -> None:
         self._confirm_root_ctrl()
         self._add_same_project_ctrl()
