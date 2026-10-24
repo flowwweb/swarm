@@ -29,11 +29,62 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "c7c53655850838b64eb89ddd75be93716c950a456d8eb26beae57ca25f9c63bb"
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html":"faf99e195b45632928d03770cf16efe8d31a917d4aa6d8f114f5f49680b405dd","skills/swarm/assets/ui/swarm-hq-host.css":"8f8c220167fe79a7b7c9fec0da284d0f34eb6ef537c5f08e4e6cfd7ee0f328ce","skills/swarm/assets/swarm-wordmark.png":"306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
+HQ_SDK_SHA256 = "817a541061bebfbc57b18fa009434902ff28851e5d3009d7ec859ff9dbfa5afc"
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "b020c4681e9c31d851040f3dfa2f0b8cdba6292180486d9b6823409c218906f9", "skills/swarm/assets/ui/swarm-hq-host.css": "1f24aa9615601b5e3fc21bd093a5d5ab28ced69cae476ce7c700ec4ad246b215", "skills/swarm/assets/swarm-wordmark.png": "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
+
+
+PROJECTS_SUPPORT_IMAGES = {
+    "__FLOWWWEB_LOGO__": ("skills/swarm/assets/ui/brand/flowwweb-lockup-v2-light.svg", "image/svg+xml", "57253bfef4d4f26c399dbb1d5fb2f258d663b52d31dd1414ab7c9cfef808d7b3"),
+}
+# Public delivery is separate from inline assets. These exact local bytes retain
+# provenance; an img URL does not provide runtime integrity for future responses.
+PROJECTS_COMPACT_BADGE = (
+    "skills/swarm/assets/ui/brand/road-to-1m-square-transparent.png",
+    "https://flowwweb.com/brand/road-to-1m-square-transparent.png",
+    "d22259dd1524a1bcec13ce13ff117bf098a493d77d653231658583689aba2155",
+    607876,
+)
+PROJECTS_PUBLIC_IMAGES = {
+    "__ROADTO1M_COMPACT__": PROJECTS_COMPACT_BADGE,
+    "__SUPPORT_PORTRAIT__": (
+        "skills/swarm/assets/ui/brand/support-caricature-light.webp",
+        "https://flowwweb.com/brand/swarm/support-caricature-light-20261024-18b223c6.webp",
+        "18b223c6075695c4d0fd28d550466323343caafe717372044c82a553a820b94b",
+        69636,
+    ),
+}
 
 
 TOOLS: tuple[dict[str, Any], ...] = (
+    {
+        "name": "swarm_library_read", "title": "Read Units or Roles",
+        "description": "Read the existing inventory and project-scoped Flow preferences. No dispatch or execution authority.",
+        "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"},
+            "kind": {"type": "string", "enum": ["ROLE", "LAB", "FACTORY"]}},
+            "required": ["project_id", "kind"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
+    {
+        "name": "swarm_flow_save", "title": "Save a project Flow version",
+        "description": "Append a validated Flow version to the existing project brief after explicit acknowledgement. Never run it.",
+        "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"},
+            "expected_digest": {"type": "string"}, "definition": {"type": "object"},
+            "acknowledge": {"type": "boolean", "enum": [True]}},
+            "required": ["project_id", "expected_digest", "definition", "acknowledge"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
+    {
+        "name": "swarm_flow_assign", "title": "Save scoped Flow preferences",
+        "description": "Append an acknowledged scoped Unit or Role preference version to the project brief. Repeat count is planning metadata, not an automatic loop.",
+        "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"},
+            "expected_digest": {"type": "string"}, "assignment": {"type": "object"},
+            "acknowledge": {"type": "boolean", "enum": [True]}},
+            "required": ["project_id", "expected_digest", "assignment", "acknowledge"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
     {
         "name": "swarm_settings_read", "title": "Read SWARM Settings",
         "description": "Read the existing redacted scoped config projection and revision. No host model change is implied.",
@@ -79,6 +130,19 @@ TOOLS: tuple[dict[str, Any], ...] = (
 
 class MCPError(Exception):
     pass
+
+
+def _projects_asset(name: str, digest: str, *, exact_size: int | None = None) -> bytes:
+    path = REPO_ROOT / name
+    info = path.lstat()
+    bound = 524288 if exact_size is None else exact_size
+    if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or info.st_size > bound:
+        raise MCPError("Projects asset must be a bounded regular file")
+    with path.open("rb") as stream:
+        payload = stream.read(bound + 1)
+    if len(payload) > bound or (exact_size is not None and len(payload) != exact_size) or hashlib.sha256(payload).hexdigest() != digest:
+        raise MCPError("Projects asset identity mismatch or size exceeded")
+    return payload
 
 
 class HQApp:
@@ -133,20 +197,21 @@ class HQApp:
         script = '\n<script type="module" data-swarm-mcp-sdk="' + HQ_SDK_SHA256 + '">' + sdk + '</script>\n'
         html = value["html"]
         if self.projects:
-            assets = {}
-            for name, digest in PROJECTS_ASSETS.items():
-                path = REPO_ROOT / name
-                info = path.lstat()
-                if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or info.st_size > 524288:
-                    raise MCPError("Projects asset must be a bounded regular file")
-                payload = path.read_bytes()
-                if hashlib.sha256(payload).hexdigest() != digest:
-                    raise MCPError("Projects asset identity mismatch")
-                assets[name] = payload
+            assets = {name: _projects_asset(name, digest) for name, digest in PROJECTS_ASSETS.items()}
             html = assets["skills/swarm/assets/ui/swarm-hq-projects.html"].decode("utf-8")
             html = html.replace("__CSS__", assets["skills/swarm/assets/ui/swarm-hq-host.css"].decode("utf-8"))
             html = html.replace("__WORDMARK__", "data:image/png;base64," + base64.b64encode(assets["skills/swarm/assets/swarm-wordmark.png"]).decode("ascii"))
             html = html.replace('<script type="module">__SCRIPT__</script>', '')
+            for token, (name, mime_type, digest) in PROJECTS_SUPPORT_IMAGES.items():
+                if token in html:
+                    payload = _projects_asset(name, digest)
+                    html = html.replace(token, "data:" + mime_type + ";base64," + base64.b64encode(payload).decode("ascii"))
+            for token, (name, url, digest, size) in PROJECTS_PUBLIC_IMAGES.items():
+                if token in html:
+                    _projects_asset(name, digest, exact_size=size)
+                    html = html.replace(token, url)
+            if re.search(r"__[A-Z][A-Z0-9_]*__", html):
+                raise MCPError("Projects resource contains an unadmitted placeholder")
         # The original export stays immutable; only this MCP response gains the SDK.
         document = html.replace('</body>', script + '</body>', 1) if '</body>' in html else html + script
         if len(document.encode("utf-8")) > (1179648 if self.projects else 1048576):
@@ -154,8 +219,11 @@ class HQApp:
         return document
 
     def resource(self) -> dict[str, Any]:
-        return {"contents": [{"uri": self.uri, "mimeType": "text/html;profile=mcp-app", "text": self.render(),
-                              "_meta": {"ui": {"csp": {"connectDomains": [], "resourceDomains": []}}}}]}
+        document = self.render()
+        domains = ["https://flowwweb.com"] if self.projects and any(
+            image[1] in document for image in PROJECTS_PUBLIC_IMAGES.values()) else []
+        return {"contents": [{"uri": self.uri, "mimeType": "text/html;profile=mcp-app", "text": document,
+                              "_meta": {"ui": {"csp": {"connectDomains": [], "resourceDomains": domains}}}}]}
 
     def result(self) -> dict[str, Any]:
         value = self.read()
@@ -189,6 +257,30 @@ class SwarmProjection:
             raise MCPError("unknown tool")
         _validate_arguments(spec, arguments)
         app = self._load_app()
+        if name in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign"}:
+            from console.server import ConsoleError, ConsoleConflict
+            try:
+                if name != "swarm_library_read":
+                    return app.project_flow_command({"operation": "save" if name == "swarm_flow_save" else "assign", **arguments})
+                result = app.project_flow_command({"operation": "read", "project_id": arguments["project_id"]})
+                kind = arguments["kind"]
+                if kind == "ROLE":
+                    roles = app.role_manifest_projection()
+                    inventory = {"roles": [_pick(role, ("id", "name", "active_version", "purpose", "owns", "instructions",
+                        "boundaries", "default_skills", "specializations", "accent", "lucide_icon", "avatar"))
+                        for role in roles["roles"] if role["id"].casefold() != "critic"], "scope": "global-definitions"}
+                else:
+                    inventory = app.unit_catalog_projection(kind)
+                    inventory["instances"] = [unit for unit in inventory["instances"] if unit["project_id"] == arguments["project_id"]]
+                if app.project_flow_command({"operation": "read", "project_id": arguments["project_id"]})["source_digest"] != result["source_digest"]:
+                    raise ConsoleConflict("project source changed while reading")
+                return {**result, "kind": kind, "inventory": inventory}
+            except ConsoleConflict:
+                return {"ok": False, "state": "CONFLICT", "project_id": arguments["project_id"],
+                        "message": "Source changed. Reload and reconcile before saving."}
+            except ConsoleError:
+                return {"ok": False, "state": "REJECTED", "project_id": arguments["project_id"],
+                        "message": "Invalid or unavailable scoped source. Keep the draft and reload."}
         if name == "swarm_settings_read":
             return app.config_projection(arguments.get("scope"))
         if name == "swarm_settings_save":
@@ -517,8 +609,10 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
                     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                     if len(encoded.encode("utf-8")) > 262144:
                         raise MCPError("projection exceeds 262144 bytes; narrow the requested scope")
-                    _telemetry(telemetry_path, tool=name, started=started, ok=True, result_bytes=len(encoded.encode("utf-8")))
-                    result = {"content": [{"type": "text", "text": encoded}], "structuredContent": value, "isError": False}
+                    rejected = value.get("ok") is False
+                    _telemetry(telemetry_path, tool=name, started=started, ok=not rejected,
+                               result_bytes=len(encoded.encode("utf-8")), error="projection_rejected" if rejected else "")
+                    result = {"content": [{"type": "text", "text": encoded}], "structuredContent": value, "isError": rejected}
                 except Exception as exc:
                     error = str(exc) if isinstance(exc, MCPError) else "local projection failed"
                     _telemetry(telemetry_path, tool=name, started=started, ok=False, result_bytes=0, error="invalid_arguments" if isinstance(exc, MCPError) else "projection_failed")

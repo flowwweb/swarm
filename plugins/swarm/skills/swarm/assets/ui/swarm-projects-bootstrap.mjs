@@ -4,6 +4,12 @@ import settingsCSS from './swarm-settings.css';
 import {App,applyDocumentTheme,applyHostStyleVariables} from '@swarm/sdk';
 import {usageView,readProjectUsage,latestRequest} from './swarm-usage.mjs';
 import {rosterView,projectDetail,metricView} from './swarm-projects.mjs';
+// Flowwweb consumer-contract-v3: local route preparation only, not deployed.
+export function supportCheckoutURL(amount){
+ if(typeof amount!=='string'||!/^\d+(?:\.\d{1,2})?$/.test(amount))return null;
+ const cents=Math.round(Number(amount)*100);if(!Number.isSafeInteger(cents)||cents<100||cents>1000000)return null;
+ return 'https://flowwweb.com/1M?source=swarm&amount='+encodeURIComponent((cents/100).toFixed(2))+'&checkout=1#support';
+}
 export async function mountProjects() {
 const app=new App({name:'SWARM HQ',version:'1.0.0'},{availableDisplayModes:['fullscreen']},{autoResize:false});
 const $=s=>document.querySelector(s), root=document.documentElement;
@@ -15,6 +21,22 @@ let roster=null,metrics=null,filter='',view='list',generation=0,usageGeneration=
 function theme(ctx){if(ctx?.theme)applyDocumentTheme(ctx.theme);if(ctx?.styles?.variables)applyHostStyleVariables(ctx.styles.variables);}
 app.onhostcontextchanged=theme;
 async function call(name,args={}){const result=await app.callServerTool({name,arguments:args},undefined,{timeout:20000});if(result.isError)throw Error('Unavailable');return result.structuredContent||JSON.parse(result.content.find(c=>c.type==='text').text);}
+document.querySelectorAll('.brand-links img,.support-portrait').forEach(image=>{
+ const fallback=image.nextElementSibling;const hasFallback=fallback?.hasAttribute('data-brand-fallback');
+ if(!hasFallback&&!image.matches('.support-portrait'))return;
+ const failed=()=>{image.hidden=true;if(hasFallback)fallback.hidden=false;};
+ image.addEventListener('error',failed);if(image.complete&&!image.naturalWidth)failed();
+});
+const amount=$('#support-custom'),checkout=$('.support-checkout');
+function supportAmount(){const choice=document.querySelector('[name="support-amount"]:checked').value;amount.hidden=choice!=='custom';const url=supportCheckoutURL(choice==='custom'?amount.value:choice);amount.setCustomValidity(choice==='custom'&&!url?'Enter $1 to $10,000 with up to two decimal places.':'');checkout.dataset.preparedUrl=url||'';}
+document.querySelector('.support-amounts').addEventListener('change',supportAmount);amount.addEventListener('input',supportAmount);supportAmount();
+const externalLinks=new Set(['https://x.com/PeikGabriel','https://github.com/peikgabriel','https://flowwweb.com','https://flowwweb.com/1M','https://flowwweb.com/1M#support']);
+document.addEventListener('click',async event=>{
+ const link=event.target.closest('a[data-external]');if(!link)return;
+ event.preventDefault();if(link===checkout){if(!amount.hidden&&!amount.checkValidity())amount.reportValidity();else text('#support-link-status','Checkout is not available yet.');return;}const url=link.getAttribute('href');if(!externalLinks.has(url))return;
+ try{const result=await app.openLink({url});if(result?.isError)throw Error('Unavailable');text('#support-link-status','');}
+ catch{text('#support-link-status','Could not open this link. Try again.');}
+});
 function projectHref(id){return '#project='+encodeURIComponent(id);}
 function busy(button,on){button.disabled=on;button.setAttribute('aria-busy',String(on));}
 function icon(p){return `<span class="project-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7V5h7l2 2h9v13H3Z"/></svg></span>`;}
@@ -34,7 +56,7 @@ function render(){
 function showDialog(title,html){detailGeneration++;dialogOpener=document.activeElement;text('#inspector-title',title);$('#inspector-body').innerHTML=html;if(!$('#inspector').open)$('#inspector').showModal();$('#close-inspector').focus();}
 $('#close-inspector').onclick=()=>$('#inspector').close();
 $('#inspector').addEventListener('close',()=>{detailGeneration++;if(dialogOpener?.isConnected)dialogOpener.focus();});
-const projectPage=document.createElement('main');projectPage.id='project-page';projectPage.hidden=true;$('.workspace').append(projectPage);
+const projectPage=document.createElement('main');projectPage.id='project-page';projectPage.hidden=true;$('.hq-footer').before(projectPage);
 function projectShell(p,body){const restoreFocus=projectPage.contains(document.activeElement);projectPage.innerHTML=`<header class="page-header"><div><a href="#projects" class="project-back">&larr; Projects</a><h1 tabindex="-1">${escape(p.name)}</h1></div></header>${body}`;if(restoreFocus)projectPage.querySelector('h1').focus();}
 const projectUsageRequests=latestRequest();
 const projectUsagePeriod=value=>value===24?'Last 24 hours':value===168?'Last 7 days':'Last 30 days';
@@ -61,11 +83,52 @@ async function openProject(id){
  projectShell(p,`<section class="project-section"><h2>Overview</h2><dl><dt>Activity</dt><dd>${status(p)}</dd><dt>Current milestone</dt><dd>${escape(data.milestone||'Current milestone unavailable')}</dd><dt>Measured progress</dt><dd>${data.progress===null?'Unknown':escape(String(data.progress))}</dd><dt>Last task update</dt><dd>${data.updated?escape(new Date(data.updated).toLocaleString()):'Unknown'}</dd></dl></section><section class="project-section"><h2>Tasks</h2>${data.taskRows.length?`<ul>${data.taskRows.map(t=>`<li><strong>${escape(t.name)}</strong><span>${escape(t.status)}</span></li>`).join('')}</ul>`:`<p>${data.tasksAvailable?'No retained tasks.':'Task details unavailable.'}</p>`}${data.tasksTruncated?'<p>More tasks unavailable.</p>':''}</section><section class="project-section" id="project-usage" aria-labelledby="project-usage-title"><div class="section-heading"><h2 id="project-usage-title">Usage</h2><div class="period-switch" role="group" aria-label="Project usage period"><button data-project-hours="24" aria-pressed="true">24h</button><button data-project-hours="168" aria-pressed="false">7d</button><button data-project-hours="720" aria-pressed="false">30d</button></div></div><p><strong data-project-usage="total">\u2014</strong> <span class="quiet small" data-project-usage="period">Last 24 hours</span></p><p class="quiet small" data-project-usage="window"></p><p role="status" data-project-usage="status">Loading local observations\u2026</p><p class="quiet small">Locally observed token deltas for this project. Not billing; gaps are not zero.</p></section><details><summary>Diagnostics</summary><code>${escape(id)}</code><p><code>${escape(JSON.stringify(data.cursor||'Cursor unavailable'))}</code></p></details>`);void loadProjectUsage(id,24);
  }catch{if(request===detailGeneration&&selectedProject===id)projectShell(p,'<p role="status">Project details unavailable. Return to Projects and try again.</p>');}
 }
+// One scoped editor; drafts stay in the mounted form, never in a second store.
+function libraryEditor(library,lens){
+ const epoch=detailGeneration,active=()=>epoch===detailGeneration&&!projectPage.hidden;
+ let snapshot=null,uncertain=null,pending=false;
+ projectShell({name:library==='roles'?'Roles':'Units'},`<nav aria-label="Library views"><a class="project-back" href="#${library}">${library==='roles'?'Roles':'Units'}</a> <a class="project-back" href="#${library}/flows">Flows</a> <a class="project-back" href="#${library}/loops">Loops</a></nav><label>Project <select data-library-project>${(roster?.projects||[]).map(p=>`<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('')}</select></label>${library==='units'?'<label>Unit type <select data-library-kind><option value="LAB">Labs</option><option value="FACTORY">Factories</option></select></label>':''}<button data-library-load>Load</button><p role="status" data-library-status></p><div data-library-body></div>`);
+ const q=sel=>projectPage.querySelector(sel),body=q('[data-library-body]'),status=q('[data-library-status]'),picker=q('[data-library-project]');
+ const kind=()=>library==='roles'?'ROLE':q('[data-library-kind]').value;
+ let serial=0;
+ const valid=(v,id,k)=>v?.ok===true&&v.project_id===id&&typeof v.source_digest==='string'&&Array.isArray(v.definitions)&&Array.isArray(v.assignments)&&(!k||v.kind===k);
+ async function read(id,k){const v=await call('swarm_library_read',{project_id:id,kind:k});if(!valid(v,id,k))throw Error('Library could not be confirmed.');return v;}
+ function form(v){
+  const rows=kind()==='ROLE'?v.inventory?.roles:v.inventory?.instances;
+  if(!Array.isArray(rows))throw Error('Inventory unavailable.');
+  const subjects=rows.filter(r=>kind()==='ROLE'?typeof r.id==='string'&&r.active_version:r.project_id===picker.value&&r.subject_version&&r.ctrl_id);
+  body.innerHTML=`<p>${subjects.length} ${kind()==='ROLE'?'roles':'instances'}</p><form data-assignment><label>${kind()==='ROLE'?'Role':'Instance'} <select name="subject" required>${subjects.map((r,i)=>`<option value="${i}">${escape(r.name||r.task_id)}</option>`).join('')}</select></label><label>Flow <select name="flow" required>${v.definitions.map((r,i)=>`<option value="${i}">${escape(r.id)} \u00b7 v${r.version}</option>`).join('')}</select></label><label>Label <input name="label" maxlength="160"></label><label>Notes <textarea name="notes" maxlength="2048"></textarea></label><label>Repeat count <input name="repeat" type="number" min="1" max="9007199254740991" step="1" value="1" required></label><button ${!subjects.length||!v.definitions.length?'disabled':''}>Save assignment</button></form><details ${lens==='flows'?'open':''}><summary>Edit Flow definition</summary><form data-flow><label>Flow <select name="existing"><option value="">New Flow</option>${v.definitions.map((f,i)=>`<option value="${i}">${escape(f.id)} \u00b7 v${f.version}</option>`).join('')}</select></label><label>Definition <textarea name="definition" rows="12" required></textarea></label><button>Save Flow</button></form></details>`;
+  const assignment=q('[data-assignment]'),flow=q('[data-flow]');
+  const selectSubject=()=>{const r=subjects[+assignment.elements.subject.value];if(!r)return;const previous=v.assignments.filter(a=>a.subject_kind===kind()&&a.subject_id===(r.id||r.task_id)&&a.ctrl_id===(kind()==='ROLE'?null:r.ctrl_id)).sort((a,b)=>b.version-a.version)[0];assignment.elements.label.value=previous?.label||'';assignment.elements.notes.value=previous?.notes||'';assignment.elements.repeat.value=previous?.repeat_count||1;const index=v.definitions.findIndex(f=>f.id===previous?.flow_id&&f.version===previous?.flow_version&&f.digest===previous?.flow_digest);if(index>=0)assignment.elements.flow.value=String(index);};
+  assignment.elements.subject.onchange=selectSubject;selectSubject();
+  flow.elements.definition.value=JSON.stringify(v.starter,null,2);flow.elements.existing.onchange=()=>{const f=v.definitions[+flow.elements.existing.value];flow.elements.definition.value=JSON.stringify(flow.elements.existing.value===''?v.starter:{id:f.id,version:Math.max(...v.definitions.filter(d=>d.id===f.id).map(d=>d.version))+1,objective:f.objective,nodes:f.nodes},null,2);};
+  assignment.onsubmit=e=>{e.preventDefault();const r=subjects[+assignment.elements.subject.value],f=v.definitions[+assignment.elements.flow.value],repeat=Number(assignment.elements.repeat.value);if(!r||!f||!Number.isSafeInteger(repeat)||repeat<1)return;const ctrl=kind()==='ROLE'?null:r.ctrl_id,versions=v.assignments.filter(a=>a.subject_kind===kind()&&a.subject_id===(r.id||r.task_id)&&a.ctrl_id===ctrl).map(a=>a.version);save('swarm_flow_assign',{assignment:{version:Math.max(0,...versions)+1,subject_kind:kind(),subject_id:r.id||r.task_id,subject_version:kind()==='ROLE'?r.active_version:r.subject_version,ctrl_id:ctrl,flow_id:f.id,flow_version:f.version,flow_digest:f.digest,label:assignment.elements.label.value,notes:assignment.elements.notes.value,repeat_count:repeat}});};
+  flow.onsubmit=e=>{e.preventDefault();try{save('swarm_flow_save',{definition:JSON.parse(flow.elements.definition.value)});}catch{status.textContent='Enter valid JSON. Your draft is preserved.';}};
+ }
+ async function load(){if(pending)return;const id=picker.value,k=kind(),token=++serial;if(!id){status.textContent='Choose a saved project.';return;}status.textContent='Loading\u2026';try{const v=await read(id,k);if(!active()||token!==serial)return;snapshot=v;form(v);status.textContent='';}catch(e){if(active()&&token===serial)status.textContent=e.message;}}
+ const sameRecord=(r,d)=>Object.keys(d).every(k=>JSON.stringify(r[k])===JSON.stringify(d[k]));
+ async function save(tool,part){
+  if(pending||uncertain||!snapshot)return;
+  const id=picker.value,k=kind(),token=serial,request={project_id:id,expected_digest:snapshot.source_digest,...part,acknowledge:true};pending=true;status.textContent='Saving\u2026';const controls=[...projectPage.querySelectorAll('input,select,textarea,button')];const disabled=controls.map(c=>c.disabled);controls.forEach(c=>c.disabled=true);
+  try{const result=await call(tool,request);if(!valid(result,id))throw Error('Save was not confirmed.');const key=part.assignment?'assignments':'definitions',draft=part.assignment||part.definition,record=result[key].find(r=>sameRecord(r,draft));if(!record?.digest)throw Error('Save receipt did not match.');const fresh=await read(id,k);if(!active()||token!==serial)return;if(fresh.source_digest!==result.source_digest||!fresh[key].some(r=>r.digest===record.digest&&sameRecord(r,draft)))throw Error('Readback changed.');snapshot=fresh;form(fresh);q(part.assignment?'[data-assignment] button':'[data-flow] button')?.focus();status.textContent='Saved';}
+  catch{if(active()&&token===serial){uncertain={tool,part,id,k};status.textContent='Save not confirmed. Draft preserved. Reload to reconcile.';}}
+  finally{pending=false;if(active()){controls.forEach((c,i)=>{if(c.isConnected)c.disabled=disabled[i];});}}
+ }
+ q('[data-library-load]').onclick=async()=>{if(!uncertain){load();return;}const u=uncertain,token=serial;status.textContent='Checking saved data\u2026';try{const fresh=await read(u.id,u.k);if(!active()||token!==serial||picker.value!==u.id||kind()!==u.k)return;const key=u.part.assignment?'assignments':'definitions',draft=u.part.assignment||u.part.definition;if(fresh[key].some(r=>r.digest&&sameRecord(r,draft))){uncertain=null;snapshot=fresh;form(fresh);q(u.part.assignment?'[data-assignment] button':'[data-flow] button')?.focus();status.textContent='Saved';}else{const draftValues=[...body.querySelectorAll('input,textarea,select')].map(c=>[c.name,c.value]);uncertain=null;snapshot=fresh;form(fresh);for(const [name,value] of draftValues){const control=[...body.querySelectorAll('input,textarea,select')].find(c=>c.name===name);if(control)control.value=value;}status.textContent='Source reloaded. Review your preserved draft before saving again.';}}catch{if(active())status.textContent='Could not reconcile. Draft preserved.';}};
+ picker.onchange=()=>{uncertain=null;snapshot=null;body.replaceChildren();load();};if(q('[data-library-kind]'))q('[data-library-kind]').onchange=picker.onchange;load();
+}
+function hideSupport(){ $('#support-page').hidden=true;$('#support').classList.remove('selected');$('#support').removeAttribute('aria-current'); }
 function restoreRoute(){
- const section={roles:'Roles',flows:'Flows',loops:'Loops',units:'Units'}[location.hash.slice(1)];
+ hideSupport();
+ if(location.hash==='#support'){
+  detailGeneration++;selectedProject=null;projectPage.hidden=true;settingsPage.hidden=true;$('#main').hidden=true;$('#support-page').hidden=false;
+  $('#all-projects').classList.remove('selected');$('#settings').classList.remove('selected');$('#settings').removeAttribute('aria-current');$('#support').classList.add('selected');$('#support').setAttribute('aria-current','page');$('#support-title').focus();return;
+ }
+
+ const [library,lens]=location.hash.slice(1).split('/');const section=['units','roles'].includes(library)&&(!lens||['flows','loops'].includes(lens))?{units:'Units',roles:'Roles'}[library]:null;
  if(section){detailGeneration++;selectedProject=null;$('#main').hidden=true;settingsPage.hidden=true;projectPage.hidden=false;
  $('#settings').classList.remove('selected');$('#settings').removeAttribute('aria-current');$('#all-projects').classList.remove('selected');
- projectShell({name:section},`<p role="status">${section} are unavailable from this connection.</p>${section==='Units'?'<p>Units contain Labs and Factories. Their records are not available yet.</p>':''}`);projectPage.querySelector('h1').focus();return;}
+ libraryEditor(library,lens);projectPage.querySelector('h1').focus();return;}
  const match=location.hash.match(/^#project=(.+)$/);let id=null;try{id=match?decodeURIComponent(match[1]):null;}catch{}
  if(id&&roster?.projects.some(p=>p.id===id)){openProject(id);return;}
  detailGeneration++;selectedProject=null;projectPage.hidden=true;settingsPage.hidden=true;$('#main').hidden=false;
@@ -90,14 +153,15 @@ const settingsStyle=document.createElement('style');settingsStyle.textContent=se
 const settingsPage=document.createElement('main');settingsPage.id='settings-page';settingsPage.hidden=true;
 const closeSettings=document.createElement('button');closeSettings.textContent='\u00d7';closeSettings.className='icon-action';closeSettings.setAttribute('aria-label','Close settings');closeSettings.title='Close settings';
 const settingsPanel=document.createElement('section');settingsPage.append(closeSettings,settingsPanel);
-$('.workspace').append(settingsPage);
+$('.hq-footer').before(settingsPage);
 let settingsMounted=false;
-function leaveSettings(){projectPage.hidden=true;selectedProject=null;detailGeneration++;settingsPage.hidden=true;$('#main').hidden=false;$('#settings').classList.remove('selected');$('#settings').removeAttribute('aria-current');$('#all-projects').classList.add('selected');$('#settings').focus();}
+function leaveSettings(){hideSupport();projectPage.hidden=true;selectedProject=null;detailGeneration++;settingsPage.hidden=true;$('#main').hidden=false;$('#settings').classList.remove('selected');$('#settings').removeAttribute('aria-current');$('#all-projects').classList.add('selected');$('#settings').focus();}
 closeSettings.onclick=leaveSettings;
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!settingsPage.hidden){event.preventDefault();leaveSettings();}});
 const projectsHome=$('#all-projects').onclick;$('#all-projects').onclick=()=>{leaveSettings();projectsHome();if(location.hash!=='#projects')location.hash='projects';};
 $('#settings').disabled=true;
 $('#settings').onclick=async()=>{
+ hideSupport();
  detailGeneration++;selectedProject=null;projectPage.hidden=true;$('#main').hidden=true;settingsPage.hidden=false;$('#all-projects').classList.remove('selected');$('#settings').classList.add('selected');$('#settings').setAttribute('aria-current','page');closeSettings.focus();
  if(settingsMounted)return;settingsMounted=true;
  let scopes=[];
@@ -123,5 +187,5 @@ async function loadUsage(value){hours=value;const request=++usageGeneration;last
 document.querySelectorAll('[data-hours]').forEach(b=>b.onclick=()=>loadUsage(+b.dataset.hours));
 $('#refresh').onclick=()=>{if(refreshPending)return;refresh();loadUsage(hours);};
 app.onteardown=async()=>{generation++;usageGeneration++;detailGeneration++;root.dataset.swarmHost='closed';selectedProject=null;projectPage.hidden=true;$('#settings').disabled=true;settingsPage.hidden=true;$('#main').hidden=false;return {};};
-try{await app.connect(undefined,{timeout:5000});theme(app.getHostContext());root.dataset.swarmHost='initialized';$('#settings').disabled=!app.getHostCapabilities()?.serverTools;if(['#roles','#flows','#loops','#units'].includes(location.hash))restoreRoute();await Promise.all([refresh(),loadUsage(hours)]);}catch{root.dataset.swarmHost='unavailable';text('#roster-status','Host connection unavailable. Reopen SWARM to reconnect.');text('.usage-coverage','Usage unavailable while disconnected.');text('#attention-copy','Attention items are unavailable.');}
+try{await app.connect(undefined,{timeout:5000});theme(app.getHostContext());root.dataset.swarmHost='initialized';$('#settings').disabled=!app.getHostCapabilities()?.serverTools;if(/^#(?:roles|units)(?:\/(?:flows|loops))?$|^#support$/.test(location.hash))restoreRoute();await Promise.all([refresh(),loadUsage(hours)]);}catch{root.dataset.swarmHost='unavailable';text('#roster-status','Host connection unavailable. Reopen SWARM to reconnect.');text('.usage-coverage','Usage unavailable while disconnected.');text('#attention-copy','Attention items are unavailable.');}
 }

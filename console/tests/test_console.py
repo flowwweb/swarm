@@ -47,6 +47,100 @@ from runtime import (  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
+    def test_scoped_role_flow_loop_preferences_persist_without_dispatch(self) -> None:
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        app = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
+        read = lambda instance: instance.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        initial = read(app)
+        self.assertEqual(initial["assignments"], [])  # Historical briefs need no migration.
+        saved = app.project_flow_command(dict(operation="save", project_id="project:alpha",
+            expected_digest=initial["source_digest"], definition=initial["starter"], acknowledge=True))
+        flow = saved["definitions"][0]
+        roles_before = app.role_manifest_projection()
+        role = next(item for item in roles_before["roles"] if item["id"] == "manager")
+        draft = dict(version=1, subject_kind="ROLE", subject_id="manager", subject_version=role["active_version"],
+            ctrl_id=None, flow_id=flow["id"], flow_version=flow["version"], flow_digest=flow["digest"],
+            label="My project manager", notes="Check the narrow evidence first", repeat_count=3)
+        request = dict(operation="assign", project_id="project:alpha", expected_digest=saved["source_digest"],
+            assignment=draft, acknowledge=True)
+        ledger_before = app.progress_ledger.replay()
+        result = app.project_flow_command(request)
+        first = result["assignments"][0]
+        self.assertEqual(first["repeat_count"], 3)
+        retained = brief.read_bytes()
+        restarted = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
+        self.assertEqual(read(restarted), result)
+        self.assertEqual(brief.read_bytes(), retained)
+        self.assertEqual(restarted.role_manifest_projection(), roles_before)
+        self.assertEqual(restarted.progress_ledger.replay(), ledger_before)
+        with self.assertRaises(console.ConsoleConflict):
+            restarted.project_flow_command(request)
+        invalid = [dict(repeat_count=x) for x in (True, 0, 2**53, 1.5)] + [
+            dict(subject_version="stale"), dict(subject_id="not-a-role"), dict(ctrl_id="foreign-ctrl"),
+            dict(flow_digest="sha256:" + "0" * 64), dict(flow_version=99), dict(version=1),
+            dict(version=3), dict(subject_kind="TASK"), dict(subject_kind=[]), dict(authority="execute"), dict(notes="bad\x00text")]
+        for changes in invalid:
+            with self.subTest(changes=changes), self.assertRaises(console.ConsoleError):
+                restarted.project_flow_command({**request, "expected_digest":result["source_digest"],
+                    "assignment":{**draft, "version":2, **changes}})
+            self.assertEqual(brief.read_bytes(), retained)
+            self.assertEqual(restarted.progress_ledger.replay(), ledger_before)
+        with self.assertRaises(console.ConsoleError):
+            restarted.project_flow_command({**request, "project_id":"project:missing"})
+        with self.assertRaises(console.ConsoleError):
+            restarted.project_flow_command({**request, "expected_digest":result["source_digest"], "acknowledge":False})
+        revised = restarted.project_flow_command({**request, "expected_digest":result["source_digest"],
+            "assignment":{**draft, "version":2, "repeat_count":101, "label":"Revised project label"}})
+        self.assertEqual(revised["assignments"][0], first)
+        self.assertEqual([item["version"] for item in revised["assignments"]], [1, 2])
+        self.assertEqual(read(console.App(self.codex_home, self.config)), revised)
+        self.assertEqual(restarted.progress_ledger.replay(), ledger_before)
+        self.assertEqual(app.auto_bridge.mock_calls, [])
+        self.assertEqual(restarted.auto_bridge.mock_calls, [])
+        # Retained data is validated too, not only the HTTP draft. A forged
+        # digest, scope identity or version history must fail before projection.
+        document, _ = console.parse_project_brief_markdown(brief.read_text(encoding="utf-8"))
+        for changes in ({"digest":"sha256:" + "0" * 64}, {"ctrl_id":"other"}, {"version":9}):
+            corrupt = copy.deepcopy(document)
+            corrupt["flow_assignments"][0].update(changes)
+            with self.subTest(retained=changes), self.assertRaises(console.ProjectModelError):
+                console.parse_project_brief_markdown(markdown_fixture(corrupt))
+
+    def test_role_customization_restart_and_unowned_assignment_fields(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        role = next(item for item in app.role_manifest_projection()["roles"] if item["id"] == "manager")
+        draft = {key: role[key] for key in (
+            "name", "purpose", "owns", "instructions", "boundaries", "default_skills",
+            "specializations", "avatar_asset_digest", "accent",
+        )}
+        request = dict(command="ROLE_MANIFEST_REVISE", role_id="manager",
+            event_id="role-persistence-probe", dedupe_key="role-persistence-probe",
+            expected_active_version=role["active_version"], manifest={**draft, "accent": "#123456"},
+            provenance="explicit-local-role-customization", observed_at_ms=10)
+        saved = app.role_manifest_command(request)
+        saved_readback = app.role_manifest_projection()
+        restarted = console.App(self.codex_home, self.config)
+        retained = restarted.role_manifest_projection()
+        self.assertEqual(retained, saved_readback)
+        self.assertEqual(saved["receipt"]["status"], "appended")
+        changed = next(item for item in retained["roles"] if item["id"] == "manager")
+        self.assertEqual(changed["accent"], "#123456")
+        self.assertNotEqual(changed["active_version"], role["active_version"])
+        self.assertEqual(restarted.role_manifest_command(request)["receipt"]["status"], "unchanged")
+        before = restarted.progress_ledger.replay()
+        # The existing command is global. Never silently apply a purported
+        # project/CTRL override or Flow/Loop assignment as a global role edit.
+        for field in ("project_id", "ctrl_id", "flow_id", "loop_id"):
+            with self.subTest(field=field), self.assertRaises(console.ConsoleError):
+                restarted.role_manifest_command({**request, field: "not-owned"})
+            self.assertEqual(restarted.progress_ledger.replay(), before)
+        with self.assertRaises(console.ConsoleError):
+            restarted.role_manifest_command({**request, "event_id": "stale-role-edit",
+                "dedupe_key": "stale-role-edit", "manifest": {**draft, "accent": "#654321"}})
+        self.assertEqual(restarted.progress_ledger.replay(), before)
+
     def test_flow_http_save_restart_and_stale_preview(self) -> None:
         from contextlib import contextmanager
         from console.tests.test_project_model_views import project_fixture, markdown_fixture
@@ -854,6 +948,37 @@ class SwarmConsoleTests(unittest.TestCase):
             else:
                 self.assertEqual(restarted.progress_ledger.replay()["ticket_identities"]["project:alpha"]["assignments"],
                     {"native-lab": 1, "native-factory": 2})
+        self.assertEqual(len(sent), 4)
+
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        brief = self.root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        current = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        current = app.project_flow_command(dict(operation="save", project_id="project:alpha",
+            expected_digest=current["source_digest"], definition=current["starter"], acknowledge=True))
+        flow = current["definitions"][0]
+        ledger_before = app.progress_ledger._state.path.read_bytes()
+        for kind in ("LAB", "FACTORY"):
+            task_id = "native-" + kind.lower()
+            state = app.progress_ledger.replay()["task_manifests"][task_id]
+            assignment = dict(version=1, subject_kind=kind, subject_id=task_id,
+                subject_version=state["versions"][state["active_version"]]["manifest_digest"], ctrl_id="ctrl-a",
+                flow_id=flow["id"], flow_version=flow["version"], flow_digest=flow["digest"],
+                label="Scoped unit", notes="Planning only", repeat_count=2)
+            # Host observation alone is mocked; persisted task binding and scope checks are real.
+            with mock.patch.object(app, "_observed_scope"):
+                before = brief.read_bytes()
+                with self.assertRaises(console.ConsoleError):
+                    app.project_flow_command(dict(operation="assign", project_id="project:alpha",
+                        expected_digest=current["source_digest"], acknowledge=True,
+                        assignment={**assignment, "ctrl_id":"other-ctrl"}))
+                self.assertEqual(brief.read_bytes(), before)
+                current = app.project_flow_command(dict(operation="assign", project_id="project:alpha",
+                    expected_digest=current["source_digest"], acknowledge=True, assignment=assignment))
+        self.assertEqual(len(current["assignments"]), 2)
+        self.assertEqual(console.App(self.codex_home, self.config).project_flow_command(
+            dict(operation="read", project_id="project:alpha")), current)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_before)
         self.assertEqual(len(sent), 4)
 
     def test_work_unit_submission_rechecks_custody_before_native_dispatch(self) -> None:

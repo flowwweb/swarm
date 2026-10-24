@@ -86,6 +86,7 @@ from project_model_views import (  # noqa: E402
     parse_project_brief_markdown,
     project_schema1_views,
     validate_flow_definition,
+    validate_flow_assignment,
     mutate_project_brief,
     create_flow_draft,
 )
@@ -14852,14 +14853,16 @@ class App:
             observed = {block["block_id"]: block for block in projection["blocks"].values() if block["task_id"] == task_id}
             blocks = [{**block, "lifecycle_state": observed.get(block["block_id"], {}).get("lifecycle_state", "UNKNOWN")} for block in manifest["blocks"]]
             children = [item["task_id"] for item in projection["task_creation_bindings"].values() if item["parent_edge"]["parent_task_id"] == task_id]
-            instances.append({"outcome_acceptance": "UNKNOWN", "task_id": task_id, "name": manifest["task_name"], "project_id": manifest["project_id"], "ctrl_id": manifest["ctrl_id"], "coordinator_id": task_id, "role_scope": manifest["role_scope"], "work_unit": unit, "blocks": blocks, "child_task_ids": children})
+            instances.append({"outcome_acceptance": "UNKNOWN", "task_id": task_id, "subject_version": manifest["manifest_digest"], "name": manifest["task_name"], "project_id": manifest["project_id"], "ctrl_id": manifest["ctrl_id"], "coordinator_id": task_id, "role_scope": manifest["role_scope"], "work_unit": unit, "blocks": blocks, "child_task_ids": children})
         return {"ok": True, "schema_version": 1, "unit_kind": kind, "manifest_contract": contract, collection: labs, "instances": instances, "read_only": True}
 
     def project_flow_command(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Edit project definitions or inspect a next-task preview, never dispatch."""
         operation = payload.get("operation") if isinstance(payload, dict) else None
         fields = {"operation", "project_id"}
-        if operation == "save":
+        if operation == "assign":
+            fields |= {"expected_digest", "assignment", "acknowledge"}
+        elif operation == "save":
             fields |= {"expected_digest", "definition", "acknowledge"}
         elif operation == "preview":
             fields |= {"expected_digest", "flow_id", "version", "flow_digest"}
@@ -14879,6 +14882,24 @@ class App:
                 raise ConsoleError("Flow brief belongs to another project")
             if operation != "read" and payload["expected_digest"] != digest:
                 raise ConsoleConflict("Flow changed; reload before saving or previewing")
+            if operation == "assign":
+                if payload["acknowledge"] is not True:
+                    raise ConsoleError("saving a Flow assignment requires acknowledgement")
+                draft = payload["assignment"]
+                required = {"version", "subject_kind", "subject_id", "subject_version", "ctrl_id",
+                            "flow_id", "flow_version", "flow_digest", "label", "notes", "repeat_count"}
+                if not isinstance(draft, dict) or set(draft) != required:
+                    raise ConsoleError("Flow assignment draft fields are invalid")
+                identity = {key: draft[key] for key in ("subject_kind", "subject_id", "ctrl_id")}
+                record = {**draft, "id": "assignment-" + _auto_digest(identity)}
+                record = validate_flow_assignment({**record, "digest": "sha256:" + _auto_digest(record)}, document.get("flow_definitions", []))
+                self._require_flow_assignment_subject(project_id, record)
+                digest = mutate_project_brief(path, expected_digest=digest, operation="create", collection="flow_assignments",
+                    record_id=record["id"], changes={key: value for key, value in record.items() if key != "id"},
+                    updated_at=datetime.now(UTC).isoformat())
+                document, current_digest = parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=root)
+                if current_digest != digest:
+                    raise ConsoleConflict("Flow assignment changed after saving; reload to reconcile")
             if operation == "save":
                 if payload["acknowledge"] is not True:
                     raise ConsoleError("saving a Flow requires acknowledgement")
@@ -14893,7 +14914,8 @@ class App:
                 if current_digest != digest:
                     raise ConsoleConflict("Flow changed after saving; reload to reconcile")
             result = {"ok": True, "project_id": project_id, "source_digest": digest,
-                "definitions": document.get("flow_definitions", []), "starter": create_flow_draft(), "claim_limit": "Saved project definitions and previews only; no task dispatch or runtime run pinning."}
+                "definitions": document.get("flow_definitions", []), "assignments": document.get("flow_assignments", []),
+                "starter": create_flow_draft(), "claim_limit": "Saved project definitions, scoped preferences and previews only. Assignment history pins source versions; it does not prove current runtime binding. Repetition is manual planning metadata, never a trigger or task dispatch."}
             if operation == "preview":
                 definition = next((item for item in result["definitions"] if item["id"] == payload["flow_id"] and type(payload["version"]) is int and item["version"] == payload["version"]), None)
                 if definition is None or definition["digest"] != payload["flow_digest"]:
@@ -14922,6 +14944,28 @@ class App:
             return result
         except ProjectModelError as exc:
             raise ConsoleError(str(exc)) from exc
+
+    def _require_flow_assignment_subject(self, project_id: str, assignment: dict[str, Any]) -> None:
+        """Validate scope without editing shared roles, task identities or dispatching."""
+        ctrl_id = assignment["ctrl_id"]
+        if ctrl_id is not None:
+            self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
+        if assignment["subject_kind"] == "ROLE":
+            role = next((item for item in self.role_manifest_projection()["roles"]
+                         if item["id"] == assignment["subject_id"] and item["id"].casefold() != "critic"), None)
+            version = role["active_version"] if role else None
+        else:
+            projection = self.progress_ledger.replay()
+            task_id = assignment["subject_id"]
+            state = projection["task_manifests"].get(task_id)
+            manifest = state["versions"][state["active_version"]] if state else None
+            binding = projection["task_creation_bindings"].get(projection["task_creation_operations_by_task"].get(task_id))
+            if (not manifest or not binding or manifest["project_id"] != project_id or manifest["ctrl_id"] != ctrl_id
+                    or manifest.get("work_unit", {}).get("kind") != assignment["subject_kind"]):
+                raise ConsoleError("Flow assignment requires an exact bound Unit in this project and CTRL")
+            version = manifest["manifest_digest"]
+        if version != assignment["subject_version"]:
+            raise ConsoleConflict("Flow assignment subject version is missing or stale; reload")
 
     def prepare_work_unit(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Prepare the existing task-creation envelope; dispatch owns confirmation."""

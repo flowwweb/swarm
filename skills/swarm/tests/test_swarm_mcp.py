@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -29,6 +30,172 @@ def call(process: subprocess.Popen[str], request: dict) -> dict:
 
 
 class SwarmMCPTests(unittest.TestCase):
+    def test_library_mcp_save_readback_restart_and_invalid_write(self):
+        sys.path.insert(0, str(mcp.REPO_ROOT))
+        from console.server import App
+        from console.tests.test_console import SwarmConsoleTests
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        fixture = SwarmConsoleTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        brief = fixture.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        bridge = Mock()
+        app = App(fixture.codex_home, fixture.config, auto_bridge=bridge)
+        projection = mcp.SwarmProjection()
+        projection._app = app
+        scope = {"project_id":"project:alpha", "kind":"ROLE"}
+        initial = projection.call("swarm_library_read", scope)
+        self.assertEqual(len(initial["inventory"]["roles"]), 24)
+        saved = projection.call("swarm_flow_save", {"project_id":"project:alpha",
+            "expected_digest":initial["source_digest"], "definition":initial["starter"], "acknowledge":True})
+        role = next(r for r in initial["inventory"]["roles"] if r["id"] == "manager")
+        flow = saved["definitions"][0]
+        assignment = dict(version=1, subject_kind="ROLE", subject_id="manager", subject_version=role["active_version"],
+            ctrl_id=None, flow_id=flow["id"], flow_version=flow["version"], flow_digest=flow["digest"],
+            label="My manager", notes="Planning note", repeat_count=2)
+        request = dict(project_id="project:alpha", expected_digest=saved["source_digest"], acknowledge=True, assignment=assignment)
+        assigned = projection.call("swarm_flow_assign", request)
+        before = brief.read_bytes()
+        projection._app = App(fixture.codex_home, fixture.config, auto_bridge=bridge)
+        readback = projection.call("swarm_library_read", scope)
+        self.assertEqual(readback["assignments"], assigned["assignments"])
+        self.assertEqual(readback["source_digest"], assigned["source_digest"])
+        self.assertEqual(projection.call("swarm_flow_assign", request)["state"], "CONFLICT")
+        for change in ({"acknowledge":False}, {"acknowledge":1}, {"path":"elsewhere"}):
+            with self.assertRaises(mcp.MCPError):
+                projection.call("swarm_flow_assign", {**request, **change})
+        rejected = projection.call("swarm_flow_assign", {**request, "expected_digest":assigned["source_digest"],
+            "assignment":{**assignment, "version":2, "repeat_count":0}})
+        self.assertEqual(rejected["state"], "REJECTED")
+        self.assertFalse(rejected["ok"])
+        self.assertEqual(brief.read_bytes(), before)
+        self.assertEqual(bridge.mock_calls, [])
+        # The real MCP wire marks conflicts as errors and retains structured scope.
+        wire = {"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":"swarm_flow_assign", "arguments":request}}
+        with patch.object(mcp.SwarmProjection, "_load_app", return_value=projection._app), patch.object(sys, "stdin", io.StringIO(json.dumps(wire))), patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+            mcp.serve(telemetry_path=fixture.root / "mcp-test.jsonl")
+        result = json.loads(output.getvalue())["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["structuredContent"]["state"], "CONFLICT")
+        self.assertEqual(result["structuredContent"]["project_id"], "project:alpha")
+        event = json.loads((fixture.root / "mcp-test.jsonl").read_text().splitlines()[-1])
+        self.assertFalse(event["success"])
+        self.assertNotIn("Planning note", json.dumps(event))
+
+    @contextmanager
+    def support_resource(self, root, body):
+        """Exercise the real pinned image admission with an isolated template."""
+        names = list(mcp.PROJECTS_ASSETS)
+        files = {names[0]: ('<!doctype html><style>__CSS__</style><body>' + body + '<script type="module">__SCRIPT__</script></body>').encode(),
+                 names[1]: b'body{color:black}', names[2]: (mcp.REPO_ROOT / names[2]).read_bytes()}
+        for name, _, digest in mcp.PROJECTS_SUPPORT_IMAGES.values():
+            files[name] = (mcp.REPO_ROOT / name).read_bytes()
+            self.assertEqual(hashlib.sha256(files[name]).hexdigest(), digest)
+        for name, _, digest, size in mcp.PROJECTS_PUBLIC_IMAGES.values():
+            files[name] = (mcp.REPO_ROOT / name).read_bytes()
+            self.assertEqual(len(files[name]), size)
+            self.assertEqual(hashlib.sha256(files[name]).hexdigest(), digest)
+        for name, payload in files.items():
+            target = root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+        pins = {name: hashlib.sha256(files[name]).hexdigest() for name in names}
+        path, digest, _ = self.hq_export(root)
+        with patch.object(mcp, 'REPO_ROOT', root), patch.dict(mcp.PROJECTS_ASSETS, pins, clear=True):
+            yield mcp.HQApp(path, digest, projects=True)
+
+    def test_support_exact_images_admitted_without_snapshot_write(self):
+        import base64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            body = ''.join('<img src="' + token + '">' for token in mcp.PROJECTS_SUPPORT_IMAGES)
+            with self.support_resource(root, body) as app:
+                before = app.path.read_bytes()
+                rendered = app.resource()['contents'][0]['text']
+                for token, (name, mime, _) in mcp.PROJECTS_SUPPORT_IMAGES.items():
+                    self.assertNotIn(token, rendered)
+                    self.assertIn('data:' + mime + ';base64,' + base64.b64encode((root / name).read_bytes()).decode(), rendered)
+                self.assertLessEqual(len(rendered.encode()), 1179648)
+                self.assertEqual(before, app.path.read_bytes())
+                self.assertEqual(app.uri, 'ui://swarm/hq/' + hashlib.sha256(rendered.encode()).hexdigest() + '.html')
+
+    def test_support_missing_changed_and_oversized_images_fail_closed(self):
+        for token, (name, _, _) in mcp.PROJECTS_SUPPORT_IMAGES.items():
+            for failure in ('missing', 'changed', 'oversized'):
+                with self.subTest(token=token, failure=failure), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    with self.support_resource(root, '<img src="' + token + '">') as app:
+                        target = root / name
+                        if failure == 'missing':
+                            target.unlink()
+                        else:
+                            target.write_bytes(b'changed' if failure == 'changed' else b'x' * 524289)
+                        with self.assertRaises((OSError, mcp.MCPError)):
+                            app.resource()
+
+    def test_support_unknown_badge_and_expanded_resource_limit_fail_closed(self):
+        for body, error in (('<img src="__ROADTO1M_LOGO__">', 'unadmitted placeholder'),
+                            ('<img src="__FLOWWWEB_LOGO__">' * 224, 'exceeds its bound')):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(mcp.MCPError, error):
+                    with self.support_resource(Path(directory), body):
+                        self.fail('Invalid resource was admitted')
+
+    def test_compact_badge_uses_exact_public_url_and_only_resource_origin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.support_resource(Path(directory), '<footer><img src="__ROADTO1M_COMPACT__"></footer>') as app:
+                resource = app.resource()['contents'][0]
+                name, url, digest, _ = mcp.PROJECTS_COMPACT_BADGE
+                self.assertIn('<footer><img src="' + url + '"></footer>', resource['text'])
+                self.assertNotIn('__ROADTO1M_COMPACT__', resource['text'])
+                self.assertNotIn('data:image/png;base64,', resource['text'])
+                self.assertEqual(resource['_meta']['ui']['csp'], {'connectDomains': [], 'resourceDomains': ['https://flowwweb.com']})
+                self.assertLessEqual(len(resource['text'].encode()), 1179648)
+                # Remote provenance does not relax the ordinary inline image cap.
+                with self.assertRaises(mcp.MCPError):
+                    mcp._projects_asset(name, digest)
+
+    def test_compact_badge_local_provenance_missing_or_changed_withholds_resource(self):
+        for failure in ('missing', 'same_size_changed', 'short', 'growing'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with self.support_resource(root, '<img src="__ROADTO1M_COMPACT__">') as app:
+                    name, _, _, size = mcp.PROJECTS_COMPACT_BADGE
+                    target = root / name
+                    if failure == 'missing':
+                        target.unlink()
+                    else:
+                        target.write_bytes(b'x' * (size + {'same_size_changed': 0, 'short': -1, 'growing': 1}[failure]))
+                    with self.assertRaises((OSError, mcp.MCPError)):
+                        app.resource()
+
+    def test_portrait_public_admission_preserves_exact_local_provenance_and_alt(self):
+        token = '__SUPPORT_PORTRAIT__'
+        name, url, digest, size = mcp.PROJECTS_PUBLIC_IMAGES[token]
+        self.assertEqual(url, 'https://flowwweb.com/brand/swarm/support-caricature-light-20261024-18b223c6.webp')
+        for failure in (None, 'missing', 'changed', 'short', 'growing'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with self.support_resource(root, '<img src="' + token + '" alt="Portrait unavailable">') as app:
+                    target = root / name
+                    before = target.read_bytes()
+                    self.assertEqual(hashlib.sha256(before).hexdigest(), digest)
+                    if failure:
+                        if failure == 'missing':
+                            target.unlink()
+                        else:
+                            target.write_bytes(b'x' * (size + {'changed': 0, 'short': -1, 'growing': 1}[failure]))
+                        with self.assertRaises((OSError, mcp.MCPError)):
+                            app.resource()
+                    else:
+                        resource = app.resource()['contents'][0]
+                        self.assertIn('<img src="' + url + '" alt="Portrait unavailable">', resource['text'])
+                        self.assertNotIn('data:image/webp;base64,', resource['text'])
+                        self.assertEqual(resource['_meta']['ui']['csp'],
+                                         {'connectDomains': [], 'resourceDomains': ['https://flowwweb.com']})
+                        self.assertEqual(before, target.read_bytes())
+
     def test_selected_project_preserves_retained_ticket_fields_only_in_its_scope(self):
         row = {"id": "host-task", "project_id": "project-a", "state": "active",
                "display_id": "SWRM-1", "label": "Retained task name", "private": "omit"}
@@ -115,8 +282,8 @@ class SwarmMCPTests(unittest.TestCase):
                 self.assertEqual(mcp.serve(hq_app=app), 0)
             rows = [json.loads(line) for line in output.getvalue().splitlines()]
             self.assertIn("resources", rows[0]["result"]["capabilities"])
-            self.assertEqual(rows[1]["result"]["tools"][:5], list(mcp.TOOLS))
-            self.assertEqual(len(rows[1]["result"]["tools"]), 6)
+            self.assertEqual(rows[1]["result"]["tools"][:8], list(mcp.TOOLS))
+            self.assertEqual(len(rows[1]["result"]["tools"]), 9)
             tool = rows[1]["result"]["tools"][-1]
             self.assertEqual(tool["name"], "swarm_hq_view")
             self.assertEqual(tool["_meta"], {"ui": {"resourceUri": app.uri}, "openai/ui": {"entrypoints": [{"type": "global"}]}})
@@ -222,7 +389,7 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertTrue(rows[7]["result"]["isError"])
             self.assertFalse(rows[8]["result"]["isError"])
             self.assertFalse(rows[9]["result"]["isError"])
-            self.assertEqual(len(rows[-1]["result"]["tools"]), 5)
+            self.assertEqual(len(rows[-1]["result"]["tools"]), 8)
             self.assertNotIn("SECRET", output.getvalue() + telemetry.read_text())
 
     def test_output_cap_and_scratch_validation(self) -> None:

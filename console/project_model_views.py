@@ -79,6 +79,40 @@ def create_flow_draft() -> dict[str, Any]:
     return {"id": "create", "version": 1, "objective": "Create a useful, verified result", "nodes": nodes}
 
 
+def validate_flow_assignment(value: Any, definitions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Project-scoped preferences only; repetition never grants dispatch authority."""
+    fields = {"id", "version", "subject_kind", "subject_id", "subject_version", "ctrl_id",
+              "flow_id", "flow_version", "flow_digest", "label", "notes", "repeat_count", "digest"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ProjectModelError("Flow assignment fields are invalid")
+    if not isinstance(value["subject_kind"], str) or value["subject_kind"] not in {"ROLE", "LAB", "FACTORY"}:
+        raise ProjectModelError("Flow assignment subject kind is invalid")
+    for key in ("subject_id", "subject_version", "flow_id"):
+        if not isinstance(value[key], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value[key]):
+            raise ProjectModelError("Flow assignment identity is invalid")
+    if value["ctrl_id"] is not None and (not isinstance(value["ctrl_id"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value["ctrl_id"])):
+        raise ProjectModelError("Flow assignment CTRL is invalid")
+    if value["subject_kind"] != "ROLE" and value["ctrl_id"] is None:
+        raise ProjectModelError("Unit Flow assignment requires its owning CTRL")
+    if any(type(value[k]) is not int or value[k] < 1 for k in ("version", "flow_version")):
+        raise ProjectModelError("Flow assignment versions are invalid")
+    # JSON numbers cross the browser boundary: preserve exact integer identity,
+    # not a product quota. This is metadata and never starts repeated execution.
+    if type(value["repeat_count"]) is not int or not 1 <= value["repeat_count"] <= 2**53 - 1:
+        raise ProjectModelError("Flow repetition must be a positive JSON-safe integer")
+    for key, limit in (("label", 160), ("notes", 2048)):
+        if not isinstance(value[key], str) or len(value[key]) > limit or any(ord(c) < 32 and c not in "\n\t" for c in value[key]):
+            raise ProjectModelError("Flow assignment customization is invalid")
+    identity = {k: value[k] for k in ("subject_kind", "subject_id", "ctrl_id")}
+    if value["id"] != "assignment-" + _digest(identity):
+        raise ProjectModelError("Flow assignment identity conflicts with its scope")
+    if not any((d["id"], d["version"], d["digest"]) == (value["flow_id"], value["flow_version"], value["flow_digest"]) for d in definitions):
+        raise ProjectModelError("Flow assignment requires an exact retained Flow version")
+    if value["digest"] != "sha256:" + _digest({k: v for k, v in value.items() if k != "digest"}):
+        raise ProjectModelError("Flow assignment digest mismatch")
+    return value
+
+
 def validate_flow_definition(value: Any) -> dict[str, Any]:
     """Validate project-owned planning data, never execution or acceptance authority."""
     fields = {"id", "version", "objective", "nodes", "digest"}
@@ -335,6 +369,15 @@ def parse_project_brief_markdown(text: str, *, project_id: str | None = None,
         if identity in identities:
             raise ProjectModelError("project brief contains a duplicate Flow version")
         identities.add(identity)
+    assignments = document.get("flow_assignments", [])
+    if not isinstance(assignments, list) or len(assignments) > 256:
+        raise ProjectModelError("project brief Flow assignments are invalid")
+    assignment_versions = {}
+    for assignment in assignments:
+        checked = validate_flow_assignment(assignment, definitions)
+        if checked["version"] != assignment_versions.get(checked["id"], 0) + 1:
+            raise ProjectModelError("Flow assignment version must follow its retained history")
+        assignment_versions[checked["id"]] = checked["version"]
     lens_ids = document.get("proposed_lens_ids", [])
     if (
         not isinstance(lens_ids, list)
@@ -429,11 +472,13 @@ def _mutate_project_brief(
     document, digest = parse_project_brief_markdown(text, root=path.parent)
     if digest != expected_digest:
         raise ProjectModelError("project brief digest conflict")
-    if collection == "flow_definitions":
+    if collection in {"flow_definitions", "flow_assignments"}:
         if operation != "create" or not isinstance(changes, Mapping) or "id" in changes:
             raise ProjectModelError("Flow versions are append-only; edit a new draft version")
-        definition = validate_flow_definition({"id": record_id, **changes})
-        retained = document.setdefault("flow_definitions", [])
+        candidate = {"id": record_id, **changes}
+        definition = (validate_flow_definition(candidate) if collection == "flow_definitions"
+                      else validate_flow_assignment(candidate, document.get("flow_definitions", [])))
+        retained = document.setdefault(collection, [])
         versions = [item["version"] for item in retained if item["id"] == record_id]
         if definition["version"] != max(versions, default=0) + 1:
             raise ProjectModelError("Flow version must follow the last retained version")
