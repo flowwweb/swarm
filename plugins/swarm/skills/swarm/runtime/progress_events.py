@@ -843,10 +843,62 @@ def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
     return json.loads(encoded.decode("utf-8"))
 
 
+REQUEST_RETROSPECTIVE_FIELDS = frozenset({
+    "project_id", "unit_thread_id", "task_id", "goal_thread_id",
+    "goal_state_observation", "artifacts", "evidence", "lesson",
+})
+
+
+def _validate_request_retrospective(value: Any) -> dict[str, Any]:
+    """Retained-read only: a schema-1 retrospective carries no completion credit."""
+    if not isinstance(value, dict):
+        raise ProgressEventError("request retrospective must be an object")
+    if set(value) != REQUEST_RETROSPECTIVE_FIELDS:
+        raise ProgressEventError("request retrospective requires exact fields")
+    for key in ("project_id", "unit_thread_id", "task_id", "goal_thread_id"):
+        if not isinstance(value[key], str) or _safe_id(value[key], f"request retrospective {key}") != value[key]:
+            raise ProgressEventError("request retrospective identities must be canonical")
+    if value["goal_thread_id"] != value["unit_thread_id"] or value["goal_state_observation"] != "UNVERIFIED":
+        raise ProgressEventError("request retrospective must observe the unit goal as UNVERIFIED")
+    lesson = value["lesson"]
+    try:
+        if not isinstance(lesson, str) or not lesson.strip() or len(lesson.encode("utf-8")) > 2048:
+            raise ProgressEventError("request retrospective lesson must be nonempty UTF-8 within 2048 bytes")
+    except UnicodeError as error:
+        raise ProgressEventError("request retrospective lesson must be nonempty UTF-8 within 2048 bytes") from error
+    for key, identity in (("artifacts", "artifact_id"), ("evidence", "event_id")):
+        items = value[key]
+        if not isinstance(items, list) or not 1 <= len(items) <= 8:
+            raise ProgressEventError(f"request retrospective {key} requires 1-8 exact references")
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                raise ProgressEventError(f"request retrospective {key} reference must be an object")
+            if set(item) != {identity, "digest"}:
+                raise ProgressEventError("request retrospective reference requires exact fields")
+            reference, digest = item[identity], item["digest"]
+            if (not isinstance(reference, str) or _safe_id(reference, f"request retrospective {identity}") != reference
+                    or reference in seen):
+                raise ProgressEventError(f"request retrospective {key} identities must be canonical and unique")
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ProgressEventError(f"request retrospective {key} digest must be SHA-256")
+            seen.add(reference)
+    return json.loads(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
 def _validate_retained_request_lifecycle_event(payload: Any, event_digest: str) -> dict[str, Any]:
-    """Decode the exact pre-exhaustion schema only after retained-line verification."""
+    """Decode exact retained schemas only after retained-line verification; never a write path."""
     if not isinstance(payload, dict) or _request_lifecycle_digest(payload) != event_digest:
         raise ProgressEventError("retained request lifecycle digest does not bind its event")
+    if "retrospective" in payload:
+        retrospective = _validate_request_retrospective(payload["retrospective"])
+        base = {key: value for key, value in payload.items() if key != "retrospective"}
+        if set(base) not in {REQUEST_LIFECYCLE_EVENT_FIELDS, REQUEST_LIFECYCLE_EVENT_FIELDS - {"expected_observation"}}:
+            raise ProgressEventError("retained request retrospective requires the current lifecycle schema")
+        if _request_lifecycle_digest(retrospective) != payload.get("envelope_digest"):
+            raise ProgressEventError("request retrospective is not bound by its envelope digest")
+        # Identity stays the caller's raw retained digest; the stripped base is validation-only.
+        return {**validate_request_lifecycle_event(base), "retrospective": retrospective}
     if set(payload) in {REQUEST_LIFECYCLE_EVENT_FIELDS, REQUEST_LIFECYCLE_EVENT_FIELDS - {"expected_observation"}}:
         return validate_request_lifecycle_event(payload)
     if set(payload) != LEGACY_REQUEST_LIFECYCLE_EVENT_FIELDS:
@@ -875,6 +927,7 @@ def _validate_retained_request_lifecycle_event(payload: Any, event_digest: str) 
         })
     validate_request_lifecycle_event(validation_copy)
     return json.loads(json.dumps(migrated, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
 
 
 CONNECTOR_ADMISSION_FIELDS = frozenset({"admission", "host_observation"})
@@ -3087,6 +3140,29 @@ class Ledger:
         }
 
     @staticmethod
+    def _check_request_retrospective(projection: dict[str, Any], retrospective: dict[str, Any]) -> None:
+        """Bind a retained retrospective to exact creation bindings and a current VERIFIED child block."""
+        bindings, operations = projection["task_creation_bindings"], projection["task_creation_operations_by_task"]
+        project_id, unit_id, child_id = retrospective["project_id"], retrospective["unit_thread_id"], retrospective["task_id"]
+
+        def bound(task_id: str) -> dict[str, Any]:
+            binding = bindings.get(operations.get(task_id))
+            if binding is None or binding["task_id"] != task_id or binding["project_id"] != project_id:
+                raise ProgressEventError("request retrospective requires exact retained task creation bindings")
+            return binding
+
+        bound(unit_id)
+        if bound(child_id)["parent_edge"] != {"state": "BOUND", "parent_task_id": unit_id}:
+            raise ProgressEventError("request retrospective child must be bound to its unit")
+        for item in retrospective["evidence"]:
+            if projection["events"].get(item["event_id"]) != item["digest"] or not any(
+                    block["project_id"] == project_id and block["task_id"] == child_id
+                    and block["lifecycle_state"] == ProgressLifecycle.VERIFIED.value
+                    and block["latest_event_id"] == item["event_id"] and block["latest_event_digest"] == item["digest"]
+                    for block in projection["blocks"].values()):
+                raise ProgressEventError("request retrospective evidence requires the current retained VERIFIED child block")
+
+    @staticmethod
     def _apply_request_lifecycle(
         projection: dict[str, Any],
         payload: dict[str, Any],
@@ -3122,9 +3198,15 @@ class Ledger:
                 raise ProgressEventError("request lifecycle immutable envelope binding conflicts")
             if lifecycle_state not in _REQUEST_LIFECYCLE_TRANSITIONS[LedgerLifecycleState(current["lifecycle_state"])]:
                 raise ProgressEventError("request lifecycle transition is invalid")
+        retained_retrospective = None if current is None else current.get("retrospective")
+        retrospective = payload.get("retrospective")
+        if current is not None and retrospective != retained_retrospective:
+            raise ProgressEventError("request retrospective is immutable for its request")
+        if retrospective is not None and current is None:
+            Ledger._check_request_retrospective(projection, retrospective)
         projection["request_event_digests"][event_id] = event_digest
         projection["request_dedupe_digests"][dedupe_key] = semantic_digest
-        projection["request_lifecycles"][request_id] = {
+        entry = {
             "request_id": request_id,
             "stage_id": payload["stage_id"],
             "event_id": event_id,
@@ -3134,6 +3216,11 @@ class Ledger:
             "lifecycle_state": lifecycle_state.value,
             "record": payload["record"],
         }
+        kept = retrospective if retrospective is not None else retained_retrospective
+        if kept is not None:
+            entry["retrospective"] = kept
+        projection["request_lifecycles"][request_id] = entry
+
 
     @staticmethod
     def _apply_task_handoff(projection: dict[str, Any], payload: dict[str, Any], event_seq: int) -> None:

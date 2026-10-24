@@ -3325,6 +3325,125 @@ class ProgressLedgerContractTests(unittest.TestCase):
         projection = ProgressLedger(self.root).project_topology("project-alpha", "ctrl-alpha")
         self.assertIn("crash", projection["source_event_ids"])
 
+    def retained_retrospective_fixture(self):
+        from skills.swarm.runtime import progress_events as module
+        role = next(item for item in self.role_manifests() if item["id"] == "developer")
+        for task_id, parent in (("retro-unit", None), ("retro-child", "retro-unit")):
+            operation = "create-" + task_id
+            base = {"schema_version": 1, "record_type": "CONNECTOR", "command_id": operation,
+                    "idempotency_key": operation, "command_digest": "a" * 64, "project_id": "project-alpha",
+                    "root_digest": "b" * 64, "action": "MANUAL_AGENT", "thread_id": None,
+                    "turn_id": None, "observed_root_digest": None}
+            self.ledger.append_connector_receipt({**base, "receipt_id": operation + "-command",
+                "receipt_index": 0, "status": "COMMAND", "observed_at_ms": 1})
+            self.ledger.append_connector_receipt({**base, "receipt_id": operation + "-ack",
+                "receipt_index": 1, "status": "ACKNOWLEDGED", "thread_id": task_id,
+                "observed_root_digest": "b" * 64, "observed_at_ms": 2})
+            result = {**base, "receipt_id": operation + "-result", "receipt_index": 2,
+                "status": "RESULT", "thread_id": task_id, "turn_id": "turn-" + task_id,
+                "observed_root_digest": "b" * 64, "observed_at_ms": 3}
+            manifest = build_task_manifest(manifest_id="manifest-" + task_id, task_id=task_id,
+                task_name=task_id, project_id="project-alpha", ctrl_id="ctrl-alpha", milestones=[], blocks=[])
+            binding = task_creation_binding_event(operation_id=operation, project_id="project-alpha",
+                root_digest="b" * 64, ctrl_id="ctrl-alpha", task_id=task_id, role_manifest=role,
+                task_manifest=manifest, parent_task_id=parent, topology_manifest_receipt_id=operation + "-topology",
+                task_receipt_id=operation + "-task", milestone_receipts=[], block_receipts=[],
+                explicit_empty_work_receipt_id=operation + "-empty", host_result_receipt_id=result["receipt_id"], observed_at_ms=4)
+            self.ledger.append_connector_result_with_task_creation(result, binding)
+        proof = self.ledger.append(self.event("retro-proof", "retro-block", task_id="retro-child",
+            lifecycle="VERIFIED", committed=4, admitted=4, sentence="Synthetic block verified."))
+        retro = {"project_id": "project-alpha", "unit_thread_id": "retro-unit", "task_id": "retro-child",
+            "goal_thread_id": "retro-unit", "goal_state_observation": "UNVERIFIED", "lesson": "Keep exact evidence.",
+            "artifacts": [{"artifact_id": "artifact-one", "digest": "c" * 64}],
+            "evidence": [{"event_id": "retro-proof", "digest": proof["event_digest"]}]}
+        offer = {"schema_version": 1, "record_type": "REQUEST_LIFECYCLE", "event_id": "retro-offer",
+            "dedupe_key": "retro-dedupe", "request_id": "retro-request", "stage_id": "retro-stage",
+            "parent_event_id": None, "envelope_digest": hashlib.sha256(json.dumps(retro, ensure_ascii=False,
+                sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "lifecycle_state": "OFFERED",
+            "record": None, "route_receipt_ids": [], "permitted_route_ids": [], "failed_goal_turn_receipt_ids": [],
+            "release_authority": None, "release_receipt_id": None, "release_issued_at_ms": None, "retrospective": retro}
+        return module, offer
+
+    def test_retained_retrospective_restarts_without_new_write_authority_or_progress(self):
+        module, offer = self.retained_retrospective_fixture()
+        before = self.ledger._state.path.read_bytes()
+        prior = self.ledger.replay()
+        with self.assertRaises(ProgressEventError):
+            self.ledger.append_request_lifecycle(offer)
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        retained = self.retain_material_lines(offer)
+        projection = Ledger(self.root).replay()
+        self.assertEqual(projection["request_lifecycles"]["retro-request"]["retrospective"], offer["retrospective"])
+        self.assertEqual(projection["request_lifecycles"]["retro-request"]["event_digest"], module._request_lifecycle_digest(offer))
+        self.assertEqual(projection["request_dedupe_digests"][offer["dedupe_key"]], module._request_lifecycle_digest(offer, semantic=True))
+        self.assertEqual(projection["blocks"], prior["blocks"])
+        self.assertEqual(projection, Ledger(self.root).replay())
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+        with self.assertRaises(ProgressEventError):
+            Ledger(self.root).append_request_lifecycle(offer)
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+
+    def test_retained_retrospective_rejects_invalid_shape_binding_and_evidence(self):
+        import copy
+        module, offer = self.retained_retrospective_fixture()
+        base = self.ledger._state.path.read_bytes()
+        cases = [("unknown", True), ("goal_state_observation", "COMPLETE"), ("task_id", "other-child"),
+                 ("project_id", "other-project"), ("goal_thread_id", "other-unit"), ("lesson", "x" * 2049),
+                 ("lesson", "   "), ("lesson", "é" * 1025), ("task_id", 123),
+                 ("artifacts", []), ("artifacts", [{"artifact_id": "a", "digest": "c" * 64}] * 2),
+                 ("artifacts", [{"artifact_id": "a"}]),
+                 ("artifacts", [{"artifact_id": "a", "digest": "C" * 64}]),
+                 ("evidence", [{"event_id": "retro-proof", "digest": "d" * 64}])]
+        for key, value in cases:
+            with self.subTest(key):
+                self.ledger._state.path.write_bytes(base)
+                bad = copy.deepcopy(offer)
+                bad["retrospective"][key] = value
+                bad["envelope_digest"] = hashlib.sha256(json.dumps(bad["retrospective"], ensure_ascii=False,
+                    sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                retained = self.retain_material_lines(bad)
+                with self.assertRaises(ProgressEventError):
+                    Ledger(self.root).replay()
+                self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+        self.ledger._state.path.write_bytes(base)
+        bad = copy.deepcopy(offer)
+        bad["envelope_digest"] = "0" * 64
+        retained = self.retain_material_lines(bad)
+        with self.assertRaises(ProgressEventError):
+            Ledger(self.root).replay()
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+        self.ledger._state.path.write_bytes(base)
+        bad = copy.deepcopy(offer)
+        del bad["retrospective"]["lesson"]
+        retained = self.retain_material_lines(bad)
+        with self.assertRaises(ProgressEventError):
+            Ledger(self.root).replay()
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+        self.ledger._state.path.write_bytes(base)
+        self.retain_material_lines(offer)
+        tampered = self.ledger._state.path.read_bytes().replace(b"Keep exact evidence.", b"Altered evidence.")
+        self.ledger._state.path.write_bytes(tampered)
+        with self.assertRaisesRegex(ProgressEventError, "digest"):
+            Ledger(self.root).replay()
+        self.assertEqual(self.ledger._state.path.read_bytes(), tampered)
+
+    def test_retained_retrospective_application_rejects_changed_or_missing_context_atomically(self):
+        import copy
+        module, offer = self.retained_retrospective_fixture()
+        projection = self.ledger.replay()
+        for field in ("task_creation_bindings", "events", "blocks"):
+            bad_projection = copy.deepcopy(projection)
+            bad_projection[field] = {}
+            before = copy.deepcopy(bad_projection)
+            with self.subTest(field), self.assertRaises(ProgressEventError):
+                Ledger._apply_request_lifecycle(bad_projection, offer, 100)
+            self.assertEqual(bad_projection, before)
+        Ledger._apply_request_lifecycle(projection, offer, 100)
+        before = copy.deepcopy(projection)
+        # The same immutable event is a no-op; changed identity cannot gain progress.
+        Ledger._apply_request_lifecycle(projection, offer, 101)
+        self.assertEqual(projection, before)
+
     def test_request_lifecycle_replay_conflict_and_nonterminal_guards(self) -> None:
         envelope = "1" * 64
         offer = {
