@@ -64,13 +64,24 @@ class ReleasePackageTests(unittest.TestCase):
                 '\nHQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/sdk.js"\nHQ_SDK_SHA256 = ' + repr(digest), encoding='utf-8')
             config = root / '.mcp.json'
             entry = {'type': 'stdio', 'command': sys.executable,
-                     'args': ['-B', '${PLUGIN_ROOT}/skills/swarm/scripts/swarm_desktop.py'], 'cwd': '${PLUGIN_ROOT}'}
+                     'args': ['-B', 'skills/swarm/scripts/swarm_desktop.py'], 'cwd': '.'}
             config.write_text(json.dumps({'mcpServers': {'swarm': entry}}), encoding='utf-8')
             package_builder.validate_plugin_manifest(root)
+            # Codex resolves a plugin-relative cwd against the package root.
+            # Exercise that exact cwd/argv without invoking a real MCP server.
+            launcher = root / entry['args'][1]
+            with launcher.open('a', encoding='utf-8') as stream:
+                stream.write('\nfrom pathlib import Path\nprint(Path.cwd().resolve())\n')
+            launch = subprocess.run([entry['command'], *entry['args']],
+                                    cwd=root / entry['cwd'], capture_output=True,
+                                    text=True, timeout=10, check=True)
+            self.assertEqual(Path(launch.stdout.strip()), root.resolve())
+            self.assertFalse((root / '${PLUGIN_ROOT}').exists())
             for field, invalid in (('command', 'cmd.exe'), ('command', 'C:/other/python.exe'),
                                    ('args', ['-c', 'print(1)']), ('args', ['-B', '../swarm_desktop.py']),
                                    ('args', entry['args'] + ['--extra']), ('cwd', '..'),
-                                   ('type', 'http'), ('cwd', '.'),
+                                   ('type', 'http'), ('cwd', '${PLUGIN_ROOT}'),
+                                   ('args', ['-B', '${PLUGIN_ROOT}/skills/swarm/scripts/swarm_desktop.py']),
                                    ('env', {'PYTHONPATH': 'elsewhere'})):
                 with self.subTest(field=field, invalid=invalid):
                     config.write_text(json.dumps({'mcpServers': {'swarm': {**entry, field: invalid}}}), encoding='utf-8')

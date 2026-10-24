@@ -5,9 +5,9 @@
       "command": "C:\\Users\\peikg\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
       "args": [
         "-B",
-        "${PLUGIN_ROOT}/skills/swarm/scripts/swarm_desktop.py"
+        "skills/swarm/scripts/swarm_desktop.py"
       ],
-      "cwd": "${PLUGIN_ROOT}"
+      "cwd": "."
     }
   }
 }
