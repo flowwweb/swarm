@@ -490,6 +490,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             "topology_manifest_receipt_id": "topology-receipt", "task_receipt_id": "task-receipt",
             "milestone_receipts": [], "block_receipts": [],
             "explicit_empty_work_receipt_id": "explicit-empty-receipt", "independent_host_task": False,
+            "project_code": "swRm",
         }
         material = HQDispatchMaterial("C:/work/project-a", b"Create one role-bound task.")
         envelope = HQCommandEnvelope(
@@ -502,6 +503,13 @@ class ExecutionAdapterTests(unittest.TestCase):
         contract["role_manifest"]["id"] = "wrong"
         self.assertEqual(envelope.digest, retained_digest)
         self.assertEqual(envelope.task_creation_contract()["task_manifest_draft"]["task_name"], "Bound task")
+        self.assertEqual(envelope.task_creation_contract()["project_code"], "SWRM")
+        for invalid in ("", "ABCDE", "AB1", "A-B", "é", 42):
+            bad = envelope.task_creation_contract()
+            bad["project_code"] = invalid
+            with self.subTest(code=invalid), self.assertRaises(InvariantError):
+                HQCommandEnvelope("bad", "bad", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64,
+                    "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100, task_creation=bad)
 
         transport = FakeCodexTransport([
             {"threadId": "thread-unpredictable-9", "cwd": "C:/work/project-a"},
@@ -516,6 +524,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             )
             self.assertEqual((first.status, first.attention), ("PENDING", "HOST_TURN_OUTCOME_PENDING"))
             self.assertEqual(ledger.project_task_creation_bindings()["bindings"], [])
+            self.assertEqual(ledger.replay()["ticket_identities"], {})
 
             changed_contract = envelope.task_creation_contract()
             changed_contract["task_receipt_id"] = "changed-receipt"
@@ -536,16 +545,35 @@ class ExecutionAdapterTests(unittest.TestCase):
                 authorization_verifier=FakeHQAuthorizationVerifier(False),
                 material_resolver=UnavailableHQMaterialResolver(), root_verifier=FakeHQRootVerifier(),
             )
+            from unittest.mock import patch
+            with patch.object(Ledger, "assign_ticket_ids", side_effect=OSError("allocation interrupted")):
+                interrupted = restarted.execute(
+                    envelope, self.explicit(envelope), Ledger(root), now_ms=3,
+                    observed_project_id="project-a", observed_root_digest="a" * 64,
+                )
+            self.assertEqual((interrupted.status, interrupted.attention), ("ATTENTION", "TICKET_IDENTITY_PENDING"))
+            self.assertEqual(len(Ledger(root).project_task_creation_bindings("project-a")["bindings"]), 1)
+            self.assertEqual(Ledger(root).replay()["ticket_identities"], {})
+            self.assertEqual(Ledger(root).replay()["connector_receipts"]["key-bound"]["receipts"][-1]["status"], "RESULT")
+            calls_before_recovery = list(transport.calls)
+            reconciliations_before_recovery = list(transport.reconcile_calls)
             completed = restarted.execute(
                 envelope, self.explicit(envelope), Ledger(root), now_ms=3,
                 observed_project_id="project-a", observed_root_digest="a" * 64,
             )
-            self.assertEqual((completed.status, completed.thread_id), ("RESULT", "thread-unpredictable-9"))
+            self.assertEqual((completed.status, completed.thread_id), ("REPLAY", "thread-unpredictable-9"))
+            self.assertEqual(transport.calls, calls_before_recovery)
+            self.assertEqual(transport.reconcile_calls, reconciliations_before_recovery)
+            self.assertEqual(Ledger(root).replay()["ticket_identities"], {
+                "project-a": {"project_code": "SWRM", "assignments": {"thread-unpredictable-9": 1}},
+            })
+            retained_bytes = (root / "swarm" / "progress-ledger.jsonl").read_bytes()
             replay = restarted.execute(
                 envelope, self.explicit(envelope), Ledger(root), now_ms=4,
                 observed_project_id="project-a", observed_root_digest="a" * 64,
             )
             self.assertEqual(replay.status, "REPLAY")
+            self.assertEqual((root / "swarm" / "progress-ledger.jsonl").read_bytes(), retained_bytes)
             projection = Ledger(root).project_task_creation_bindings("project-a")
             self.assertEqual(len(projection["bindings"]), 1)
             self.assertEqual(projection["bindings"][0]["task_id"], "thread-unpredictable-9")
@@ -562,6 +590,29 @@ class ExecutionAdapterTests(unittest.TestCase):
             self.assertEqual(persisted_task["task_id"], "thread-unpredictable-9")
             self.assertNotIn("discarded-after-validation", (root / "swarm" / "progress-ledger.jsonl").read_text(encoding="utf-8"))
             self.assertEqual([item["status"] for item in Ledger(root).replay()["connector_receipts"]["key-bound"]["receipts"]], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
+            conflict_contract = envelope.task_creation_contract()
+            conflict_contract["project_code"] = "OTHER"[:4]
+            conflict = replace(envelope, command_id="conflict", idempotency_key="conflict",
+                expected_ledger_revision=Ledger(root).replay()["cursor"]["event_seq"], task_creation=conflict_contract)
+            before_conflict = (root / "swarm" / "progress-ledger.jsonl").read_bytes()
+            calls = len(transport.calls)
+            with self.assertRaisesRegex(InvariantError, "ticket project code conflicts"):
+                self.connector(transport, material).execute(conflict, self.explicit(conflict), Ledger(root),
+                    now_ms=5, observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual((root / "swarm" / "progress-ledger.jsonl").read_bytes(), before_conflict)
+            self.assertEqual(len(transport.calls), calls)
+            inherited_contract = envelope.task_creation_contract()
+            del inherited_contract["project_code"]
+            second = replace(envelope, command_id="second", idempotency_key="second",
+                expected_ledger_revision=Ledger(root).replay()["cursor"]["event_seq"], task_creation=inherited_contract)
+            second_transport = FakeCodexTransport([
+                {"thread": {"id": "second-host", "cwd": "C:/work/project-a"}},
+                {"turn": {"id": "second-turn"}},
+            ])
+            self.assertEqual(self.connector(second_transport, material).execute(second, self.explicit(second), Ledger(root),
+                now_ms=6, observed_project_id="project-a", observed_root_digest="a" * 64).status, "RESULT")
+            self.assertEqual(Ledger(root).replay()["ticket_identities"]["project-a"]["assignments"],
+                {"thread-unpredictable-9": 1, "second-host": 2})
 
         for action, intent in (
             (HQCommandAction.TASK, HQTargetIntent.EXISTING_THREAD),

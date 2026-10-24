@@ -2,7 +2,7 @@ import {mountSettings} from './swarm-settings.js';
 import {configTextWithChanges} from '@swarm/config-editor';
 import settingsCSS from './swarm-settings.css';
 import {App,applyDocumentTheme,applyHostStyleVariables} from '@swarm/sdk';
-import {usageView} from './swarm-usage.mjs';
+import {usageView,readProjectUsage,latestRequest} from './swarm-usage.mjs';
 import {rosterView,projectDetail,metricView} from './swarm-projects.mjs';
 export async function mountProjects() {
 const app=new App({name:'SWARM HQ',version:'1.0.0'},{availableDisplayModes:['fullscreen']},{autoResize:false});
@@ -36,13 +36,29 @@ $('#close-inspector').onclick=()=>$('#inspector').close();
 $('#inspector').addEventListener('close',()=>{detailGeneration++;if(dialogOpener?.isConnected)dialogOpener.focus();});
 const projectPage=document.createElement('main');projectPage.id='project-page';projectPage.hidden=true;$('.workspace').append(projectPage);
 function projectShell(p,body){const restoreFocus=projectPage.contains(document.activeElement);projectPage.innerHTML=`<header class="page-header"><div><a href="#projects" class="project-back">&larr; Projects</a><h1 tabindex="-1">${escape(p.name)}</h1></div></header>${body}`;if(restoreFocus)projectPage.querySelector('h1').focus();}
+const projectUsageRequests=latestRequest();
+const projectUsagePeriod=value=>value===24?'Last 24 hours':value===168?'Last 7 days':'Last 30 days';
+async function loadProjectUsage(id,value){
+ const section=projectPage.querySelector('#project-usage');if(!section||projectPage.hidden||selectedProject!==id)return;
+ const token=projectUsageRequests.next(),detail=detailGeneration,field=name=>section.querySelector(`[data-project-usage="${name}"]`);
+ const current=()=>projectUsageRequests.isLatest(token)&&detail===detailGeneration&&selectedProject===id&&section.isConnected&&!projectPage.hidden;
+ section.querySelectorAll('[data-project-hours]').forEach(b=>b.setAttribute('aria-pressed',String(+b.dataset.projectHours===value)));
+ field('period').textContent=projectUsagePeriod(value);field('total').textContent='\u2014';field('window').textContent='';field('status').textContent='Loading local observations\u2026';
+ const result=await readProjectUsage(call,id,value,current);
+ if(result.state==='stale'||!current())return;
+ if(result.state!=='ready'){field('status').textContent='Usage for this project is unavailable for this period. Select a period to retry.';return;}
+ const data=result.view;field('total').textContent=number(data.total);
+ field('window').textContent=`Observed window: ${new Date(data.window.after_ms).toLocaleString()} to ${new Date(data.window.before_ms).toLocaleString()}.`;
+ field('status').textContent=data.total===null?'No retained observations for this project in this period.':`${data.status==='partial'?'Partial coverage':'Observed coverage'} \u00b7 gaps are not zero.`;
+}
+projectPage.addEventListener('click',e=>{const button=e.target.closest('[data-project-hours]');if(button&&selectedProject)loadProjectUsage(selectedProject,+button.dataset.projectHours);});
 async function openProject(id){
  const p=roster?.projects.find(p=>p.id===id);if(!p)return;
  selectedProject=id;const request=++detailGeneration;$('#main').hidden=true;settingsPage.hidden=true;projectPage.hidden=false;
  $('#settings').classList.remove('selected');$('#settings').removeAttribute('aria-current');$('#all-projects').classList.remove('selected');
  projectShell(p,'<p role="status">Loading project...</p>');projectPage.querySelector('h1').focus();
  try{const data=projectDetail(await call('swarm_status',{project_id:id}),id);if(request!==detailGeneration||selectedProject!==id)return;
- projectShell(p,`<section class="project-section"><h2>Overview</h2><dl><dt>Activity</dt><dd>${status(p)}</dd><dt>Current milestone</dt><dd>${escape(data.milestone||'Current milestone unavailable')}</dd><dt>Measured progress</dt><dd>${data.progress===null?'Unknown':escape(String(data.progress))}</dd><dt>Last task update</dt><dd>${data.updated?escape(new Date(data.updated).toLocaleString()):'Unknown'}</dd></dl></section><section class="project-section"><h2>Tasks</h2>${data.taskRows.length?`<ul>${data.taskRows.map(t=>`<li><strong>${escape(t.name)}</strong><span>${escape(t.status)}</span></li>`).join('')}</ul>`:`<p>${data.tasksAvailable?'No retained tasks.':'Task details unavailable.'}</p>`}${data.tasksTruncated?'<p>More tasks unavailable.</p>':''}</section><section class="project-section"><h2>Usage</h2><p>Project-scoped usage is not available from this connection.</p></section><details><summary>Diagnostics</summary><code>${escape(id)}</code><p><code>${escape(JSON.stringify(data.cursor||'Cursor unavailable'))}</code></p></details>`);
+ projectShell(p,`<section class="project-section"><h2>Overview</h2><dl><dt>Activity</dt><dd>${status(p)}</dd><dt>Current milestone</dt><dd>${escape(data.milestone||'Current milestone unavailable')}</dd><dt>Measured progress</dt><dd>${data.progress===null?'Unknown':escape(String(data.progress))}</dd><dt>Last task update</dt><dd>${data.updated?escape(new Date(data.updated).toLocaleString()):'Unknown'}</dd></dl></section><section class="project-section"><h2>Tasks</h2>${data.taskRows.length?`<ul>${data.taskRows.map(t=>`<li><strong>${escape(t.name)}</strong><span>${escape(t.status)}</span></li>`).join('')}</ul>`:`<p>${data.tasksAvailable?'No retained tasks.':'Task details unavailable.'}</p>`}${data.tasksTruncated?'<p>More tasks unavailable.</p>':''}</section><section class="project-section" id="project-usage" aria-labelledby="project-usage-title"><div class="section-heading"><h2 id="project-usage-title">Usage</h2><div class="period-switch" role="group" aria-label="Project usage period"><button data-project-hours="24" aria-pressed="true">24h</button><button data-project-hours="168" aria-pressed="false">7d</button><button data-project-hours="720" aria-pressed="false">30d</button></div></div><p><strong data-project-usage="total">\u2014</strong> <span class="quiet small" data-project-usage="period">Last 24 hours</span></p><p class="quiet small" data-project-usage="window"></p><p role="status" data-project-usage="status">Loading local observations\u2026</p><p class="quiet small">Locally observed token deltas for this project. Not billing; gaps are not zero.</p></section><details><summary>Diagnostics</summary><code>${escape(id)}</code><p><code>${escape(JSON.stringify(data.cursor||'Cursor unavailable'))}</code></p></details>`);void loadProjectUsage(id,24);
  }catch{if(request===detailGeneration&&selectedProject===id)projectShell(p,'<p role="status">Project details unavailable. Return to Projects and try again.</p>');}
 }
 function restoreRoute(){

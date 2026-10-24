@@ -679,6 +679,7 @@ class SwarmConsoleTests(unittest.TestCase):
             "task_receipt_id": "task-receipt", "milestone_receipts": [{"id": "m", "receipt_id": "m-receipt"}],
             "block_receipts": [{"id": "b", "receipt_id": "b-receipt"}],
             "explicit_empty_work_receipt_id": None, "independent_host_task": False,
+            "project_code": "SWRM",
         }
         now = int(time.time() * 1000)
         instruction = "Create the explicitly authorized task."
@@ -750,6 +751,19 @@ class SwarmConsoleTests(unittest.TestCase):
         binding = app.progress_ledger.project_task_creation_bindings("project:alpha")
         self.assertIn("host-new", json.dumps(binding))
         self.assertIn("b-receipt", json.dumps(binding))
+        self.assertEqual(app.progress_ledger.replay()["ticket_identities"], {
+            "project:alpha": {"project_code": "SWRM", "assignments": {"host-new": 1}},
+        })
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+                "host-new", "private host title", str(root), 2_000_000_000,
+                2_000_000_000, 2_000_000_000_000, 2_000_000_000_001,
+                "gpt-5.6-terra", "high", 0, 0, "", "main", "", "", "", 0,
+            ))
+            connection.commit()
+        observed = console.App(self.codex_home, self.config).overview("project:alpha")
+        task_row = next(row for row in observed["progress"]["projects"]["project:alpha"]["tasks"] if row["id"] == "host-new")
+        self.assertEqual((task_row["display_id"], task_row["label"]), ("SWRM-1", "Bound task"))
         before = app.progress_ledger._state.path.read_bytes()
         self.assertNotIn(instruction.encode(), before)
         app = console.App(self.codex_home, self.config)
@@ -798,6 +812,10 @@ class SwarmConsoleTests(unittest.TestCase):
             with mock.patch.object(app, "_auto_scope"):
                 prepared = app.prepare_work_unit(request)
             self.assertEqual(prepared["status"], "PREPARED")
+            if kind == "FACTORY":
+                self.assertEqual(prepared["submission"]["envelope"]["task_creation"]["project_code"], "SWRM")
+            else:
+                self.assertNotIn("project_code", prepared["submission"]["envelope"]["task_creation"])
             self.assertEqual(app.unit_catalog_projection(kind)["instances"], [])
             draft = prepared["submission"]["envelope"]["task_creation"]["task_manifest_draft"]
             self.assertEqual(draft["role_scope"], "LEAD_SINGLE")
@@ -831,6 +849,11 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertEqual(restarted.unit_catalog_projection(kind)["instances"], [unit])
             self.assertEqual(restarted.create_bound_task(prepared["submission"])["status"], "REPLAY")
             self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), before)
+            if kind == "LAB":
+                app.progress_ledger.assign_ticket_ids("project:alpha", "SWRM", (thread_id,))
+            else:
+                self.assertEqual(restarted.progress_ledger.replay()["ticket_identities"]["project:alpha"]["assignments"],
+                    {"native-lab": 1, "native-factory": 2})
         self.assertEqual(len(sent), 4)
 
     def test_work_unit_submission_rechecks_custody_before_native_dispatch(self) -> None:
@@ -4944,8 +4967,16 @@ class SwarmConsoleTests(unittest.TestCase):
              mock.patch.object(app.store, "token_history", return_value=history), \
              mock.patch.object(app.store, "token_sample_thread_count", return_value=1), \
              mock.patch.object(app.store, "token_sample_series", side_effect=lambda **kw: [] if kw.get("by_task") or kw.get("bucket_width_ms") else samples), \
+             mock.patch.object(app, "_verified_yield", wraps=app._verified_yield) as yield_projection, \
              mock.patch.object(console.time, "time", return_value=1_100):
             result = app.usage_history(project_id="project:alpha", hours=1)
+            without_yield = app.usage_history(project_id="project:alpha", hours=1, include_verified_yield=False)
+            self.assertEqual(yield_projection.call_count, 1)
+            self.assertIsNone(without_yield["verified_yield"])
+            self.assertEqual({k: v for k, v in result.items() if k != "verified_yield"},
+                             {k: v for k, v in without_yield.items() if k != "verified_yield"})
+            with self.assertRaises(console.ConsoleError):
+                app.usage_history(include_verified_yield="false")
 
         verified = result["verified_yield"]
         self.assertEqual(verified["projects"][0]["net_scope_points"], 50.0)

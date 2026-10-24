@@ -11390,7 +11390,10 @@ class App:
         remaining_token_budget: int | None = None,
         after_ms: int | None = None,
         before_ms: int | None = None,
+        include_verified_yield: bool = True,
     ) -> dict[str, Any]:
+        if type(include_verified_yield) is not bool:
+            raise ConsoleError("include_verified_yield must be boolean")
         if type(hours) is not int or hours not in {1, 12, 24, 168, 720}:
             raise ConsoleError("hours must be one of 1, 12, 24, 168, or 720")
         now_ms = int(time.time() * 1000)
@@ -11522,7 +11525,8 @@ class App:
         status = "no_data" if not history else (
             "partial" if expected_threads is not None and observed_threads < expected_threads else "ok"
         )
-        verified_yield = self._verified_yield(nodes=nodes, scope=scope, hours=hours, now_ms=before_ms, after_ms=after_ms)
+        verified_yield = (self._verified_yield(nodes=nodes, scope=scope, hours=hours, now_ms=before_ms, after_ms=after_ms)
+                          if include_verified_yield else None)
         account_samples = self.store.diagnostics_history(limit=1000, after_ms=after_ms, before_ms=before_ms)
         account_history = []
         for sample in reversed(account_samples):
@@ -14963,6 +14967,9 @@ class App:
             "milestone_receipts": [{"id": "unit-cycle", "receipt_id": identity + "-milestone"}],
             "block_receipts": [{"id": block["block_id"], "receipt_id": identity + "-block-" + str(index)} for index, block in enumerate(manifest["blocks"])],
             "explicit_empty_work_receipt_id": None, "independent_host_task": False}
+        registered_code = self.progress_ledger.replay().get("ticket_identities", {}).get(project_id, {}).get("project_code")
+        if registered_code is not None:
+            contract["project_code"] = registered_code
         envelope = HQCommandEnvelope(command_id=identity, idempotency_key=identity, action=HQCommandAction.MANUAL_AGENT,
             project_id=project_id, root_digest=_auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))}), ctrl_id=ctrl_id,
             target_intent=HQTargetIntent.NEW_THREAD, target_thread_id="", payload_digest=hashlib.sha256(instruction.encode()).hexdigest(),

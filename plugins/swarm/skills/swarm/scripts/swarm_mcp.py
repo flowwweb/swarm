@@ -29,7 +29,7 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "c02b1fdccb8130af7b224fb0367a7c025dddeb405ca193c987f6f246d7ab419d"
+HQ_SDK_SHA256 = "c7c53655850838b64eb89ddd75be93716c950a456d8eb26beae57ca25f9c63bb"
 PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html":"faf99e195b45632928d03770cf16efe8d31a917d4aa6d8f114f5f49680b405dd","skills/swarm/assets/ui/swarm-hq-host.css":"8f8c220167fe79a7b7c9fec0da284d0f34eb6ef537c5f08e4e6cfd7ee0f328ce","skills/swarm/assets/swarm-wordmark.png":"306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
 
 
@@ -70,8 +70,8 @@ TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "swarm_usage",
         "title": "Read SWARM usage",
-        "description": "Read locally observed SWARM token history and burn-rate coverage for a bounded time window. Values are local observations, not provider billing or hidden ChatGPT usage. Console initialization may maintain local state and calls append metadata telemetry.",
-        "inputSchema": {"type": "object", "properties": {"hours": {"type": "integer", "enum": [1, 12, 24, 168, 720]}}, "additionalProperties": False},
+        "description": "Read locally observed SWARM token history and burn-rate coverage for a bounded time window. Optional project_id reads one observed project through the existing console scope check. Values are local observations, not provider billing or hidden ChatGPT usage. Console initialization may maintain local state and calls append metadata telemetry.",
+        "inputSchema": {"type": "object", "properties": {"hours": {"type": "integer", "enum": [1, 12, 24, 168, 720]}, "project_id": {"type": "string"}}, "additionalProperties": False},
         "annotations": {"title": "Read SWARM usage", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     },
 )
@@ -205,7 +205,17 @@ class SwarmProjection:
             hours = arguments.get("hours", 24)
             if type(hours) is not int or hours not in {1, 12, 24, 168, 720}:
                 raise MCPError("hours must be one of 1, 12, 24, 168, or 720")
-            return _compact_usage(app.usage_history(hours=hours))
+            if "project_id" not in arguments:
+                return _compact_usage(app.usage_history(hours=hours, include_verified_yield=False))
+            project_id = arguments["project_id"]
+            if not isinstance(project_id, str) or not project_id.strip():
+                raise MCPError("project_id must be non-empty text")
+            project_id = project_id.strip()
+            usage = app.usage_history(project_id=project_id, hours=hours, include_verified_yield=False)
+            scope = usage.get("scope") if isinstance(usage, dict) else None
+            if not isinstance(scope, dict) or scope.get("type") != "project" or scope.get("project_id") != project_id:
+                raise MCPError("usage scope mismatch")
+            return _compact_usage(usage)
         raise MCPError(f"unknown tool: {name}")
 
 
@@ -291,7 +301,31 @@ def _compact_usage(view: dict[str, Any]) -> dict[str, Any]:
     compact.pop("verified_yield", None)
     if isinstance(view.get("task_history"), dict):
         compact["task_history"] = _pick(view["task_history"], ("status", "total_tokens", "coverage", "model_status", "claim_limit"))
-    for key in ("items", "task_usage", "rate_history"):
+    items = view.get("items")
+    if isinstance(items, list) and len(items) > 256:
+        window = view.get("window", {})
+        after, before = window.get("after_ms"), window.get("before_ms")
+        if type(after) is not int or type(before) is not int or not 0 <= after <= before <= 2**53 - 1:
+            raise MCPError("Invalid usage window")
+        previous = after - 1
+        for row in items:
+            if (not isinstance(row, dict) or type(row.get("bucket_ms")) is not int
+                    or not previous < row["bucket_ms"] <= before
+                    or type(row.get("delta_tokens")) is not int or row["delta_tokens"] < 0):
+                raise MCPError("Invalid token observation")
+            previous = row["bucket_ms"]
+        total = sum(row["delta_tokens"] for row in items)
+        if type(view.get("total_tokens")) is not int or total != view["total_tokens"] or total > 2**53 - 1:
+            raise MCPError("Token total mismatch")
+        # Aggregate all observed deltas, never invent observations in gaps.
+        compact["items"] = []
+        for index in range(256):
+            group = items[index * len(items) // 256:(index + 1) * len(items) // 256]
+            compact["items"].append({"bucket_ms": group[-1]["bucket_ms"],
+                                     "bucket_start_ms": group[0]["bucket_ms"],
+                                     "delta_tokens": sum(row["delta_tokens"] for row in group)})
+        compact["series_aggregation"] = {"method": "contiguous_observed_sum", "input_count": len(items), "output_count": 256}
+    for key in ("task_usage", "rate_history"):
         if isinstance(view.get(key), list):
             compact[key] = view[key][-256:]
     compact["omitted_detail"] = ["verified_yield", "task_history.items"]

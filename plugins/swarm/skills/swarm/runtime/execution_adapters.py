@@ -170,11 +170,16 @@ class HQCommandEnvelope:
             if task_creation.get("independent_host_task") is True:
                 if set(task_creation) != {"independent_host_task"}:
                     raise InvariantError("independent host task contract must remain anonymous and unassigned")
-            elif set(task_creation) != HQ_TASK_CREATION_FIELDS or task_creation.get("independent_host_task") is not False:
+            elif set(task_creation) - {"project_code"} != HQ_TASK_CREATION_FIELDS or task_creation.get("independent_host_task") is not False:
                 raise InvariantError("bound task creation contract is incomplete or malformed")
             try:
                 normalized = dict(task_creation)
                 if normalized.get("independent_host_task") is False:
+                    if "project_code" in normalized:
+                        code = normalized["project_code"]
+                        if not isinstance(code, str) or not 1 <= len(code) <= 4 or not code.isascii() or not code.isalpha():
+                            raise InvariantError("ticket project code requires 1-4 ASCII letters")
+                        normalized["project_code"] = code.upper()
                     draft = validate_task_manifest_draft(normalized["task_manifest_draft"])
                     normalized["task_manifest_draft"] = draft
                     final = build_task_manifest(task_id="host-confirmed-task", **draft)
@@ -183,7 +188,7 @@ class HQCommandEnvelope:
                         root_digest=self.root_digest, ctrl_id=self.ctrl_id,
                         task_id="host-confirmed-task", task_manifest=final,
                         host_result_receipt_id="host-result", observed_at_ms=1,
-                        **{key: value for key, value in normalized.items() if key not in {"task_manifest_draft", "independent_host_task"}},
+                        **{key: value for key, value in normalized.items() if key not in {"task_manifest_draft", "independent_host_task", "project_code"}},
                     )
                 task_creation_json = json.dumps(normalized, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
             except (TypeError, ValueError, KeyError) as error:
@@ -478,6 +483,7 @@ class UniversalHQConnector:
             ledger.append_connector_receipt(result)
         else:
             draft = contract.pop("task_manifest_draft")
+            project_code = contract.pop("project_code", None)
             creation = task_creation_binding_event(
                 operation_id=envelope.idempotency_key, project_id=envelope.project_id,
                 root_digest=envelope.root_digest, ctrl_id=envelope.ctrl_id,
@@ -490,6 +496,16 @@ class UniversalHQConnector:
             if creation["topology"]["task_creation_binding"]["role_manifest_ref"] != envelope.task_creation_identity()["role_manifest_ref"]:
                 raise InvariantError("confirmed task role identity conflicts with retained preparation")
             ledger.append_connector_result_with_task_creation(result, creation)
+            if project_code is None:
+                project_code = ledger.replay().get("ticket_identities", {}).get(envelope.project_id, {}).get("project_code")
+            if project_code is not None:
+                # Creation is durable first. Exact terminal replay recovers a failed
+                # allocation without dispatching another host task or renumbering.
+                try:
+                    ledger.assign_ticket_ids(envelope.project_id, project_code, (thread_id,))
+                except (OSError, ValueError):
+                    return HQConnectorResult("ATTENTION", envelope.digest, thread_id, turn_id,
+                                             observed_root_digest, attention="TICKET_IDENTITY_PENDING")
         return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id, observed_root_digest)
 
     def _reconcile(self, envelope: HQCommandEnvelope, ledger: object, command: Mapping[str, object], *, now_ms: int, terminal_handoff: Mapping[str, object] | None = None) -> HQConnectorResult:
@@ -497,12 +513,14 @@ class UniversalHQConnector:
         terminal = receipts[-1] if receipts and str(receipts[-1].get("status") or "") in {"RESULT", "RECONCILED_NOT_DELIVERED", "UNSUPPORTED"} else None
         if terminal is not None:
             if terminal["status"] == "RESULT" and (envelope.task_creation_contract() is not None or terminal_handoff is not None):
-                self._append_complete(
+                completed = self._append_complete(
                     envelope, ledger, now_ms=int(terminal["observed_at_ms"]),
                     thread_id=str(terminal["thread_id"] or ""), turn_id=str(terminal["turn_id"] or ""),
                     observed_root_digest=str(terminal["observed_root_digest"] or ""), ack_exists=True,
                     terminal_handoff=terminal_handoff,
                 )
+                if completed.status != "RESULT":
+                    return completed
             return HQConnectorResult(
                 "REPLAY",
                 str(terminal.get("command_digest") or ""),
@@ -551,13 +569,22 @@ class UniversalHQConnector:
         if (observed_project_id, _digest(observed_root_digest, "observed HQ root")) != (envelope.project_id, envelope.root_digest):
             raise InvariantError("HQ observed project root conflicts")
         command = self._receipt(envelope, receipt_id=f"{envelope.command_id}-command", index=0, status="COMMAND", observed_at_ms=envelope.submitted_at_ms)
-        retained = ledger.replay().get("connector_receipts", {}).get(envelope.idempotency_key)
+        projection = ledger.replay()
+        retained = projection.get("connector_receipts", {}).get(envelope.idempotency_key)
         if retained is not None:
             reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
             if reservation["status"] == "REPLAY":
                 return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms, terminal_handoff=terminal_handoff)
             raise InvariantError("HQ command reservation conflicts")
         self._validate_authorization(envelope, authorization, now_ms)
+        contract = envelope.task_creation_contract()
+        code = contract.get("project_code") if contract else None
+        if code is not None:
+            identities = projection.get("ticket_identities", {})
+            if any((project == envelope.project_id and identity["project_code"] != code)
+                   or (project != envelope.project_id and identity["project_code"] == code)
+                   for project, identity in identities.items()):
+                raise InvariantError("ticket project code conflicts with retained identity")
         material = self.material_resolver.resolve(envelope)
         if not isinstance(material, HQDispatchMaterial) or material.digest != envelope.payload_digest:
             raise InvariantError("HQ dispatch material does not match the authorized digest")

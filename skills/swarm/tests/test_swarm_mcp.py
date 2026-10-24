@@ -198,7 +198,7 @@ class SwarmMCPTests(unittest.TestCase):
         roster = projection.call("swarm_projects", {})
         self.assertEqual(roster["current_work"]["controllers"], [{"id": "ctrl"}])
         self.assertEqual(projection.call("swarm_usage", {})["coverage"], "local")
-        app.usage_history.assert_called_once_with(hours=24)
+        app.usage_history.assert_called_once_with(hours=24, include_verified_yield=False)
         for name, arguments in [("unknown", {}), ("swarm_status", {"project_id": ""}), ("swarm_status", {"project_id": None}), ("swarm_usage", {"hours": True}), ("swarm_usage", {"hours": 2}), ("swarm_projects", {"unexpected": 1})]:
             with self.subTest(name=name, arguments=arguments), self.assertRaises(mcp.MCPError):
                 projection.call(name, arguments)
@@ -226,7 +226,9 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertNotIn("SECRET", output.getvalue() + telemetry.read_text())
 
     def test_output_cap_and_scratch_validation(self) -> None:
-        usage = mcp._compact_usage({"items": list(range(300)), "task_history": {"items": ["detail"], "status": "PARTIAL"}, "verified_yield": {"detail": "omitted"}})
+        usage = mcp._compact_usage({"items": [{"bucket_ms": i, "delta_tokens": 1} for i in range(300)],
+                                   "total_tokens": 300, "window": {"after_ms": 0, "before_ms": 300},
+                                   "task_history": {"items": ["detail"], "status": "PARTIAL"}, "verified_yield": {"detail": "omitted"}})
         self.assertEqual(len(usage["items"]), 256)
         self.assertTrue(usage["truncated"])
         self.assertEqual(usage["task_history"], {"status": "PARTIAL"})
@@ -244,6 +246,119 @@ class SwarmMCPTests(unittest.TestCase):
                 mcp.serve(telemetry_path=root / "telemetry.jsonl")
                 self.assertTrue(json.loads(output.getvalue())["result"]["isError"])
                 self.assertLess(len(output.getvalue()), 1024)
+
+    def test_compacted_usage_passes_actual_reader_without_losing_window_deltas(self):
+        script = ("import fs from 'node:fs'; "
+                  "import {usageView} from './skills/swarm/assets/ui/swarm-usage.mjs'; "
+                  "const inputs=JSON.parse(fs.readFileSync(0,'utf8')); "
+                  "console.log(JSON.stringify(inputs.map(value=>usageView(value,24))));")
+        inputs = []
+        for count in (0, 256, 257, 4097):
+            items = [{"bucket_ms": 10 + i * 3, "delta_tokens": i % 7} for i in range(count)]
+            view = {"ok": True, "hours": 24, "status": "partial" if count else "no_data",
+                    "window": {"after_ms": 10, "before_ms": 13000}, "items": items,
+                    "total_tokens": sum(row["delta_tokens"] for row in items),
+                    "coverage": {"observed_threads": 1, "expected_threads": 2}}
+            compact = mcp._compact_usage(view)
+            self.assertEqual(compact, mcp._compact_usage(view))
+            self.assertEqual(sum(row["delta_tokens"] for row in compact["items"]), view["total_tokens"])
+            self.assertEqual(len(compact["items"]), min(count, 256))
+            if count <= 256:
+                self.assertEqual(compact["items"], items)
+            else:
+                self.assertEqual(compact["series_aggregation"]["input_count"], count)
+                self.assertEqual(compact["items"][-1]["bucket_ms"], items[-1]["bucket_ms"])
+                self.assertTrue(all(row["bucket_ms"] in {item["bucket_ms"] for item in items} for row in compact["items"]))
+            inputs.append(compact)
+        run = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT.parents[1],
+                             input=json.dumps(inputs), text=True, capture_output=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        for original, rendered in zip(inputs, json.loads(run.stdout)):
+            self.assertEqual(rendered["total"], original["total_tokens"] if original["items"] else None)
+            self.assertEqual(rendered["coverage"], original["coverage"])
+            self.assertEqual(rendered["window"], original["window"])
+            self.assertEqual(rendered["status"], original["status"])
+
+    def test_project_usage_forwards_exact_scope_only_when_requested(self):
+        spec = next(tool for tool in mcp.TOOLS if tool["name"] == "swarm_usage")
+        self.assertEqual(spec["inputSchema"]["properties"]["project_id"], {"type": "string"})
+        self.assertFalse(spec["inputSchema"]["additionalProperties"])
+        app = Mock()
+        projection = mcp.SwarmProjection()
+        projection._app = app
+        app.usage_history.return_value = {"hours": 168, "scope": {"type": "all-projects"}}
+        self.assertEqual(projection.call("swarm_usage", {"hours": 168})["scope"], {"type": "all-projects"})
+        app.usage_history.assert_called_once_with(hours=168, include_verified_yield=False)
+        for arguments, hours in (({"project_id": " project-a "}, 24), ({"project_id": "project-a", "hours": 720}, 720)):
+            with self.subTest(arguments=arguments):
+                app.usage_history.reset_mock()
+                app.usage_history.return_value = {"hours": hours, "scope": {"type": "project", "project_id": "project-a"}}
+                result = projection.call("swarm_usage", arguments)
+                app.usage_history.assert_called_once_with(project_id="project-a", hours=hours, include_verified_yield=False)
+                self.assertEqual(result["scope"], {"type": "project", "project_id": "project-a"})
+        app.usage_history.reset_mock()
+        for arguments in ({"project_id": ""}, {"project_id": "   "}, {"project_id": None}, {"project_id": 7},
+                          {"project_id": ["project-a"]}, {"project_id": "project-a", "ctrl_id": "ctrl-a"},
+                          {"project_id": "project-a", "hours": 2}, {"project_id": "project-a", "hours": True}):
+            with self.subTest(arguments=arguments), self.assertRaises(mcp.MCPError):
+                projection.call("swarm_usage", arguments)
+        app.usage_history.assert_not_called()
+        for returned in ({"type": "project", "project_id": "project-b"}, {"type": "all-projects"},
+                         {"type": "project", "project_id": " project-a "}, "project-a", None):
+            with self.subTest(returned=returned):
+                app.usage_history.return_value = {"hours": 24, **({} if returned is None else {"scope": returned})}
+                with self.assertRaisesRegex(mcp.MCPError, "scope mismatch"):
+                    projection.call("swarm_usage", {"project_id": "project-a"})
+
+    def test_project_usage_compaction_passes_scoped_reader_and_rejects_leakage(self):
+        script = ("import fs from 'node:fs'; "
+                  "import {usageView} from './skills/swarm/assets/ui/swarm-usage.mjs'; "
+                  "const cases=JSON.parse(fs.readFileSync(0,'utf8')); "
+                  "console.log(JSON.stringify(cases.map(([value,project])=>{try{return {ok:true,view:project===null?usageView(value,24):usageView(value,24,project)};}catch{return {ok:false};}})));")
+
+        def view(count, scope, status=None):
+            items = [{"bucket_ms": 10 + i * 3, "delta_tokens": i % 7} for i in range(count)]
+            return {"ok": True, "hours": 24, "status": status or ("partial" if count else "no_data"),
+                    "window": {"after_ms": 10, "before_ms": 13000}, "items": items,
+                    "total_tokens": sum(row["delta_tokens"] for row in items),
+                    "coverage": {"observed_threads": 1, "expected_threads": 2}, "scope": scope}
+
+        project_a = {"type": "project", "project_id": "project-a"}
+        everyone = {"type": "all-projects"}
+        cases = [(view(0, project_a), "project-a", True), (view(257, project_a), "project-a", True),
+                 (view(257, project_a, "ok"), "project-a", True),
+                 (view(257, {"type": "project", "project_id": "project-b"}), "project-a", False),
+                 (view(257, everyone), "project-a", False), (view(257, project_a), None, False),
+                 (view(257, everyone), None, True)]
+        compacted = []
+        for value, project, _ in cases:
+            compact = mcp._compact_usage(value)
+            self.assertEqual(compact["scope"], value["scope"])
+            self.assertEqual(sum(row["delta_tokens"] for row in compact["items"]), value["total_tokens"])
+            compacted.append([compact, project])
+        run = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT.parents[1],
+                             input=json.dumps(compacted), text=True, capture_output=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        for (value, project, accepted), rendered in zip(cases, json.loads(run.stdout)):
+            with self.subTest(project=project, scope=value["scope"], count=len(value["items"])):
+                self.assertEqual(rendered["ok"], accepted)
+                if accepted:
+                    self.assertEqual(rendered["view"]["total"], value["total_tokens"] if value["items"] else None)
+                    self.assertEqual(rendered["view"]["window"], value["window"])
+                    self.assertEqual(rendered["view"]["status"], value["status"])
+                    self.assertEqual(rendered["view"]["coverage"], value["coverage"])
+
+    def test_usage_aggregation_does_not_hide_invalid_observations(self):
+        for field, value in (("bucket_ms", 0), ("bucket_ms", 9999), ("bucket_ms", True),
+                             ("delta_tokens", -1), ("delta_tokens", True)):
+            rows = [{"bucket_ms": i, "delta_tokens": 1} for i in range(257)]
+            rows[10][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(mcp.MCPError):
+                mcp._compact_usage({"items": rows, "total_tokens": 257,
+                                    "window": {"after_ms": 0, "before_ms": 300}})
+        with self.assertRaises(mcp.MCPError):
+            mcp._compact_usage({"items": [{"bucket_ms": i, "delta_tokens": 1} for i in range(257)],
+                                "total_tokens": 256, "window": {"after_ms": 0, "before_ms": 300}})
 
     def test_probe_read_write_delete_are_local_and_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
