@@ -9,6 +9,7 @@ surface area.
 from __future__ import annotations
 
 import argparse
+import ast
 from dataclasses import dataclass
 import hashlib
 import json
@@ -268,7 +269,7 @@ def validate_plugin_manifest(root: Path, files: dict[str, str] | None = None) ->
         }}}
         desktop = {"mcpServers": {"swarm": {
             "type": "stdio", "command": sys.executable,
-            "args": ["-B", "skills/swarm/scripts/swarm_desktop.py"], "cwd": ".",
+            "args": ["-B", "${PLUGIN_ROOT}/skills/swarm/scripts/swarm_desktop.py"], "cwd": "${PLUGIN_ROOT}",
         }}}
         if declaration == desktop:
             for relative in ("skills/swarm/scripts/swarm_desktop.py",
@@ -277,6 +278,37 @@ def validate_plugin_manifest(root: Path, files: dict[str, str] | None = None) ->
                 if (relative not in surface or not target.is_file() or _is_reparse_path(target)
                         or not target.resolve().is_relative_to(root)):
                     raise ValueError(f"plugin desktop component is not a confined shipped file: {relative}")
+            # Read declared pins without importing or executing candidate code.
+            pins: dict[str, str] = {}
+            for module, constant in (("swarm_desktop.py", "ASSETS"), ("swarm_mcp.py", "PROJECTS_ASSETS")):
+                try:
+                    statements = ast.parse((root / "skills/swarm/scripts" / module).read_text(encoding="utf-8")).body
+                    values = {target.id: statement.value for statement in statements if isinstance(statement, ast.Assign)
+                              for target in statement.targets if isinstance(target, ast.Name)}
+                    declared = ast.literal_eval(values[constant])
+                    if not isinstance(declared, dict) or not declared:
+                        raise ValueError("empty asset pins")
+                    if module == "swarm_mcp.py":
+                        sdk = values["HQ_SDK_PATH"]
+                        if not (isinstance(sdk, ast.BinOp) and isinstance(sdk.op, ast.Div)
+                                and isinstance(sdk.left, ast.Name) and sdk.left.id == "SWARM_SKILL_ROOT"):
+                            raise ValueError("unsupported SDK path")
+                        declared["skills/swarm/" + ast.literal_eval(sdk.right)] = ast.literal_eval(values["HQ_SDK_SHA256"])
+                    for relative, digest in declared.items():
+                        if not isinstance(relative, str) or not isinstance(digest, str):
+                            raise ValueError("invalid asset pin types")
+                        if relative in pins and pins[relative] != digest:
+                            raise ValueError("conflicting asset pins")
+                        pins[relative] = digest
+                except (KeyError, TypeError, ValueError, SyntaxError) as error:
+                    raise ValueError("invalid desktop dependency pins") from error
+            for relative, digest in pins.items():
+                relative = normalise_relative_path(relative)
+                target = root / relative
+                if (relative not in surface or not target.is_file() or _is_reparse_path(target)
+                        or not target.resolve().is_relative_to(root)
+                        or hashlib.sha256(target.read_bytes()).hexdigest() != digest):
+                    raise ValueError(f"plugin desktop dependency is missing, unconfined or changed: {relative}")
         elif declaration != expected:
             raise ValueError("plugin MCP declaration must use the shipped SWARM stdio reader")
     return manifest

@@ -51,24 +51,66 @@ class ReleasePackageTests(unittest.TestCase):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('{}', encoding='utf-8')
+            dependencies = ('console/static/icon.svg', 'skills/swarm/assets/ui/pinned.css', 'skills/swarm/assets/ui/sdk.js')
+            digest = hashlib.sha256(b'fixture').hexdigest()
+            for relative in dependencies:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'fixture')
+            (root / 'skills/swarm/scripts/swarm_desktop.py').write_text(
+                'ASSETS = ' + repr({dependencies[0]: digest}), encoding='utf-8')
+            (root / 'skills/swarm/scripts/swarm_mcp.py').write_text(
+                'PROJECTS_ASSETS = ' + repr({dependencies[1]: digest}) +
+                '\nHQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/sdk.js"\nHQ_SDK_SHA256 = ' + repr(digest), encoding='utf-8')
             config = root / '.mcp.json'
             entry = {'type': 'stdio', 'command': sys.executable,
-                     'args': ['-B', 'skills/swarm/scripts/swarm_desktop.py'], 'cwd': '.'}
+                     'args': ['-B', '${PLUGIN_ROOT}/skills/swarm/scripts/swarm_desktop.py'], 'cwd': '${PLUGIN_ROOT}'}
             config.write_text(json.dumps({'mcpServers': {'swarm': entry}}), encoding='utf-8')
             package_builder.validate_plugin_manifest(root)
             for field, invalid in (('command', 'cmd.exe'), ('command', 'C:/other/python.exe'),
                                    ('args', ['-c', 'print(1)']), ('args', ['-B', '../swarm_desktop.py']),
                                    ('args', entry['args'] + ['--extra']), ('cwd', '..'),
+                                   ('type', 'http'), ('cwd', '.'),
                                    ('env', {'PYTHONPATH': 'elsewhere'})):
                 with self.subTest(field=field, invalid=invalid):
                     config.write_text(json.dumps({'mcpServers': {'swarm': {**entry, field: invalid}}}), encoding='utf-8')
                     with self.assertRaisesRegex(ValueError, 'stdio reader'):
                         package_builder.validate_plugin_manifest(root)
             config.write_text(json.dumps({'mcpServers': {'swarm': entry}}), encoding='utf-8')
+            for relative in dependencies:
+                path = root / relative
+                path.unlink()
+                with self.subTest(missing=relative), self.assertRaisesRegex(ValueError, 'desktop dependency'):
+                    package_builder.validate_plugin_manifest(root)
+                path.write_bytes(b'fixture')
+                surface = source_file_hashes(root)
+                del surface[relative]
+                with self.subTest(unshipped=relative), self.assertRaisesRegex(ValueError, 'desktop dependency'):
+                    package_builder.validate_plugin_manifest(root, surface)
+                path.write_bytes(b'changed')
+                with self.subTest(changed=relative), self.assertRaisesRegex(ValueError, 'desktop dependency'):
+                    package_builder.validate_plugin_manifest(root)
+                path.write_bytes(b'fixture')
             snapshot = root / 'skills/swarm/assets/ui/swarm-hq-snapshot.json'
             snapshot.unlink()
             with self.assertRaisesRegex(ValueError, 'desktop component'):
                 package_builder.validate_plugin_manifest(root)
+
+    def test_hq_builder_rejects_compiler_before_execution(self):
+        spec = importlib.util.spec_from_file_location('hq_builder_test', REPOSITORY_ROOT / 'skills/swarm/scripts/build_hq_app.py')
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'package/dist/src').mkdir(parents=True)
+            (root / 'package/dist/src/app-with-deps.js').write_bytes(b'fixture-sdk')
+            (root / 'package/package.json').write_text(json.dumps({'name': '@modelcontextprotocol/ext-apps', 'version': '2.0.3'}))
+            (root / 'package/esbuild.exe').write_bytes(b'untrusted-compiler')
+            with mock.patch.object(builder, 'SDK_SHA', hashlib.sha256(b'fixture-sdk').hexdigest()), \
+                    mock.patch.object(builder.subprocess, 'check_output') as execute:
+                with self.assertRaisesRegex(ValueError, 'compiler digest mismatch'):
+                    builder.build(root, root / 'out.js')
+                execute.assert_not_called()
 
     def test_release_icons_reuse_exact_canonical_mascot(self):
         manifest = json.loads((REPOSITORY_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))

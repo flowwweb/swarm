@@ -14,6 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 SDK_SHA = 'fb56376b7583ecafb4820bdebc150abee18feb6258ff84b83c2c944ebd9c3602'
+ESBUILD_SHA = 'c7bee37877d0aa6a046e52783fa0a2cf1a9ce5579d68bb3083bda99d4bff18ef'
 
 
 def build(sdk_root: Path, output: Path) -> dict:
@@ -24,6 +25,8 @@ def build(sdk_root: Path, output: Path) -> dict:
     if package['name'] != '@modelcontextprotocol/ext-apps' or package['version'] != '2.0.3':
         raise ValueError('retained SDK package identity mismatch')
     compiler = sdk_root / 'package/esbuild.exe'
+    if hashlib.sha256(compiler.read_bytes()).hexdigest() != ESBUILD_SHA:
+        raise ValueError('retained compiler digest mismatch')
     if subprocess.check_output([str(compiler), '--version'], text=True).strip() != '0.28.2':
         raise ValueError('unsupported retained compiler')
     source = (ROOT / 'console/static/app.js').read_text(encoding='utf-8')
@@ -44,7 +47,7 @@ def build(sdk_root: Path, output: Path) -> dict:
     if len(payload) > 524288 or b'</script' in payload.lower():
         raise ValueError('bundle exceeds embedding contract')
     output.write_bytes(payload)
-    return {'sdk': '@modelcontextprotocol/ext-apps@2.0.3', 'sdk_sha256': SDK_SHA,
+    return {'sdk': '@modelcontextprotocol/ext-apps@2.0.3', 'sdk_sha256': SDK_SHA, 'compiler_sha256': ESBUILD_SHA,
             'editor_sha256': hashlib.sha256(editor.encode()).hexdigest(),
             'entry_sha256': hashlib.sha256(entry.read_bytes()).hexdigest(),
             'bundle_sha256': hashlib.sha256(payload).hexdigest(), 'bytes': len(payload)}

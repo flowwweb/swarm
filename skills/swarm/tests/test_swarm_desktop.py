@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -14,9 +15,12 @@ ROOT = Path(__file__).resolve().parents[3]
 class PackagedDesktopTests(unittest.TestCase):
     def test_packaged_settings_and_sidebar(self):
         config = json.loads((ROOT / '.mcp.json').read_bytes())['mcpServers']['swarm']
-        self.assertEqual(config['cwd'], '.')
-        self.assertEqual(config['args'], ['-B', 'skills/swarm/scripts/swarm_desktop.py'])
-        spec = importlib.util.spec_from_file_location('desktop_test', ROOT / config['args'][1])
+        self.assertEqual(config['command'], sys.executable)
+        self.assertEqual(config['type'], 'stdio')
+        self.assertEqual(config['cwd'], '${PLUGIN_ROOT}')
+        self.assertEqual(config['args'], ['-B', '${PLUGIN_ROOT}/skills/swarm/scripts/swarm_desktop.py'])
+        resolved_args = [part.replace('${PLUGIN_ROOT}', str(ROOT)) for part in config['args']]
+        spec = importlib.util.spec_from_file_location('desktop_test', resolved_args[1])
         desktop = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(desktop)
         snapshot = ROOT / 'skills/swarm/assets/ui/swarm-hq-snapshot.json'
@@ -27,10 +31,16 @@ class PackagedDesktopTests(unittest.TestCase):
         wire = ''.join(json.dumps({'jsonrpc': '2.0', 'id': i, 'method': method, 'params': params}) + '\n'
                        for i, (method, params) in enumerate(requests, 1))
         with tempfile.TemporaryDirectory() as directory:
+            decoy = Path(directory) / 'skills/swarm/scripts/swarm_desktop.py'
+            decoy.parent.mkdir(parents=True)
+            marker = Path(directory) / 'DECOY-RAN'
+            decoy.write_text('from pathlib import Path\nPath("DECOY-RAN").write_text("wrong root")\n', encoding='utf-8')
             env = dict(os.environ, PYTHONIOENCODING='utf-8', CODEX_HOME=directory, SWARM_CONFIG_PATH=str(Path(directory) / 'absent.toml'),
                        SWARM_MCP_TELEMETRY_PATH=str(Path(directory) / 'telemetry.jsonl'))
-            run = subprocess.run([config['command'], *config['args']], cwd=ROOT, env=env,
+            # After documented host placeholder expansion, even a hostile CWD cannot redirect the script.
+            run = subprocess.run([config['command'], *resolved_args], cwd=directory, env=env,
                                  input=wire, text=True, encoding='utf-8', capture_output=True, timeout=30)
+            self.assertFalse(marker.exists())
         self.assertEqual(run.returncode, 0, run.stderr)
         responses = [json.loads(line) for line in run.stdout.splitlines()]
         self.assertEqual(len(responses), 3)
