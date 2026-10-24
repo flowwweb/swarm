@@ -877,19 +877,57 @@ def _validate_retained_request_lifecycle_event(payload: Any, event_digest: str) 
     return json.loads(json.dumps(migrated, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
-def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
+CONNECTOR_ADMISSION_FIELDS = frozenset({"admission", "host_observation"})
+
+
+def _validate_connector_admission(payload: Any) -> dict[str, Any]:
+    """Validate one retained schema-2 admission exactly as committed in 474b7c4."""
+    if not isinstance(payload, dict):
+        raise ProgressEventError("connector admission must be an object")
+    kind = payload.get("kind")
+    root = kind == "ROOT_ADOPT"
+    fields = {"kind", "ctrl_id", "parent_thread_id", "subject_thread_id", "structural_role",
+              "role_manifest_ref", "authorization_digest", "physical_root_digest"}
+    if not root:
+        fields.add("parent_admission_digest")
+    if set(payload) != fields or not isinstance(kind, str) or kind not in {"ROOT_ADOPT", "CHILD_CREATE"}:
+        raise ProgressEventError("connector admission fields are invalid")
+    value = dict(payload)
+    value["ctrl_id"] = _safe_id(value["ctrl_id"], "admitted CTRL")
+    value["role_manifest_ref"] = _validate_role_manifest_ref(value["role_manifest_ref"])
+    for key in ("authorization_digest", "physical_root_digest") + (() if root else ("parent_admission_digest",)):
+        if not isinstance(value[key], str) or not re.fullmatch(r"[0-9a-f]{64}", value[key]):
+            raise ProgressEventError("admission digest must be lowercase SHA-256")
+    if not isinstance(value["structural_role"], str):
+        raise ProgressEventError("connector admission fields are invalid")
+    if root:
+        if value["structural_role"] != "CTRL" or value["subject_thread_id"] != value["ctrl_id"] or value["parent_thread_id"] is not None:
+            raise ProgressEventError("root admission must identify one existing CTRL")
+    elif value["structural_role"] not in {"LEAD", "DOER"} or value["subject_thread_id"] is not None:
+        raise ProgressEventError("child admission cannot predict the host identity")
+    else:
+        value["parent_thread_id"] = _safe_id(value["parent_thread_id"], "admitted parent")
+    return value
+
+
+def _validate_connector_receipt(payload: Any, *, replay: bool = False) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("connector receipt must be an object")
+    version = payload.get("schema_version")
+    # Schema 2 (474b7c4 root/child admission) is readable only from retained replay, never writable here.
+    admitted = replay and type(version) is int and version == 2
+    allowed = set(CONNECTOR_RECEIPT_FIELDS) | (set(CONNECTOR_ADMISSION_FIELDS) if admitted else set())
     actual_fields = set(payload)
-    required = set(CONNECTOR_RECEIPT_FIELDS) - {"task_creation_identity", "payload_digest"}
-    if not required <= actual_fields or actual_fields - set(CONNECTOR_RECEIPT_FIELDS):
+    required = allowed - {"task_creation_identity", "payload_digest"}
+    if not required <= actual_fields or actual_fields - allowed:
         raise ProgressEventError("connector receipt fields are incomplete or unexpected")
-    if payload.get("schema_version") != 1 or payload.get("record_type") != "CONNECTOR":
+    if type(version) is not int or version != (2 if admitted else 1) or payload.get("record_type") != "CONNECTOR":
         raise ProgressEventError("connector receipt schema is unsupported")
     normalized = dict(payload)
     for key in ("receipt_id", "command_id", "idempotency_key", "project_id", "action", "status"):
         normalized[key] = _safe_id(payload.get(key), f"connector {key}")
-    if normalized["action"] not in CONNECTOR_ACTIONS or normalized["status"] not in CONNECTOR_STATUSES:
+    if ((normalized["action"] not in CONNECTOR_ACTIONS and not (admitted and normalized["action"] == "ROOT_ADOPT"))
+            or normalized["status"] not in CONNECTOR_STATUSES):
         raise ProgressEventError("connector action or status is unsupported")
     for key in ("command_digest", "root_digest"):
         value = payload.get(key)
@@ -929,10 +967,34 @@ def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
         raise ProgressEventError("LOCAL_HQ lifecycle requires the exact local observed root")
     if normalized["action"] != "LOCAL_HQ" and normalized["status"] == "ACKNOWLEDGED" and (not has_thread or has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector acknowledgement requires a thread and exact root binding")
-    if normalized["action"] != "LOCAL_HQ" and normalized["status"] in {"PROGRESS", "RESULT", "DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and (not has_thread or not has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
+    if normalized["action"] not in {"LOCAL_HQ", "ROOT_ADOPT"} and normalized["status"] in {"PROGRESS", "RESULT", "DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and (not has_thread or not has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector progress or result requires thread, turn, and exact root binding")
     if normalized["status"] in {"DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and normalized["action"] != "REPAIR":
         raise ProgressEventError("uncertain steering delivery is reserved for an exact repair target")
+    if admitted:
+        admission = normalized["admission"] = _validate_connector_admission(payload.get("admission"))
+        if admission["physical_root_digest"] != normalized["root_digest"]:
+            raise ProgressEventError("admission requires the observed physical root digest")
+        root = admission["kind"] == "ROOT_ADOPT"
+        if root != (normalized["action"] == "ROOT_ADOPT") or not root and normalized["action"] not in {"MANUAL_AGENT", "TOPOLOGY_MATERIALIZE"}:
+            raise ProgressEventError("admission conflicts with connector action")
+        observation = payload.get("host_observation")
+        if normalized["status"] in {"COMMAND", "UNSUPPORTED"}:
+            if observation is not None:
+                raise ProgressEventError("pre-transport receipt cannot claim an observation")
+        else:
+            if not isinstance(observation, dict) or set(observation) != {"method", "request_id", "response_digest", "observed_at_ms"}:
+                raise ProgressEventError("admission requires a correlated host observation")
+            if (observation["method"] != ("thread/read" if root else "thread/start")
+                    or type(observation["request_id"]) not in (str, int) or not str(observation["request_id"])):
+                raise ProgressEventError("host observation method or correlation is invalid")
+            if not isinstance(observation["response_digest"], str) or not re.fullmatch(r"[0-9a-f]{64}", observation["response_digest"]):
+                raise ProgressEventError("host observation requires exact response digest")
+            if _positive_int(observation["observed_at_ms"], "host observation time", allow_zero=True) > normalized["observed_at_ms"]:
+                raise ProgressEventError("receipt predates its host observation")
+            if root and (normalized["status"] == "PROGRESS" or has_turn or normalized["thread_id"] != admission["ctrl_id"]
+                         or normalized["observed_root_digest"] != normalized["root_digest"]):
+                raise ProgressEventError("root adoption cannot create a turn or change identity")
     return json.loads(json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
@@ -2609,7 +2671,7 @@ class Ledger:
         return receipt
 
     @staticmethod
-    def _decode_non_material_record(raw_event: Any, retained_digest: str) -> tuple[str, str, dict[str, Any], str] | None:
+    def _decode_non_material_record(raw_event: Any, retained_digest: str, *, replay: bool = True) -> tuple[str, str, dict[str, Any], str] | None:
         if not isinstance(raw_event, dict) or raw_event.get("record_type") not in NON_MATERIAL_RECORD_TYPES:
             return None
         kind = str(raw_event["record_type"])
@@ -2627,11 +2689,41 @@ class Ledger:
             digest = hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             identity = "ticket-identity-" + digest
         else:
-            event = _validate_connector_receipt(raw_event)
+            event = _validate_connector_receipt(raw_event, replay=replay)
             identity, digest = event["receipt_id"], _connector_receipt_digest(event)
         if retained_digest != digest:
             raise ProgressEventError(f"{kind.casefold().replace('_', ' ')} ledger digest mismatch")
         return kind, identity, event, digest
+
+    @staticmethod
+    def _check_admission(projection: dict[str, Any], event: dict[str, Any]) -> None:
+        """Retained schema-2 root uniqueness and exact parent binding (474b7c4); schema 1 is unchanged."""
+        admission = event.get("admission")
+        if admission is None:
+            return
+        commands = projection["connector_receipts"].values()
+        if admission["kind"] == "ROOT_ADOPT":
+            for command in commands:
+                first = command["receipts"][0]
+                prior = first.get("admission") or {}
+                if prior.get("kind") == "ROOT_ADOPT" and first["idempotency_key"] != event["idempotency_key"] and (
+                        first["project_id"] == event["project_id"]
+                        or prior["physical_root_digest"] == admission["physical_root_digest"]
+                        or prior["ctrl_id"] == admission["ctrl_id"]):
+                    raise ProgressEventError("root scope already has an admitted or pending authority")
+            return
+        matches = 0
+        for command in commands:
+            first, terminal = command["receipts"][0], command["receipts"][-1]
+            prior = first.get("admission") or {}
+            if (terminal["status"] == "RESULT" and terminal["event_digest"] == admission["parent_admission_digest"]
+                    and terminal["thread_id"] == admission["parent_thread_id"]
+                    and first["project_id"] == event["project_id"] and first["root_digest"] == event["root_digest"]
+                    and prior.get("physical_root_digest") == admission["physical_root_digest"]
+                    and prior.get("ctrl_id") == admission["ctrl_id"] and prior.get("structural_role") in {"CTRL", "LEAD"}):
+                matches += 1
+        if matches != 1:
+            raise ProgressEventError("child creation requires one retained admitted parent")
 
     @staticmethod
     def _is_non_material_record(raw_event: Any) -> bool:
@@ -2721,6 +2813,7 @@ class Ledger:
         if command is None:
             if event["status"] != "COMMAND" or event["receipt_index"] != 0:
                 raise ProgressEventError("connector lifecycle must begin with COMMAND index zero")
+            Ledger._check_admission(projection, event)
             command = {
                 "identity": list(identity), "payload_digest": event.get("payload_digest"),
                 "task_creation_identity": event.get("task_creation_identity"), "terminal": False, "receipts": [],
@@ -2733,8 +2826,22 @@ class Ledger:
             raise ProgressEventError("connector task creation identity conflicts with retained command")
         elif command.get("payload_digest") is not None and event.get("payload_digest") != command["payload_digest"]:
             raise ProgressEventError("connector payload digest conflicts with retained command")
+        if command["receipts"]:
+            first = command["receipts"][0]
+            if first["schema_version"] != event["schema_version"] or first.get("admission") != event.get("admission"):
+                raise ProgressEventError("connector admission identity conflicts")
+            if event.get("admission") is not None and len(command["receipts"]) > 1:
+                ack = command["receipts"][1]
+                if ack["host_observation"] != event["host_observation"] or ack["thread_id"] != event["thread_id"]:
+                    raise ProgressEventError("admission observation changed after acknowledgement")
         if command["terminal"]:
             raise ProgressEventError("connector terminal lifecycle is monotonic")
+        admission = event.get("admission")
+        if admission is not None and admission["kind"] == "CHILD_CREATE" and event["status"] == "ACKNOWLEDGED":
+            for other in commands.values():
+                if other is not command and any(item.get("admission") is not None and item["thread_id"] == event["thread_id"]
+                                                for item in other["receipts"]):
+                    raise ProgressEventError("host child identity is already retained by another admission")
         if event["receipt_index"] != len(command["receipts"]):
             raise ProgressEventError("connector receipt index must append contiguously")
         previous = command["receipts"][-1]["status"] if command["receipts"] else None
@@ -3400,7 +3507,7 @@ class Ledger:
                 raise ProgressEventError("progress ledger sequence is not contiguous")
             raw_event = record["event"]
             replayed_record = record
-            decoded = self._decode_non_material_record(raw_event, record["event_digest"])
+            decoded = self._decode_non_material_record(raw_event, record["event_digest"], replay=True)
             if decoded is not None:
                 kind, identity, event, event_digest = decoded
                 if kind == "EXPECTED_RECEIPT":
@@ -3472,7 +3579,7 @@ class Ledger:
         return {"status": "appended", "cursor": projection["cursor"], "event_digest": event_digest, "bytes": len(line)}
 
     def append_connector_receipt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        event = _validate_connector_receipt(dict(payload))
+        event = _validate_connector_receipt(dict(payload), replay=True)
         event_digest = _connector_receipt_digest(event)
         with self._state.locked():
             projection, records = self._replay_unlocked()
@@ -3483,6 +3590,8 @@ class Ledger:
                     if retained["event_digest"] != event_digest:
                         raise ProgressEventError("connector receipt identity conflicts with retained digest")
                     return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": event["receipt_id"], "event_digest": event_digest}, "event_digest": event_digest}
+            if event["schema_version"] == 2:
+                raise ProgressEventError("retained schema-2 connector receipts are read-only")
             event_seq = len(records) + 1
             trial = json.loads(json.dumps(projection, sort_keys=True))
             decoded = self._decode_non_material_record(event, event_digest)
@@ -3607,7 +3716,7 @@ class Ledger:
         return {"status": "appended", "cursor": trial["cursor"], "event_digest": handoff_digest, "bytes": len(encoded)}
 
     def reserve_connector_command(self, payload: Mapping[str, Any], *, expected_revision: int) -> dict[str, Any]:
-        event = _validate_connector_receipt(dict(payload))
+        event = _validate_connector_receipt(dict(payload), replay=True)
         if event["status"] != "COMMAND" or event["receipt_index"] != 0:
             raise ProgressEventError("connector reservation requires COMMAND index zero")
         expected_revision = _positive_int(expected_revision, "connector expected revision", allow_zero=True)
@@ -3624,6 +3733,8 @@ class Ledger:
                 return {"status": "CONFLICT", "command": json.loads(json.dumps(command, sort_keys=True)), "cursor": projection["cursor"]}
             if retained_digest is not None or command_binding is not None or len(records) != expected_revision:
                 return {"status": "CONFLICT", "command": None, "cursor": projection["cursor"]}
+            if event["schema_version"] == 2:
+                raise ProgressEventError("retained schema-2 connector receipts are read-only")
             event_seq = len(records) + 1
             trial = json.loads(json.dumps(projection, sort_keys=True))
             self._apply_connector_receipt(trial, event, event_seq, event_digest)

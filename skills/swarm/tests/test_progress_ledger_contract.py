@@ -912,6 +912,185 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(len(self.ledger.replay()["connector_receipts"]), 1)
 
     @staticmethod
+    def retained_root_bundle(root_id="root-a", key="adopt-a", project="project-alpha", physical="d" * 64):
+        role = {"manifest_id": "manager", "manifest_version": "builtin:" + "a" * 64, "manifest_digest": "sha256:" + "a" * 64}
+        admission = {"kind": "ROOT_ADOPT", "ctrl_id": root_id, "parent_thread_id": None, "subject_thread_id": root_id,
+                     "structural_role": "CTRL", "role_manifest_ref": role, "authorization_digest": "b" * 64,
+                     "physical_root_digest": physical}
+        observation = {"method": "thread/read", "request_id": 1, "response_digest": "c" * 64, "observed_at_ms": 10}
+        base = {"schema_version": 2, "record_type": "CONNECTOR", "command_id": key, "idempotency_key": key,
+                "command_digest": hashlib.sha256(key.encode()).hexdigest(), "project_id": project,
+                "root_digest": physical, "action": "ROOT_ADOPT", "turn_id": None, "observed_at_ms": 10,
+                "admission": admission}
+        return [{**base, "receipt_id": f"{key}-{index}", "receipt_index": index, "status": status,
+                 "thread_id": root_id if index else None, "observed_root_digest": physical if index else None,
+                 "host_observation": observation if index else None}
+                for index, status in enumerate(("COMMAND", "ACKNOWLEDGED", "RESULT"))]
+
+    @staticmethod
+    def retained_child_bundle(root_admission, parent_digest, *, key="child-a", parent="root-a",
+                              thread="child-thread", role="LEAD"):
+        admission = {**root_admission, "kind": "CHILD_CREATE", "parent_thread_id": parent, "subject_thread_id": None,
+                     "structural_role": role, "parent_admission_digest": parent_digest}
+        observation = {"method": "thread/start", "request_id": "start-1", "response_digest": "e" * 64, "observed_at_ms": 11}
+        physical = root_admission["physical_root_digest"]
+        base = {"schema_version": 2, "record_type": "CONNECTOR", "command_id": key, "idempotency_key": key,
+                "command_digest": hashlib.sha256(key.encode()).hexdigest(), "project_id": "project-alpha",
+                "root_digest": physical, "action": "MANUAL_AGENT", "observed_at_ms": 11, "admission": admission}
+        return [
+            {**base, "receipt_id": f"{key}-0", "receipt_index": 0, "status": "COMMAND", "thread_id": None,
+             "turn_id": None, "observed_root_digest": None, "host_observation": None},
+            {**base, "receipt_id": f"{key}-1", "receipt_index": 1, "status": "ACKNOWLEDGED", "thread_id": thread,
+             "turn_id": None, "observed_root_digest": physical, "host_observation": observation},
+            {**base, "receipt_id": f"{key}-2", "receipt_index": 2, "status": "RESULT", "thread_id": thread,
+             "turn_id": f"turn-{key}", "observed_root_digest": physical, "host_observation": observation},
+        ]
+
+    @staticmethod
+    def retained_lines(events, start=1) -> bytes:
+        import json
+        from skills.swarm.runtime.progress_events import _connector_receipt_digest
+        return b"".join(json.dumps({"event_seq": start + offset, "event_digest": _connector_receipt_digest(event),
+                                    "event": event}, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+                        for offset, event in enumerate(events))
+
+    def write_retained(self, *events) -> bytes:
+        path = self.ledger._state.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_bytes() if path.exists() else b""
+        path.write_bytes(existing + self.retained_lines(events, len(existing.splitlines()) + 1))
+        return path.read_bytes()
+
+    def test_retained_schema2_root_and_child_replay_without_rewrite(self) -> None:
+        from skills.swarm.runtime.progress_events import _connector_receipt_digest
+        root = self.retained_root_bundle()
+        child = self.retained_child_bundle(root[0]["admission"], _connector_receipt_digest(root[2]))
+        before = self.write_retained(*root, *child)
+        projection = Ledger(self.root).replay()
+        adopt, created = projection["connector_receipts"]["adopt-a"], projection["connector_receipts"]["child-a"]
+        self.assertTrue(adopt["terminal"] and created["terminal"])
+        self.assertEqual([item["status"] for item in adopt["receipts"]], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
+        self.assertEqual([item["event_digest"] for item in adopt["receipts"] + created["receipts"]],
+                         [_connector_receipt_digest(event) for event in root + child])
+        self.assertEqual(created["receipts"][0]["admission"]["parent_admission_digest"], adopt["receipts"][-1]["event_digest"])
+        self.assertEqual(Ledger(self.root).replay(), projection)
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        tail, truncated = Ledger(self.root)._bounded_tail_records()
+        self.assertFalse(truncated)
+        self.assertEqual([item["event_digest"] for item in tail],
+                         [_connector_receipt_digest(event) for event in root + child])
+
+    def test_retained_schema2_wrong_identity_fails_replay_closed(self) -> None:
+        import copy
+        from skills.swarm.runtime.progress_events import _connector_receipt_digest
+        root = self.retained_root_bundle()
+        parent = _connector_receipt_digest(root[2])
+        child = self.retained_child_bundle(root[0]["admission"], parent)
+
+        def edit(records, index, **changes):
+            records = copy.deepcopy(records); records[index].update(changes); return records
+
+        def nested(records, field, indexes, **changes):
+            records = copy.deepcopy(records)
+            for index in indexes:
+                records[index][field] = {**records[index][field], **changes}
+            return records
+
+        def drop(records, index, field):
+            records = copy.deepcopy(records); records[index].pop(field); return records
+
+        v1_ack = {k: v for k, v in child[1].items() if k not in {"admission", "host_observation"}}
+        v1_ack["schema_version"] = 1
+        cases = {
+            "root ack wrong thread": edit(root, 1, thread_id="root-b"),
+            "root result turn": edit(root, 2, turn_id="turn-1"),
+            "root progress": edit(root, 2, status="PROGRESS"),
+            "root wrong observation method": nested(root, "host_observation", (1, 2), method="thread/start"),
+            "bool request id": nested(root, "host_observation", (1, 2), request_id=True),
+            "observation after receipt": nested(root, "host_observation", (1, 2), observed_at_ms=11),
+            "observation unknown field": nested(root, "host_observation", (1, 2), extra="x"),
+            "command claims observation": edit(root, 0, host_observation=root[1]["host_observation"]),
+            "missing observation field": drop(root, 0, "host_observation"),
+            "observation changed after ack": nested(root, "host_observation", (2,), response_digest="f" * 64),
+            "admission unknown field": nested(root, "admission", (0, 1, 2), extra="x"),
+            "root claims parent": nested(root, "admission", (0, 1, 2), parent_thread_id="parent"),
+            "physical root mismatch": nested(root, "admission", (0, 1, 2), physical_root_digest="e" * 64),
+            "admission conflicts with action": [{**item, "action": "MANUAL_AGENT"} for item in root],
+            "bool schema": [{**item, "schema_version": True} for item in root],
+            "unknown schema": [{**item, "schema_version": 3} for item in root],
+            "unknown receipt field": edit(root, 0, extra="x"),
+            "competing root same project": root + self.retained_root_bundle("root-b", "adopt-b", physical="e" * 64),
+            "competing root same physical": root + self.retained_root_bundle("root-b", "adopt-b", project="renamed"),
+            "competing root same ctrl": root + self.retained_root_bundle("root-a", "adopt-b", project="other", physical="e" * 64),
+            "child wrong parent digest": root + self.retained_child_bundle(root[0]["admission"], "f" * 64),
+            "child wrong parent thread": root + self.retained_child_bundle(root[0]["admission"], parent, parent="root-b"),
+            "child predicts host": root + nested(child, "admission", (0, 1, 2), subject_thread_id="child-thread"),
+            "child ctrl role": root + self.retained_child_bundle(root[0]["admission"], parent, role="CTRL"),
+            "child reuses root thread": root + self.retained_child_bundle(root[0]["admission"], parent, thread="root-a"),
+            "child before parent": child + root,
+            "schema mix in lifecycle": root + [child[0], v1_ack],
+        }
+        path = self.ledger._state.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.retained_lines(root + child))
+        Ledger(self.root).replay()  # The unmodified contrast is valid.
+        for label, records in cases.items():
+            with self.subTest(label):
+                path.write_bytes(self.retained_lines(records))
+                before = path.read_bytes()
+                with self.assertRaises(ProgressEventError):
+                    Ledger(self.root).replay()
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_schema2_connector_receipts_stay_replay_only(self) -> None:
+        from skills.swarm.runtime.progress_events import _connector_receipt_digest
+        root = self.retained_root_bundle()
+        path = self.ledger._state.path
+        for write in (lambda: self.ledger.reserve_connector_command(root[0], expected_revision=0),
+                      lambda: self.ledger.append_connector_receipt(root[0])):
+            with self.assertRaises(ProgressEventError):
+                write()
+        self.assertFalse(path.exists())
+        before = self.write_retained(root[0])  # A retained pending admission stays pending on this release.
+        self.assertEqual(Ledger(self.root).append_connector_receipt(root[0])["status"], "unchanged")
+        self.assertEqual(Ledger(self.root).reserve_connector_command(root[0], expected_revision=0)["status"], "REPLAY")
+        with self.assertRaises(ProgressEventError):
+            Ledger(self.root).append_connector_receipt(root[1])
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(Ledger(self.root).replay()["connector_receipts"]["adopt-a"]["terminal"])
+        self.write_retained(root[1], root[2])
+        child = self.retained_child_bundle(root[0]["admission"], _connector_receipt_digest(root[2]))
+        before = path.read_bytes()
+        with self.assertRaises(ProgressEventError):
+            Ledger(self.root).reserve_connector_command(child[0], expected_revision=3)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_schema2_replay_preserves_v1_connector_and_measured_progress(self) -> None:
+        v1 = {"schema_version": 1, "record_type": "CONNECTOR", "command_id": "v1-command", "idempotency_key": "v1-key",
+              "command_digest": "a" * 64, "project_id": "project-alpha", "root_digest": "b" * 64,
+              "action": "MANUAL_AGENT", "thread_id": None, "turn_id": None, "observed_root_digest": None}
+        command = {**v1, "receipt_id": "v1-0", "receipt_index": 0, "status": "COMMAND", "observed_at_ms": 1}
+        self.ledger.append_connector_receipt(command)
+        self.ledger.append_connector_receipt({**v1, "receipt_id": "v1-1", "receipt_index": 1, "status": "ACKNOWLEDGED",
+                                              "thread_id": "v1-thread", "observed_root_digest": "b" * 64, "observed_at_ms": 2})
+        self.ledger.append_connector_receipt({**v1, "receipt_id": "v1-2", "receipt_index": 2, "status": "RESULT",
+                                              "thread_id": "v1-thread", "turn_id": "v1-turn",
+                                              "observed_root_digest": "b" * 64, "observed_at_ms": 3})
+        self.ledger.append(self.event("measured-1", "block-a", committed=4, admitted=2))
+        with self.assertRaises(ProgressEventError):
+            self.ledger.append_connector_receipt({**command, "receipt_id": "bool-0", "command_id": "bool",
+                                                  "idempotency_key": "bool", "schema_version": True})
+        before = Ledger(self.root).replay()
+        retained = self.write_retained(*self.retained_root_bundle())
+        after = Ledger(self.root).replay()
+        self.assertEqual(after["blocks"], before["blocks"])
+        self.assertEqual(after["scopes"], before["scopes"])
+        self.assertEqual(after["connector_receipts"]["v1-key"], before["connector_receipts"]["v1-key"])
+        self.assertNotIn("admission", after["connector_receipts"]["v1-key"]["receipts"][0])
+        self.assertEqual(Ledger(self.root).reserve_connector_command(command, expected_revision=0)["status"], "REPLAY")
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+
+    @staticmethod
     def event(
         event_id: str,
         block_id: str,
