@@ -1927,7 +1927,8 @@ def _validate_task_creation_binding(
         return None
     if not isinstance(payload, dict):
         raise ProgressEventError("task creation binding must be an object")
-    _exact_fields(payload, TASK_CREATION_BINDING_FIELDS, "task creation binding")
+    fields = TASK_CREATION_BINDING_FIELDS | ({"existing_host"} if "existing_host" in payload else set())
+    _exact_fields(payload, fields, "task creation binding")
     if role_manifest is None or task_manifest is None:
         raise ProgressEventError("task creation binding requires exact role and task manifests")
     operation_id = _safe_id(payload.get("operation_id"), "task creation operation_id")
@@ -1993,7 +1994,21 @@ def _validate_task_creation_binding(
         raise ProgressEventError("initial work requires milestone and BLOCK definitions")
     elif {item["id"] for item in milestone_receipts} != milestone_ids or {item["id"] for item in block_receipts} != block_ids:
         raise ProgressEventError("initial work receipts must exactly cover task milestones and BLOCKs")
+    existing_host = payload.get("existing_host")
+    if "existing_host" in payload:
+        if not isinstance(existing_host, dict) or set(existing_host) != {"authorization_digest", "subject", "ctrl"}:
+            raise ProgressEventError("existing host binding requires exact observation fields")
+        if not isinstance(existing_host["authorization_digest"], str) or not re.fullmatch(r"[0-9a-f]{64}", existing_host["authorization_digest"]):
+            raise ProgressEventError("existing host binding requires exact authorization digest")
+        for key, identity in (("subject", task_id), ("ctrl", task_manifest["ctrl_id"])):
+            observation = existing_host[key]
+            if (not isinstance(observation, dict) or set(observation) != {"thread_id", "cwd_digest", "response_digest"}
+                    or observation["thread_id"] != identity
+                    or any(not isinstance(observation[field], str) or not re.fullmatch(r"[0-9a-f]{64}", observation[field])
+                           for field in ("cwd_digest", "response_digest"))):
+                raise ProgressEventError("existing host observation conflicts with exact task scope")
     return {
+        **({"existing_host": json.loads(json.dumps(existing_host))} if existing_host is not None else {}),
         "operation_id": operation_id,
         "project_id": project_id,
         "root_digest": root_digest,
@@ -2161,6 +2176,11 @@ def _validate_progress_material_event(
         task_payload = None
         creation_payload = None
         routing_evidence = None
+    creation_surface = (
+        "ledger:existing-host-adoption"
+        if isinstance(creation_payload, dict) and "existing_host" in creation_payload
+        else "ledger:host-task-creation"
+    )
     role_kinds = {
         ProgressEventKind.ROLE_MANIFEST_CREATE,
         ProgressEventKind.ROLE_MANIFEST_REVISE,
@@ -2185,7 +2205,7 @@ def _validate_progress_material_event(
                 or block_id != task_id
                 or topology_node_kind != "TASK"
                 or source != "swarm_execution_adapter"
-                or custody_surface != "ledger:host-task-creation"
+                or custody_surface != creation_surface
             ):
                 raise ProgressEventError("task creation role assignment is not host-confirmation-bound")
         elif project_id != "swarm-role-manifests" or block_id != role_id:
@@ -2246,7 +2266,7 @@ def _validate_progress_material_event(
                 and owner_id == task_manifest["ctrl_id"]
                 and topology_node_kind == "TASK"
                 and source == "swarm_execution_adapter"
-                and custody_surface == "ledger:host-task-creation"
+                and custody_surface == creation_surface
             )
         else:
             valid_task_identity = (
@@ -2267,6 +2287,16 @@ def _validate_progress_material_event(
         task_manifest=task_manifest,
     )
     if task_creation_binding is not None:
+        if task_creation_binding.get("existing_host") is not None and (
+            lifecycle_state is not ProgressLifecycle.ACTIVE
+            or dispatch_receipt_id is not None or completion_receipt_id is not None
+            or measurement_state is not ProgressMeasurementState.UNMEASURED
+            or committed_weight is not None or admitted_proof_weight or proof_receipt_ids
+            or weight_basis_receipt_ids or material_update_sentence is not None
+            or any(value is not None for value in (eta_start_ms, eta_end_ms, eta_confidence))
+            or eta_receipt_ids
+        ):
+            raise ProgressEventError("existing host admission requires ACTIVE identity only, without dispatch, completion, progress or ETA")
         parent = task_creation_binding["parent_edge"]
         expected_parent = parent["parent_task_id"] if parent["state"] == "BOUND" else None
         if (
@@ -2444,8 +2474,9 @@ def task_creation_binding_event(
     milestone_receipts: list[Mapping[str, Any]], block_receipts: list[Mapping[str, Any]],
     explicit_empty_work_receipt_id: str | None, host_result_receipt_id: str,
     observed_at_ms: int, independent_host_task: bool = False,
+    existing_host: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Compose one host-confirmed creation record; independent host tasks stay unassigned."""
+    """Compose a host-confirmed binding; explicit existing-host adoption never claims creation."""
     if not isinstance(independent_host_task, bool):
         raise ProgressEventError("independent_host_task must be boolean")
     if independent_host_task:
@@ -2502,9 +2533,15 @@ def task_creation_binding_event(
                 "role_manifest_ref": role_manifest_reference(role),
                 "parent_edge": {"state": "OPEN" if parent is None else "BOUND", "parent_task_id": parent},
                 "receipts": receipts,
+                **({"existing_host": dict(existing_host)} if existing_host is not None else {}),
             },
         },
     }
+    if existing_host is not None:
+        payload["custody"]["surface"] = "ledger:existing-host-adoption"
+        payload["topology"]["dispatch_receipt_id"] = None
+        payload["provenance"] = f"existing-host-adoption:{operation_id}"
+        payload["proof"]["claim_limit"] = "Observed existing host identity and explicitly authorized scope only; no creation, dispatch, instruction consumption, progress or acceptance."
     return validate_progress_material_event(payload).canonical_payload()
 
 
@@ -3332,12 +3369,15 @@ class Ledger:
         result = command["receipts"][-1]
         prepared = command.get("task_creation_identity")
         _, _, project_id, root_digest, action = command["identity"]
+        existing_host = binding.get("existing_host")
+        confirmed = (action == "LOCAL_HQ" and result["thread_id"] is None and result["turn_id"] is None
+                     and existing_host["authorization_digest"] == command["receipts"][0].get("payload_digest")) if existing_host else (
+                         action in {"MANUAL_AGENT", "TOPOLOGY_MATERIALIZE"} and result["thread_id"] == binding["task_id"])
         if (
             result["status"] != "RESULT"
-            or action not in {"MANUAL_AGENT", "TOPOLOGY_MATERIALIZE"}
+            or not confirmed
             or project_id != binding["project_id"]
             or root_digest != binding["root_digest"]
-            or result["thread_id"] != binding["task_id"]
             or result["observed_root_digest"] != binding["root_digest"]
             or result["receipt_id"] != event.custody_receipt_id
         ):
@@ -3973,14 +4013,24 @@ class Ledger:
 
     def append_connector_result_with_task_creation(
         self, result_payload: Mapping[str, Any], creation_payload: Mapping[str, Any],
+        *, command_prefix: tuple[Mapping[str, Any], ...] = (), expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        """Commit one connector RESULT and its creation binding under the same Ledger lock."""
+        """Commit a binding atomically; existing-host adoption includes its local command/ACK."""
         result = _validate_connector_receipt(dict(result_payload))
         creation = validate_progress_material_event(dict(creation_payload))
         if result["status"] != "RESULT" or creation.task_creation_binding is None:
             raise ProgressEventError("atomic task creation requires connector RESULT and creation binding")
         if result["receipt_id"] != creation.custody_receipt_id:
             raise ProgressEventError("task creation custody does not bind the connector RESULT")
+        prefix = [_validate_connector_receipt(dict(item)) for item in command_prefix]
+        adoption = creation.task_creation_binding.get("existing_host") is not None
+        if adoption:
+            if (len(prefix) != 2 or [item["status"] for item in prefix] != ["COMMAND", "ACKNOWLEDGED"]
+                    or any(item["action"] != "LOCAL_HQ" or item["idempotency_key"] != result["idempotency_key"] for item in [*prefix, result])
+                    or type(expected_revision) is not int or expected_revision < 0):
+                raise ProgressEventError("existing host admission requires one atomic local command and exact revision")
+        elif prefix or expected_revision is not None:
+            raise ProgressEventError("creation cannot use existing-host admission parameters")
         result_digest = _connector_receipt_digest(result)
         with self._state.locked():
             projection, records = self._replay_unlocked()
@@ -3991,11 +4041,26 @@ class Ledger:
             if retained_creation is not None and retained_creation != creation.digest:
                 raise ProgressEventError("task creation operation conflicts with retained binding")
             if retained_result is not None and retained_creation is not None:
+                if any(projection["connector_receipt_ids"].get(item["receipt_id"]) != _connector_receipt_digest(item)
+                       for item in prefix):
+                    raise ProgressEventError("existing host admission prefix conflicts with retained receipts")
                 return {"status": "unchanged", "cursor": projection["cursor"], "event_digest": creation.digest}
+            if adoption:
+                if projection["cursor"]["event_seq"] != expected_revision:
+                    raise ProgressEventError("progress ledger changed before existing host admission")
+                task_id = creation.task_creation_binding["task_id"]
+                if (task_id in projection["task_manifests"] or task_id in projection["role_assignments"] or result["idempotency_key"] in projection["connector_receipts"]
+                        or task_id in projection["task_creation_operations_by_task"]):
+                    raise ProgressEventError("existing host identity or operation is already assigned")
             trial = json.loads(json.dumps(projection, sort_keys=True))
             lines: list[bytes] = []
+            for item in prefix:
+                seq, digest = len(records) + len(lines) + 1, _connector_receipt_digest(item)
+                self._apply_connector_receipt(trial, item, seq, digest)
+                lines.append(json.dumps({"event_seq": seq, "event_digest": digest, "event": item}, ensure_ascii=False,
+                                       sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n")
             if retained_result is None:
-                result_seq = len(records) + 1
+                result_seq = len(records) + len(lines) + 1
                 self._apply_connector_receipt(trial, result, result_seq, result_digest)
                 lines.append(json.dumps(
                     {"event_seq": result_seq, "event_digest": result_digest, "event": result},

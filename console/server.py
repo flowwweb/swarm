@@ -66,6 +66,8 @@ from runtime.progress_events import (  # noqa: E402
     resolve_role_lucide_icon,
     role_manifest_reference,
     role_material_event,
+    task_creation_binding_event,
+    validate_task_manifest,
     validate_progress_pulse,
 )
 from runtime.execution_adapters import (  # noqa: E402
@@ -10327,7 +10329,7 @@ class App:
         except (ConsoleError, OSError, ValueError, sqlite3.Error):
             return {**result, "reason": "HOST_ROSTER_UNVERIFIED"}
 
-    def _observed_task_root(self, project_id: str, thread_id: str) -> Path:
+    def _observed_task_root(self, project_id: str, thread_id: str, *, allow_adopted: bool = False) -> Path:
         root = self._canonical_project_root(project_id).resolve(strict=True)
         with closing(_readonly_connection(state_database(self.codex_home))) as connection:
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(threads)")}
@@ -10336,6 +10338,15 @@ class App:
             projects, roots = _host_project_catalog(connection)
             project, state = _canonical_project_binding(rows[0], projects, roots) if len(rows) == 1 else (None, "unbound")
         if project is None or project["id"] != project_id or state not in {"direct", "root"} or rows[0]["archived"]:
+            if allow_adopted and len(rows) == 1 and not rows[0]["archived"] and project is None and state == "unbound":
+                projection = self.progress_ledger.replay()
+                binding = projection["task_creation_bindings"].get(projection["task_creation_operations_by_task"].get(thread_id), {})
+                observation = binding.get("existing_host", {}).get("subject", {})
+                if (binding.get("project_id") == project_id
+                        and binding.get("root_digest") == _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
+                        and observation.get("thread_id") == thread_id
+                        and observation.get("cwd_digest") == _auto_digest(_normalized_project_path(rows[0]["cwd"]))):
+                    return root
             raise ConsoleError("task requires observed host project membership")
         return root
 
@@ -10410,6 +10421,115 @@ class App:
 
     def create_bound_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._submit_task_command(payload, HQCommandAction.MANUAL_AGENT)
+
+    def adopt_existing_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Explicit local admission of an observed owner; never create/resume/dispatch a host turn."""
+        fields = {"operation_id", "project_id", "root_digest", "task_manifest", "role_manifest_ref",
+                  "expected_host_cwd", "expected_ledger_revision", "acknowledge"}
+        if not isinstance(payload, dict) or set(payload) != fields or payload["acknowledge"] is not True:
+            raise ConsoleError("existing task admission requires exact scope and explicit acknowledgement")
+        try:
+            operation = _auto_id(payload["operation_id"], "operation_id")
+            requested_id = _auto_id(payload["project_id"], "project_id")
+            binding = self._saved_project_binding(requested_id, "Existing task admission")
+            project_id, root = binding["project_id"], Path(binding["root"])
+            root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
+            task = validate_task_manifest(payload["task_manifest"])
+            subject, ctrl = task["task_id"], task["ctrl_id"]
+            is_root = subject == ctrl
+            if (payload["root_digest"] != root_digest or task["project_id"] != project_id
+                    or (task["role_scope"] == "CTRL_BOUNDED") != is_root
+                    or type(payload["expected_ledger_revision"]) is not int or payload["expected_ledger_revision"] < 0
+                    or not isinstance(payload["expected_host_cwd"], str) or not Path(payload["expected_host_cwd"]).is_absolute()):
+                raise ValueError("existing task scope, root, role scope or revision conflicts")
+            reference = payload["role_manifest_ref"]
+            if not isinstance(reference, dict) or reference.get("manifest_id", "").casefold() == "critic":
+                raise ValueError("existing task requires a current exact role reference")
+            request_digest = _auto_digest(payload)
+            projection = self.progress_ledger.replay()
+            retained = projection["task_creation_bindings"].get(operation)
+            if retained:
+                command = projection["connector_receipts"].get(operation, {})
+                if (not retained.get("existing_host") or command.get("receipts", [{}])[0].get("payload_digest") != request_digest
+                        or retained["task_id"] != subject or retained["role_manifest_ref"] != reference):
+                    raise ValueError("existing task admission conflicts with retained operation")
+                role = None
+            else:
+                if payload["expected_ledger_revision"] != projection["cursor"]["event_seq"]:
+                    raise ValueError("progress ledger changed before existing host observation")
+                roles = self.progress_ledger._project_role_manifests_from_projection(projection, self.builtin_role_manifests)["roles"]
+                selected = next((item for item in roles if item["id"] == reference.get("manifest_id")), None)
+                role = projection["role_manifests"].get(reference.get("manifest_id"), {}).get("versions", {}).get(reference.get("manifest_version"))
+                if role is None:
+                    role = next((item for item in self.builtin_role_manifests if role_manifest_reference(item) == reference), None)
+                if role is None or selected is None or selected["active_version"] != role["version"] or role_manifest_reference(role) != reference:
+                    raise ValueError("existing task role reference is missing or stale")
+                if (subject in projection["task_manifests"] or subject in projection["role_assignments"]
+                        or operation in projection["connector_receipts"]):
+                    raise ValueError("existing task identity or operation is already assigned")
+
+            def host_snapshot(thread_id: str, *, root_owner: bool) -> dict[str, str]:
+                with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+                    columns = {row["name"] for row in connection.execute("PRAGMA table_info(threads)")}
+                    project_column = "project_id" if "project_id" in columns else "'' AS project_id"
+                    row = connection.execute(f"SELECT id,cwd,archived,{project_column} FROM threads WHERE id=?", (thread_id,)).fetchone()
+                    if row is None or row["archived"] or not isinstance(row["cwd"], str) or not Path(row["cwd"]).is_absolute():
+                        raise ValueError("existing host owner is missing, archived or has invalid cwd")
+                    projects, roots = _host_project_catalog(connection)
+                    observed_project, state = _canonical_project_binding(row, projects, roots)
+                    if state in {"stale", "conflicted"} or (observed_project and observed_project["id"] != project_id):
+                        raise ValueError("existing owner belongs to a different or ambiguous project")
+                    cwd = _normalized_project_path(row["cwd"])
+                    if root_owner and (not observed_project or cwd != _normalized_project_path(str(root))):
+                        raise ValueError("CTRL owner is not bound to the canonical project root")
+                    return {"thread_id": thread_id, "cwd": cwd}
+
+            snapshots = {ctrl: host_snapshot(ctrl, root_owner=True)}
+            snapshots[subject] = host_snapshot(subject, root_owner=is_root)
+            if snapshots[subject]["cwd"] != _normalized_project_path(payload["expected_host_cwd"]):
+                raise ValueError("existing owner cwd differs from acknowledged host identity")
+            observations = {}
+            with self.auto_bridge.command_session(root) as (send, receive):
+                for index, (thread_id, snapshot) in enumerate(snapshots.items(), 1):
+                    send({"id": index, "method": "thread/read", "params": {"threadId": thread_id, "includeTurns": False}})
+                    response = receive(lambda value: value.get("id") == index and "method" not in value)
+                    if response.get("error") is not None or not isinstance(response.get("result"), dict):
+                        raise ValueError("host did not confirm the existing owner")
+                    observed_id, _, cwd = UniversalHQConnector._host_binding(response["result"])
+                    if observed_id != thread_id or _normalized_project_path(cwd) != snapshot["cwd"]:
+                        raise ValueError("host observation conflicts with existing owner identity")
+                    observations[thread_id] = {"thread_id": thread_id, "cwd_digest": _auto_digest(snapshot["cwd"]),
+                                               "response_digest": _auto_digest(response)}
+            if (self._saved_project_binding(requested_id, "Existing task admission") != binding
+                    or any(host_snapshot(thread_id, root_owner=thread_id == ctrl) != snapshot for thread_id, snapshot in snapshots.items())):
+                raise ValueError("existing owner or project binding changed during observation")
+            if retained:
+                return {"ok": True, "status": "REPLAY", "binding": copy.deepcopy(retained), "cursor": projection["cursor"],
+                        "host_created": False, "dispatched": False, "work_completed": False, "instruction_consumption": "UNVERIFIED"}
+            now = int(time.time() * 1000)
+            envelope = HQCommandEnvelope(command_id=operation, idempotency_key=operation, action=HQCommandAction.LOCAL_HQ,
+                project_id=project_id, root_digest=root_digest, ctrl_id=ctrl, target_intent=HQTargetIntent.LOCAL,
+                target_thread_id="", payload_digest=request_digest, expected_ledger_revision=payload["expected_ledger_revision"],
+                submitted_at_ms=now, expires_at_ms=now + 60000)
+            receipts = [UniversalHQConnector._receipt(envelope, receipt_id=operation + ":" + status.lower(), index=index,
+                status=status, observed_at_ms=now, observed_root_digest=None if index == 0 else root_digest)
+                for index, status in enumerate(("COMMAND", "ACKNOWLEDGED", "RESULT"))]
+            creation = task_creation_binding_event(operation_id=operation, project_id=project_id, root_digest=root_digest,
+                ctrl_id=ctrl, task_id=subject, role_manifest=role, task_manifest=task, parent_task_id=None if is_root else ctrl,
+                topology_manifest_receipt_id=operation + ":identity", task_receipt_id=operation + ":task",
+                milestone_receipts=[{"id": item["milestone_id"], "receipt_id": operation + ":m:" + str(index)} for index, item in enumerate(task["milestones"])],
+                block_receipts=[{"id": item["block_id"], "receipt_id": operation + ":b:" + str(index)} for index, item in enumerate(task["blocks"])],
+                explicit_empty_work_receipt_id=operation + ":empty" if not task["blocks"] and not task["milestones"] else None,
+                host_result_receipt_id=receipts[-1]["receipt_id"], observed_at_ms=now,
+                existing_host={"authorization_digest": request_digest, "subject": observations[subject], "ctrl": observations[ctrl]})
+            result = self.progress_ledger.append_connector_result_with_task_creation(receipts[-1], creation,
+                command_prefix=tuple(receipts[:2]), expected_revision=envelope.expected_ledger_revision)
+            retained = self.progress_ledger.replay()["task_creation_bindings"][operation]
+            return {"ok": True, "status": "APPENDED" if result["status"] == "appended" else "REPLAY", "binding": retained,
+                    "cursor": result["cursor"], "host_created": False, "dispatched": False, "work_completed": False,
+                    "instruction_consumption": "UNVERIFIED"}
+        except (ValueError, TypeError, KeyError, AttributeError, OSError, ProgressEventError) as exc:
+            raise ConsoleError(str(exc)) from exc
 
     def project_ticket_command(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Read or edit planning tickets in the canonical project brief only.
@@ -10582,7 +10702,7 @@ class App:
             task_id = _auto_id(payload["task_id"], "task_id")
             block_id = _auto_id(payload["block_id"], "block_id")
             reference_id = _auto_id(payload["reference_id"], "reference_id")
-            root = self._observed_task_root(project_id, task_id)  # Exact unarchived host thread in this project.
+            root = self._observed_task_root(project_id, task_id, allow_adopted=True)  # Exact host identity and admitted logical scope.
             if _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))}) != root_digest:
                 raise ConsoleError("ticket and task project roots differ")
             kind, record = self._brief_ticket_record(canonical / "SWARM.md", project_id, record_id)
@@ -10590,7 +10710,7 @@ class App:
             ctrl_id = state.get("versions", {}).get(state.get("active_version"), {}).get("ctrl_id")
             if not isinstance(ctrl_id, str):
                 raise ConsoleError("ticket execution requires an exact host-created task")
-            if self._observed_task_root(project_id, ctrl_id) != root:
+            if self._observed_task_root(project_id, ctrl_id, allow_adopted=True) != root:
                 raise ConsoleError("ticket execution requires the owning CTRL in this project root")
             try:
                 current_binding = self._saved_project_binding(requested_id, "Ticket execution")
@@ -10708,7 +10828,7 @@ class App:
             raise ConsoleError("bound task completion requires one exact reviewer thread and turn")
         reviewer_id = _auto_id(review["reviewer_thread_id"], "reviewer_thread_id")
         reviewer_turn = _auto_id(review["reviewer_turn_id"], "reviewer_turn_id")
-        root = self._observed_task_root(project_id, task_id)  # Exact host thread membership and root.
+        root = self._observed_task_root(project_id, task_id, allow_adopted=True)  # Exact host identity and admitted logical scope.
         projection = self.progress_ledger.replay()
         try:
             operation_id, manifest, _, _, _ = type(self.progress_ledger)._bound_block_context(projection, project_id, task_id, block_id, manifest_digest)
@@ -10719,7 +10839,7 @@ class App:
         creation = projection["task_creation_bindings"][operation_id]
         ctrl_id = manifest["ctrl_id"]
         root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
-        if creation["root_digest"] != root_digest or self._observed_task_root(project_id, ctrl_id) != root:
+        if creation["root_digest"] != root_digest or self._observed_task_root(project_id, ctrl_id, allow_adopted=True) != root:
             raise ConsoleError("bound task owning CTRL or root changed")
         if reviewer_id in {task_id, ctrl_id}:
             raise ConsoleError("bound task requires an independent reviewer, not its producer or creator")
@@ -10784,8 +10904,8 @@ class App:
             swarm.complete(Role.DOER, task_id, True, True, int(time.time()), actor_id=task_id)
             if swarm.tasks[task_id].state is not TaskState.COMPLETE:
                 raise InvariantError("runtime did not complete the task")
-            if (self._observed_task_root(project_id, task_id) != root
-                    or self._observed_task_root(project_id, ctrl_id) != root
+            if (self._observed_task_root(project_id, task_id, allow_adopted=True) != root
+                    or self._observed_task_root(project_id, ctrl_id, allow_adopted=True) != root
                     or (config["goals"]["use_goals"] and host_thread_goal_id(self.codex_home, ctrl_id) != goal_id)
                     or self._observe_bound_review(root, reviewer_id, reviewer_turn, binding) != observed_review):
                 raise InvariantError("host task/root/goal/review binding changed during verification")
@@ -15562,8 +15682,8 @@ class App:
 
     def prepare_work_unit(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Prepare the existing task-creation envelope; dispatch owns confirmation."""
-        if not isinstance(payload, dict) or set(payload) != {"kind", "template_id", "name", "objective", "project_id", "ctrl_id", "parent_goal_id", "request_id"}:
-            raise ConsoleError("work unit preparation requires exact kind, template, objective and parent scope")
+        if not isinstance(payload, dict) or set(payload) != {"kind", "template_id", "name", "objective", "project_id", "ctrl_id", "parent_goal_id", "request_id", "coordinator_role"}:
+            raise ConsoleError("work unit preparation requires exact kind, template, objective, parent scope and coordinator role")
         kind = payload["kind"]
         catalog = self.unit_catalog_projection(kind)
         collection = "labs" if kind == "LAB" else "factories"
@@ -15579,7 +15699,21 @@ class App:
         parent_goal = None if payload["parent_goal_id"] is None else _auto_id(payload["parent_goal_id"], "parent_goal_id")
         if parent_goal is not None and self.store.auto_status(ctrl_id, project_id).get("goal_id") != parent_goal:
             raise ConsoleError("parent goal lacks retained binding to the owning CTRL/project")
-        role = next(item for item in self.builtin_role_manifests if item["id"] == "manager")
+        selection = payload["coordinator_role"]
+        if (not isinstance(selection, dict) or set(selection) != {"id", "version"}
+                or not all(isinstance(selection[key], str) and selection[key] for key in selection)
+                or selection["id"].casefold() == "critic"):
+            raise ConsoleError("coordinator role requires an exact available profession and version")
+        projection = self.progress_ledger.replay()
+        roles = self.progress_ledger._project_role_manifests_from_projection(projection, self.builtin_role_manifests)["roles"]
+        selected = next((item for item in roles if item["id"] == selection["id"]), None)
+        if selected is None or selected["active_version"] != selection["version"]:
+            raise ConsoleConflict("coordinator role changed or is unavailable; select the current role version")
+        # Use the original content-bound manifest, not a decorated UI projection.
+        role = projection["role_manifests"].get(selection["id"], {}).get("versions", {}).get(selection["version"])
+        if role is None:
+            role = next(item for item in self.builtin_role_manifests
+                        if item["id"] == selection["id"] and item["version"] == selection["version"])
         stages = ["Frame the first bounded outcome", "Delegate the first work block", "Obtain independent review", "Integrate the accepted result"]
         manifest = build_task_manifest(manifest_id="unit:" + identity, task_id="draft-only", task_name=name,
             project_id=project_id, ctrl_id=ctrl_id, role_scope="LEAD_SINGLE",
@@ -15590,7 +15724,9 @@ class App:
             + "\n".join(f"- {step}" for step in template["guide"])
             + f"\nSuggested professions, not a fixed crew: {', '.join(template['suggested_roles'])}.\n") if template else "Custom unit: choose a Flow for this objective.\n"
         instruction = (f"Use SWARM. You are the LEAD coordinator of the {kind} work unit {name}. Its objective is: {objective}\n"
-            f"Owning CTRL: {ctrl_id}. Parent goal: {parent_goal or 'pending binding; reconcile with CTRL'}. "
+            "Consume this exact selected profession manifest; LEAD is your structural responsibility, not a profession or model setting:\n"
+            + json.dumps(role, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+            + f"Owning CTRL: {ctrl_id}. Parent goal: {parent_goal or 'pending binding; reconcile with CTRL'}. "
             "For goal persistence apply the LAB/FACTORY work-unit startup policy, while retaining LEAD coordination authority. Read goals.use_goals from the current configuration. Unless explicitly disabled, create or resume your own native goal and bind its real ID to this unit manifest before production. An explicit opt-out keeps goal binding pending and preserves bounded task contracts. "
             "A Lab investigates uncertainty; a Factory builds a defined deliverable. Keep this taxonomy separate from structural roles. "
             "Choose or adapt the smallest useful Flow for the objective, constraints and evidence. A starting Flow is guidance, not a mandatory method or crew. Hire only fitting Leads and Doers for ready bounded work; independent review stays with a separate owner. "
@@ -15604,13 +15740,13 @@ class App:
             "milestone_receipts": [{"id": "unit-cycle", "receipt_id": identity + "-milestone"}],
             "block_receipts": [{"id": block["block_id"], "receipt_id": identity + "-block-" + str(index)} for index, block in enumerate(manifest["blocks"])],
             "explicit_empty_work_receipt_id": None, "independent_host_task": False}
-        registered_code = self.progress_ledger.replay().get("ticket_identities", {}).get(project_id, {}).get("project_code")
+        registered_code = projection.get("ticket_identities", {}).get(project_id, {}).get("project_code")
         if registered_code is not None:
             contract["project_code"] = registered_code
         envelope = HQCommandEnvelope(command_id=identity, idempotency_key=identity, action=HQCommandAction.MANUAL_AGENT,
             project_id=project_id, root_digest=_auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))}), ctrl_id=ctrl_id,
             target_intent=HQTargetIntent.NEW_THREAD, target_thread_id="", payload_digest=hashlib.sha256(instruction.encode()).hexdigest(),
-            expected_ledger_revision=self.progress_ledger.replay()["cursor"]["event_seq"], submitted_at_ms=now, expires_at_ms=now + 60000, task_creation=contract)
+            expected_ledger_revision=projection["cursor"]["event_seq"], submitted_at_ms=now, expires_at_ms=now + 60000, task_creation=contract)
         return {"ok": True, "status": "PREPARED", "kind": kind, "command_digest": envelope.digest, "endpoint": "/api/tasks/create", "submission": {"acknowledge": True, "instruction": instruction,
             "envelope": {"command_id": identity, "idempotency_key": identity, "action": "MANUAL_AGENT", "project_id": project_id, "root_digest": envelope.root_digest,
                 "ctrl_id": ctrl_id, "target_intent": "NEW_THREAD", "target_thread_id": "", "payload_digest": envelope.payload_digest,
@@ -18027,12 +18163,14 @@ class Handler(BaseHTTPRequestHandler):
                     result = self.server.app.project_ticket_execution_command(self._payload())
                 self._json(HTTPStatus.OK, result)
                 return
-            if path in {"/api/tasks/create", "/api/tasks/message"}:
+            if path in {"/api/tasks/create", "/api/tasks/message", "/api/tasks/adopt"}:
                 if not self._authorized_auto():
                     self._error(HTTPStatus.FORBIDDEN, "task submission requires strict loopback authorization")
                     return
                 with self.server.app.write_lock:
-                    submit = self.server.app.create_bound_task if path.endswith("/create") else self.server.app.message_task
+                    submit = {"/api/tasks/create": self.server.app.create_bound_task,
+                              "/api/tasks/message": self.server.app.message_task,
+                              "/api/tasks/adopt": self.server.app.adopt_existing_task}[path]
                     result = submit(self._payload())
                 self._json(HTTPStatus.OK, result)
                 return

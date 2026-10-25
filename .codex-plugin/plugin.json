@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "1.0.25+codex.20261026.ticket-binding",
+  "version": "1.0.26+codex.20261026.owner-admission",
   "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",

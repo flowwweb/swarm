@@ -1501,6 +1501,302 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertEqual(brief.read_bytes(), brief_bytes)
         self.assertEqual(ledger_path.read_bytes(), ledger_bytes)
 
+    def _existing_owner_admission_fixture(self):
+        from contextlib import contextmanager
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root),))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        role = next(item for item in app.builtin_role_manifests if item["id"] == "developer")
+        manifest = build_task_manifest(manifest_id="existing:task", task_id="task", task_name="Bounded existing-owner work",
+            project_id="project:alpha", ctrl_id="root", role_scope="DOER_SINGLE",
+            milestones=[{"milestone_id":"m", "order":0, "title":"M", "verification_policy":"source", "supersedes_milestone_id":None}],
+            blocks=[{"block_id":"b", "milestone_id":"m", "order":0, "title":"One bounded block", "verification_policy":"source", "estimate_minutes":1, "weight":None, "supersedes_block_id":None}])
+        request = dict(operation_id="adopt-existing", project_id="project:alpha",
+            root_digest=console._auto_digest({"project_id":"project:alpha", "canonical_root":console._normalized_project_path(str(self.alpha_root))}),
+            task_manifest=manifest, role_manifest_ref=role_manifest_reference(role), expected_host_cwd=str(self.root),
+            expected_ledger_revision=0, acknowledge=True)
+        sent, controls = [], {}
+        @contextmanager
+        def session(cwd, **kwargs):
+            self.assertEqual(Path(cwd), self.alpha_root.resolve())
+            def send(message):
+                self.assertEqual(message["method"], "thread/read")
+                self.assertEqual(set(message["params"]), {"threadId", "includeTurns"})
+                self.assertIs(message["params"]["includeTurns"], False)
+                sent.append(message)
+            def receive(predicate):
+                thread_id = sent[-1]["params"]["threadId"]
+                with closing(sqlite3.connect(self.database)) as connection:
+                    cwd = connection.execute("SELECT cwd FROM threads WHERE id=?", (thread_id,)).fetchone()[0]
+                response = {"id":sent[-1]["id"], "result":{"thread":{"id":thread_id, "cwd":cwd}}}
+                if controls.get("mutate"):
+                    controls["mutate"](response)
+                return response
+            yield send, receive
+        app.auto_bridge.command_session = session
+        return app, request, sent, controls, session
+
+    def test_existing_owner_admission_preserves_host_identity_and_replays(self) -> None:
+        app, request, sent, controls, session = self._existing_owner_admission_fixture()
+        with closing(sqlite3.connect(self.database)) as connection:
+            before_host = connection.execute("SELECT * FROM threads ORDER BY id").fetchall()
+        config = self.config.read_bytes()
+        result = app.adopt_existing_task(request)
+        self.assertEqual(result["status"], "APPENDED")
+        self.assertFalse(result["host_created"])
+        self.assertFalse(result["dispatched"])
+        self.assertFalse(result["work_completed"])
+        self.assertEqual(result["instruction_consumption"], "UNVERIFIED")
+        binding = result["binding"]
+        self.assertEqual(binding["task_id"], "task")
+        self.assertEqual(binding["existing_host"]["subject"]["thread_id"], "task")
+        self.assertEqual(binding["parent_edge"], {"state":"BOUND", "parent_task_id":"root"})
+        self.assertEqual([r["params"]["threadId"] for r in sent], ["root", "task"])
+        with self.assertRaises(console.ConsoleError):
+            app._observed_task_root("project:alpha", "task")
+        self.assertEqual(app._observed_task_root("project:alpha", "task", allow_adopted=True), self.alpha_root.resolve())
+        projection = app.progress_ledger.replay()
+        command = projection["connector_receipts"]["adopt-existing"]
+        self.assertEqual([r["status"] for r in command["receipts"]], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
+        self.assertTrue(all(r["thread_id"] is None and r["turn_id"] is None for r in command["receipts"]))
+        self.assertEqual(projection["cursor"]["event_seq"], 4)
+        self.assertEqual(projection["blocks"], {})
+        retained = app.progress_ledger._state.path.read_bytes()
+        restarted = console.App(self.codex_home, self.config)
+        restarted.auto_bridge.command_session = session
+        replay = restarted.adopt_existing_task(request)
+        self.assertEqual(replay["status"], "REPLAY")
+        self.assertEqual(replay["binding"], binding)
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained)
+        for change in ({"operation_id":"different-operation", "expected_ledger_revision":4},
+                       {"role_manifest_ref":{**request["role_manifest_ref"], "manifest_version":"changed"}}):
+            with self.subTest(change=change), self.assertRaises(console.ConsoleError):
+                restarted.adopt_existing_task({**request, **change})
+            self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(connection.execute("SELECT * FROM threads ORDER BY id").fetchall(), before_host)
+            connection.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root/'moved'),)); connection.commit()
+        with self.assertRaises(console.ConsoleError):
+            restarted.adopt_existing_task(request)
+        with self.assertRaises(console.ConsoleError):
+            restarted._observed_task_root("project:alpha", "task", allow_adopted=True)
+        self.assertEqual(self.config.read_bytes(), config)
+
+    def test_existing_owner_admission_rejects_scope_and_host_conflicts_without_write(self) -> None:
+        app, request, sent, controls, session = self._existing_owner_admission_fixture()
+        for change in ({"acknowledge":False}, {"root_digest":"0"*64}, {"project_id":"project:missing"},
+                       {"expected_ledger_revision":1}, {"expected_ledger_revision":True}, {"expected_host_cwd":"relative"},
+                       {"role_manifest_ref":{**request["role_manifest_ref"], "manifest_version":"stale"}}):
+            with self.subTest(change=change), self.assertRaises(console.ConsoleError):
+                app.adopt_existing_task({**request, **change})
+            self.assertFalse(app.progress_ledger._state.path.exists())
+        self.assertEqual(sent, [])
+        for fields in ({"id":"foreign"}, {"cwd":str(self.root/'wrong')}, {"id":12}, {"cwd":None}):
+            controls["mutate"] = lambda response: response["result"]["thread"].update(fields)
+            with self.subTest(fields=fields), self.assertRaises(console.ConsoleError):
+                app.adopt_existing_task(request)
+            self.assertFalse(app.progress_ledger._state.path.exists())
+        controls.clear()
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET archived=1 WHERE id='task'"); connection.commit()
+        with self.assertRaises(console.ConsoleError):
+            app.adopt_existing_task(request)
+        self.assertFalse(app.progress_ledger._state.path.exists())
+
+    def test_existing_owner_admission_ctrl_and_ledger_race(self) -> None:
+        app, request, sent, controls, session = self._existing_owner_admission_fixture()
+        raced = []
+        def change_revision(response):
+            if not raced:
+                app.progress_ledger.reserve_brief_ticket_id(project_id="project:alpha", kind="goal", record_id="raced-goal",
+                    root_digest=request["root_digest"], source_digest="sha256:" + "b"*64, request_digest="c"*64,
+                    record_digest="d"*64, project_code="SWRM")
+                raced.append(app.progress_ledger._state.path.read_bytes())
+        controls["mutate"] = change_revision
+        with self.assertRaisesRegex(console.ConsoleError, "ledger changed"):
+            app.adopt_existing_task(request)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), raced[0])
+        self.assertEqual(app.progress_ledger.replay()["task_creation_bindings"], {})
+        controls.clear()
+        sent.clear()
+        manifest = build_task_manifest(manifest_id="existing:root", task_id="root", task_name="Existing root",
+            project_id="project:alpha", ctrl_id="root", role_scope="CTRL_BOUNDED", milestones=[], blocks=[])
+        request.update(operation_id="adopt-root", task_manifest=manifest, expected_host_cwd=str(self.alpha_root),
+                       expected_ledger_revision=app.progress_ledger.replay()["cursor"]["event_seq"])
+        result = app.adopt_existing_task(request)
+        self.assertEqual(result["binding"]["parent_edge"], {"state":"OPEN", "parent_task_id":None})
+        self.assertEqual([r["params"]["threadId"] for r in sent], ["root"])
+        self.assertEqual(app.progress_ledger.replay()["blocks"], {})
+        before = app.progress_ledger._state.path.read_bytes()
+        restarted = console.App(self.codex_home, self.config)
+        restarted.auto_bridge.command_session = session
+        self.assertEqual(restarted.adopt_existing_task(request)["status"], "REPLAY")
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), before)
+
+    def test_existing_owner_admission_http_auth_and_atomic_failures(self) -> None:
+        app, request, sent, controls, session = self._existing_owner_admission_fixture()
+        def post(token):
+            handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=token)
+            handler.server.app = app
+            handler.path = "/api/tasks/adopt"
+            handler._payload = mock.Mock(return_value=request)
+            handler._json = mock.Mock()
+            handler._error = mock.Mock()
+            handler.do_POST()
+            return handler
+        denied = post("wrong")
+        denied._error.assert_called_once()
+        denied._json.assert_not_called()
+        self.assertEqual(sent, [])
+        self.assertFalse(app.progress_ledger._state.path.exists())
+        original = app.progress_ledger.append_connector_result_with_task_creation
+        captured = []
+        def capture(result, event, **kwargs):
+            captured.append((copy.deepcopy(result), copy.deepcopy(event), copy.deepcopy(kwargs)))
+            raise console.ProgressEventError("test intercepted before durable admission")
+        with mock.patch.object(app.progress_ledger, "append_connector_result_with_task_creation", side_effect=capture):
+            post(app.token)._error.assert_called_once()
+        self.assertEqual(len(captured), 1)
+        for corrupt in ("prefix", "subject", "authorization", "dispatch", "custody", "progress"):
+            result, event, kwargs = copy.deepcopy(captured[0])
+            if corrupt == "prefix":
+                kwargs["command_prefix"] = kwargs["command_prefix"][:1]
+            elif corrupt == "subject":
+                event["topology"]["task_creation_binding"]["existing_host"]["subject"]["thread_id"] = "wrong"
+            elif corrupt == "authorization":
+                event["topology"]["task_creation_binding"]["existing_host"]["authorization_digest"] = "0"*64
+            elif corrupt == "dispatch":
+                event["topology"]["dispatch_receipt_id"] = result["receipt_id"]
+            elif corrupt == "custody":
+                event["custody"]["surface"] = "ledger:host-task-creation"
+            else:
+                event["measurement"]["admitted_proof_weight"] = 1
+            with self.subTest(corrupt=corrupt), self.assertRaises(console.ProgressEventError):
+                original(result, event, **kwargs)
+            self.assertFalse(app.progress_ledger._state.path.exists())
+        result, event, kwargs = captured[0]
+        self.assertEqual(original(result, event, **kwargs)["status"], "appended")
+        before = app.progress_ledger._state.path.read_bytes()
+        restarted = console.App(self.codex_home, self.config)
+        self.assertEqual(restarted.progress_ledger.append_connector_result_with_task_creation(result, event, **kwargs)["status"], "unchanged")
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), before)
+        acknowledged = post(app.token)
+        acknowledged._error.assert_not_called()
+        self.assertEqual(acknowledged._json.call_args.args[1]["status"], "REPLAY")
+
+    def test_existing_owner_admission_rejects_observation_race_and_foreign_project(self) -> None:
+        app, request, sent, controls, session = self._existing_owner_admission_fixture()
+        def move_during_read(response):
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root/'moved'),))
+                connection.commit()
+        controls["mutate"] = move_during_read
+        with self.assertRaises(console.ConsoleError):
+            app.adopt_existing_task(request)
+        self.assertFalse(app.progress_ledger._state.path.exists())
+        controls.clear()
+        sent.clear()
+        with closing(sqlite3.connect(self.database)) as connection:
+            other = str(self.root / "foreign-project")
+            connection.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", ("project:foreign", "Foreign", "{}", 8, 0, 0))
+            connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:foreign", 0, other))
+            connection.execute("UPDATE threads SET cwd=? WHERE id='task'", (other,))
+            connection.commit()
+        request["expected_host_cwd"] = other
+        with self.assertRaisesRegex(console.ConsoleError, "different or ambiguous project"):
+            app.adopt_existing_task(request)
+        self.assertEqual(sent, [])
+        self.assertFalse(app.progress_ledger._state.path.exists())
+
+    def test_existing_owner_admission_replay_requires_exact_command_and_ack(self) -> None:
+        app, request, sent, controls, session = self._existing_owner_admission_fixture()
+        captured = []
+        def capture(result, event, **kwargs):
+            captured.append((copy.deepcopy(result), copy.deepcopy(event), copy.deepcopy(kwargs)))
+            raise console.ProgressEventError("capture before append")
+        with mock.patch.object(app.progress_ledger, "append_connector_result_with_task_creation", side_effect=capture):
+            with self.assertRaises(console.ConsoleError):
+                app.adopt_existing_task(request)
+        result, event, kwargs = captured[0]
+        append = app.progress_ledger.append_connector_result_with_task_creation
+        self.assertEqual(append(result, event, **kwargs)["status"], "appended")
+        before = app.progress_ledger._state.path.read_bytes()
+        restarted = console.App(self.codex_home, self.config).progress_ledger
+        for index in (0, 1):
+            for field, value in (("project_id", "project:foreign"), ("payload_digest", "0"*64),
+                                 ("command_digest", "1"*64), ("receipt_id", "different-receipt"),
+                                 ("observed_at_ms", kwargs["command_prefix"][index]["observed_at_ms"] + 1)):
+                bad = copy.deepcopy(kwargs)
+                bad["command_prefix"][index][field] = value
+                with self.subTest(index=index, field=field), self.assertRaises(console.ProgressEventError):
+                    restarted.append_connector_result_with_task_creation(result, event, **bad)
+                self.assertEqual(restarted._state.path.read_bytes(), before)
+                fresh = type(restarted)(self.root/f"bad-prefix-{index}-{field}")
+                if field not in {"receipt_id", "observed_at_ms"}:
+                    with self.assertRaises(console.ProgressEventError):
+                        fresh.append_connector_result_with_task_creation(result, event, **bad)
+                    self.assertFalse(fresh._state.path.exists())
+        self.assertEqual(restarted.append_connector_result_with_task_creation(result, event, **kwargs)["status"], "unchanged")
+        self.assertEqual(restarted._state.path.read_bytes(), before)
+
+    def test_existing_owner_admission_rejects_lifecycle_eta_and_material_claims(self) -> None:
+        app, request, sent, controls, session = self._existing_owner_admission_fixture()
+        captured = []
+        def capture(result, event, **kwargs):
+            captured.append((copy.deepcopy(result), copy.deepcopy(event), copy.deepcopy(kwargs)))
+            raise console.ProgressEventError("capture before append")
+        with mock.patch.object(app.progress_ledger, "append_connector_result_with_task_creation", side_effect=capture):
+            with self.assertRaises(console.ConsoleError):
+                app.adopt_existing_task(request)
+        cases = [{"lifecycle_state":state} for state in ("ACCEPTED", "VERIFIED", "BLOCKED")]
+        cases += [{"eta":{"start_ms":1,"end_ms":2,"confidence":90,"basis_receipt_ids":["unverified"]}},
+                  {"eta":{"start_ms":None,"end_ms":None,"confidence":None,"basis_receipt_ids":["unverified"]}},
+                  {"material_update_sentence":"Verified all work."}]
+        for index, changes in enumerate(cases):
+            result, event, kwargs = copy.deepcopy(captured[0])
+            event.update(changes)
+            ledger = type(app.progress_ledger)(self.root/f"admission-claim-{index}")
+            with self.subTest(changes=changes), self.assertRaises(console.ProgressEventError):
+                ledger.append_connector_result_with_task_creation(result, event, **kwargs)
+            self.assertFalse(ledger._state.path.exists())
+            self.assertEqual(ledger.replay()["cursor"]["event_seq"], 0)
+        result, event, kwargs = captured[0]
+        app.progress_ledger.append_connector_result_with_task_creation(result, event, **kwargs)
+        restarted = console.App(self.codex_home, self.config).progress_ledger
+        topology = restarted.project_topology("project:alpha", "root")
+        task = next(item for item in topology["nodes"] if item["node_id"] == "task")
+        self.assertEqual(task["lifecycle_state"], "ACTIVE")
+        self.assertEqual(topology["accepted_block_points"], 0)
+        self.assertIsNone(task["dispatch_receipt_id"])
+        self.assertIsNone(task["completion_receipt_id"])
+        self.assertEqual(task["proof_receipt_ids"], [])
+
+    def test_existing_owner_admission_binds_ticket_without_completion_after_restart(self) -> None:
+        app, request, sent, controls, session = self._existing_owner_admission_fixture()
+        app.adopt_existing_task(request)
+        self._write_project_brief(self.alpha_root, "project:alpha")
+        digest = app.project_ticket_command({"operation":"read", "project_id":"project:alpha"})["source_digest"]
+        app.project_ticket_command({"operation":"create", "project_id":"project:alpha", "expected_digest":digest,
+            "acknowledge":True, "collection":"goals", "record_id":"existing-goal", "project_code":"SWRM", "changes":{"label":"Existing work"}})
+        bind = {"operation":"bind", "project_id":"project:alpha", "record_id":"existing-goal",
+                "reference_id":"existing-goal-block", "task_id":"task", "block_id":"b",
+                "manifest_digest":request["task_manifest"]["manifest_digest"], "attempt":1, "membership":"REQUIRED",
+                "expected_ledger_revision":app.progress_ledger.replay()["cursor"]["event_seq"], "acknowledge":True}
+        result = app.project_ticket_execution_command(bind)
+        self.assertEqual(result["execution"]["required_count"], 1)
+        self.assertEqual(result["execution"]["accepted_required_count"], 0)
+        self.assertFalse(result["execution"]["completed"])
+        before = app.progress_ledger._state.path.read_bytes()
+        restarted = console.App(self.codex_home, self.config)
+        again = restarted.project_ticket_execution_command(bind)
+        self.assertEqual(again["execution"], result["execution"])
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), before)
+        self.assertEqual(restarted.progress_ledger.replay()["blocks"], {})
+        with self.assertRaises(console.ConsoleError):
+            restarted.project_ticket_execution_command({**bind, "manifest_digest":"sha256:" + "0"*64})
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), before)
+
     def test_ticket_execution_binding_completes_only_through_bound_block_acceptance(self) -> None:
         from contextlib import contextmanager
         app = console.App(self.codex_home, self.config)
@@ -1789,12 +2085,19 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.commit()
         app = console.App(self.codex_home, self.config)
         sent = []
-        for kind, template in (("LAB", "research"), ("FACTORY", "software")):
+        for kind, template, profession in (("LAB", "research", "designer"), ("FACTORY", "software", "architect")):
+            selected_role = next(r for r in app.builtin_role_manifests if r["id"] == profession)
             request = dict(kind=kind, template_id=template, name=kind + " outcome", objective="Resolve one bounded outcome",
-                project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="create-" + kind.lower())
+                project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="create-" + kind.lower(), coordinator_role={"id":"manager", "version":next(r["version"] for r in app.builtin_role_manifests if r["id"] == "manager")})
+            request["coordinator_role"] = {"id": profession, "version": selected_role["version"]}
             with mock.patch.object(app, "_auto_scope"):
                 prepared = app.prepare_work_unit(request)
             self.assertEqual(prepared["status"], "PREPARED")
+            self.assertEqual(prepared["submission"]["envelope"]["task_creation"]["role_manifest"], selected_role)
+            role_input = json.dumps(selected_role, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            self.assertIn(role_input, prepared["submission"]["instruction"])
+            self.assertNotIn("model", prepared["submission"]["envelope"])
+            self.assertNotIn("effort", prepared["submission"]["envelope"])
             if kind == "FACTORY":
                 self.assertEqual(prepared["submission"]["envelope"]["task_creation"]["project_code"], "SWRM")
             else:
@@ -1820,6 +2123,12 @@ class SwarmConsoleTests(unittest.TestCase):
                 result = app.create_bound_task(prepared["submission"])
             self.assertEqual((result["status"], result["thread_id"], result["command_digest"]), ("RESULT", thread_id, prepared["command_digest"]))
             self.assertFalse(result["work_completed"])
+            turn_input = sent[-1]["params"]["input"][0]["text"]
+            self.assertIn(role_input, turn_input)
+            binding = app.progress_ledger.replay()["task_creation_bindings"][request["request_id"]]
+            self.assertEqual(binding["role_manifest_ref"], role_manifest_reference(selected_role))
+            self.assertNotIn("model", sent[-1]["params"])
+            self.assertNotIn("effort", sent[-1]["params"])
             unit = app.unit_catalog_projection(kind)["instances"][0]
             self.assertEqual(unit["coordinator_id"], thread_id)
             self.assertEqual(unit["work_unit"]["kind"], kind)
@@ -1870,13 +2179,123 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_before)
         self.assertEqual(len(sent), 4)
 
+    def test_work_unit_coordinator_role_is_explicit_current_and_not_a_roster(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        role = next(r for r in app.role_manifest_projection()["roles"] if r["id"] == "designer")
+        request = dict(kind="LAB", template_id="custom", name="Design Lab", objective="Review one design",
+            project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="design-role",
+            coordinator_role={"id":"designer", "version":role["active_version"]})
+        before = app.progress_ledger.replay()
+        settings = self.config.read_bytes()
+        invalid = [dict(request, coordinator_role=value) for value in (None, {},
+            {"id":"unknown", "version":role["active_version"]},
+            {"id":"Designer", "version":role["active_version"]},
+            {"id":"critic", "version":role["active_version"]},
+            {"id":"designer", "version":"old"},
+            {"id":"designer", "version":role["active_version"], "model":"Luna"})]
+        invalid.append({k:v for k,v in request.items() if k != "coordinator_role"})
+        invalid += [dict(request, **{field:[]}) for field in ("role_refs","unit_refs","roles")]
+        with mock.patch.object(app, "_auto_scope"):
+            for body in invalid:
+                with self.subTest(body=body), self.assertRaises(console.ConsoleError):
+                    app.prepare_work_unit(body)
+                self.assertEqual(app.progress_ledger.replay(), before)
+            prepared = app.prepare_work_unit(request)
+        draft = {key:role[key] for key in ("name","purpose","owns","instructions","boundaries",
+            "default_skills","specializations","avatar_asset_digest","accent")}
+        app.role_manifest_command(dict(command="ROLE_MANIFEST_REVISE", role_id="designer",
+            event_id="design-revision", dedupe_key="design-revision", expected_active_version=role["active_version"],
+            manifest={**draft, "instructions":role["instructions"] + ["Require an explicit layout proof."]},
+            provenance="explicit-role-selection-test", observed_at_ms=10))
+        changed = next(r for r in app.role_manifest_projection()["roles"] if r["id"] == "designer")
+        retained = app.progress_ledger._state.path.read_bytes()
+        app.auto_bridge.command_session = mock.Mock(side_effect=AssertionError("stale role must not dispatch"))
+        with mock.patch.object(app, "_auto_scope"):
+            with self.assertRaises(console.ConsoleConflict): app.prepare_work_unit(request)
+            result = app.create_bound_task(prepared["submission"])
+            self.assertTrue(result["definitive_non_dispatch"])
+            self.assertEqual(result["reason"], "SUBMISSION_EXPIRED_OR_REVISION_STALE")
+        app.auto_bridge.command_session.assert_not_called()
+        request["coordinator_role"]["version"] = changed["active_version"]
+        restarted = console.App(self.codex_home, self.config)
+        with mock.patch.object(restarted, "_auto_scope"):
+            fresh = restarted.prepare_work_unit(request)
+        selected = fresh["submission"]["envelope"]["task_creation"]["role_manifest"]
+        self.assertEqual(selected["version"], changed["active_version"])
+        self.assertIn("Require an explicit layout proof.", fresh["submission"]["instruction"])
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained)
+        self.assertEqual(self.config.read_bytes(), settings)
+        self.assertEqual(restarted.unit_catalog_projection("LAB")["instances"], [])
+
+    def test_work_unit_role_revision_during_prepare_prevents_dispatch(self) -> None:
+        from contextlib import contextmanager
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        role = next(r for r in app.role_manifest_projection()["roles"] if r["id"] == "designer")
+        request = dict(kind="LAB", template_id="custom", name="Design Lab", objective="One bounded design",
+            project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="during-prepare",
+            coordinator_role={"id": "designer", "version": role["active_version"]})
+        draft = {key: role[key] for key in ("name", "purpose", "owns", "instructions", "boundaries",
+            "default_skills", "specializations", "avatar_asset_digest", "accent")}
+        original_builder = console.build_task_manifest
+        revisions = []
+        def interleave(*args, **kwargs):
+            if not revisions:
+                revisions.append(app.role_manifest_command(dict(command="ROLE_MANIFEST_REVISE", role_id="designer",
+                    event_id="role-during-prepare", dedupe_key="role-during-prepare", expected_active_version=role["active_version"],
+                    manifest={**draft, "instructions": role["instructions"] + ["Consume the current reviewed boundary."]},
+                    provenance="during-prepare-contract", observed_at_ms=10)))
+            return original_builder(*args, **kwargs)
+        with mock.patch.object(app, "_auto_scope"), mock.patch.object(console, "build_task_manifest", side_effect=interleave):
+            prepared = app.prepare_work_unit(request)
+        current = next(r for r in app.role_manifest_projection()["roles"] if r["id"] == "designer")
+        self.assertNotEqual(role["active_version"], current["active_version"])
+        sent = []
+        @contextmanager
+        def session(cwd, **kwargs):
+            replies = [{"thread": {"id": "native-current-role", "cwd": str(cwd)}}, {"turn": {"id": "turn-current-role"}}]
+            def receive(predicate):
+                return {"id": sent[-1]["id"], "result": replies.pop(0)}
+            yield sent.append, receive
+        app.auto_bridge.command_session = session
+        before = app.progress_ledger._state.path.read_bytes()
+        with mock.patch.object(app, "_auto_scope"):
+            result = app.create_bound_task(prepared["submission"])
+        self.assertTrue(result["definitive_non_dispatch"])
+        self.assertEqual(result["reason"], "SUBMISSION_EXPIRED_OR_REVISION_STALE")
+        self.assertEqual(sent, [])
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+        self.assertEqual(app.progress_ledger.replay()["task_creation_bindings"], {})
+        self.assertLess(prepared["submission"]["envelope"]["expected_ledger_revision"], app.progress_ledger.replay()["cursor"]["event_seq"])
+        request["coordinator_role"]["version"] = current["active_version"]
+        with mock.patch.object(app, "_auto_scope"):
+            fresh = app.prepare_work_unit(request)
+            result = app.create_bound_task(fresh["submission"])
+        self.assertEqual(result["status"], "RESULT")
+        self.assertEqual([call["method"] for call in sent], ["thread/start", "turn/start"])
+        self.assertIn("Consume the current reviewed boundary.", sent[1]["params"]["input"][0]["text"])
+        binding = app.progress_ledger.replay()["task_creation_bindings"]["during-prepare"]
+        self.assertEqual(binding["role_manifest_ref"]["manifest_version"], current["active_version"])
+        restarted = console.App(self.codex_home, self.config)
+        restarted.auto_bridge.command_session = mock.Mock(side_effect=AssertionError("retained replay cannot dispatch"))
+        with mock.patch.object(restarted, "_auto_scope"):
+            replay = restarted.create_bound_task(fresh["submission"])
+        self.assertEqual(replay["status"], "REPLAY")
+        self.assertEqual(restarted.progress_ledger.replay()["task_creation_bindings"]["during-prepare"], binding)
+        restarted.auto_bridge.command_session.assert_not_called()
+
     def test_work_unit_submission_rechecks_custody_before_native_dispatch(self) -> None:
         with closing(sqlite3.connect(self.database)) as connection:
             connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
             connection.commit()
         app = console.App(self.codex_home, self.config)
         request = dict(kind="FACTORY", template_id="software", name="Factory", objective="One deliverable",
-            project_id="project:alpha", ctrl_id="root", parent_goal_id="goal-root", request_id="unit-stale")
+            project_id="project:alpha", ctrl_id="root", parent_goal_id="goal-root", request_id="unit-stale", coordinator_role={"id":"manager", "version":next(r["version"] for r in app.builtin_role_manifests if r["id"] == "manager")})
         with mock.patch.object(app, "_auto_scope"), mock.patch.object(app.store, "auto_status", return_value={"goal_id":"goal-root"}):
             prepared = app.prepare_work_unit(request)
         app.auto_bridge.command_session = mock.Mock(side_effect=AssertionError("stale custody must never call native host"))
@@ -1898,7 +2317,7 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_work_unit_preparation_rejects_stale_ctrl_and_foreign_goal(self) -> None:
         app = console.App(self.codex_home, self.config)
         request = dict(kind="FACTORY", template_id="software", name="Factory", objective="Bounded deliverable",
-            project_id="project:alpha", ctrl_id="missing", parent_goal_id=None, request_id="unit-denied")
+            project_id="project:alpha", ctrl_id="missing", parent_goal_id=None, request_id="unit-denied", coordinator_role={"id":"manager", "version":next(r["version"] for r in app.builtin_role_manifests if r["id"] == "manager")})
         with self.assertRaisesRegex(console.ConsoleError, "current host-confirmed"):
             app.prepare_work_unit(request)
         request.update(ctrl_id="root", parent_goal_id="foreign-goal")
@@ -1915,7 +2334,7 @@ class SwarmConsoleTests(unittest.TestCase):
         factories = app.unit_catalog_projection("FACTORY")["factories"]
         self.assertEqual([unit["id"] for unit in factories], ["software", "web_app", "game", "integration", "data", "release"])
         request = dict(kind="FACTORY", template_id="software", name="My deliverable", objective="Keep my precise objective",
-            project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="factory-flow")
+            project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="factory-flow", coordinator_role={"id":"manager", "version":next(r["version"] for r in app.builtin_role_manifests if r["id"] == "manager")})
         for unit in factories:
             with self.subTest(unit=unit["id"]), mock.patch.object(app, "_auto_scope"):
                 request["template_id"] = unit["id"]
@@ -1953,7 +2372,7 @@ class SwarmConsoleTests(unittest.TestCase):
         historical = []
         for retired, name in (("build", "Build Lab"), ("ops", "Ops Lab")):
             request = dict(kind="LAB", template_id=retired, name=name, objective="Preserve the existing unit",
-                project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="retained-" + retired)
+                project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="retained-" + retired, coordinator_role={"id":"manager", "version":next(r["version"] for r in app.builtin_role_manifests if r["id"] == "manager")})
             old_template = dict(id=retired, name=name, outcome="Previously defined Lab outcome",
                 guide=["Frame the outcome", "Return accepted evidence"], suggested_roles=["manager"])
             # Reproduce the prior catalog at preparation, then read retained native manifests through the new catalog.
