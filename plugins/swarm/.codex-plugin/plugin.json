@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "1.0.22+codex.20261025.reviewed-blocked-goal",
+  "version": "1.0.23+codex.20261025.ticket-hierarchy",
   "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",
@@ -21,7 +21,7 @@
   "interface": {
     "composerIcon": "./console/static/swarm-icon-64.png",
     "logo": "./console/static/swarm-mascot-512.png",
-    "displayName": "🐙 SWARM",
+    "displayName": "SWARM",
     "shortDescription": "Build an automated software engineering factory with AI agents.",
     "longDescription": "SWARM is a multi-agent workflow for Codex. Coordinate specialist agents to plan, build, test and review software through one workflow.",
     "developerName": "Flowwweb",

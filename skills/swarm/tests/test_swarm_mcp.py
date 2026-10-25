@@ -30,6 +30,94 @@ def call(process: subprocess.Popen[str], request: dict) -> dict:
 
 
 class SwarmMCPTests(unittest.TestCase):
+    def test_ticket_write_uncertainty_is_typed_and_reserved_identity_survives_restart(self):
+        sys.path.insert(0, str(mcp.REPO_ROOT))
+        from console import server
+        from console.tests.test_console import SwarmConsoleTests
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        fixture = SwarmConsoleTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        brief = fixture.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        transport = Mock()
+        projection = mcp.SwarmProjection()
+        projection._app = server.App(fixture.codex_home, fixture.config, auto_bridge=transport)
+        read = {"operation": "read", "project_id": "project:alpha"}
+        request = {**read, "operation": "create", "acknowledge": True, "collection": "goals",
+                   "record_id": "reserved-first", "changes": {"label": "Proof goal"}, "project_code": "TEST",
+                   "expected_digest": projection.call("swarm_project_tickets", read)["source_digest"]}
+        before = brief.read_bytes()
+        module = sys.modules[server.mutate_project_tickets.__module__]
+        with patch.object(module, "_replace_brief_bytes", side_effect=OSError("private/path/SWARM.md")):
+            result = projection.call("swarm_project_tickets", request)
+        self.assertEqual((result["ok"], result["state"], result["code"]),
+                         (False, "REJECTED", "SOURCE_WRITE_UNCERTAIN"))
+        self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(brief.read_bytes(), before)
+        ledger_path = projection._app.progress_ledger._state.path
+        reserved = ledger_path.read_bytes()
+        projection._app = server.App(fixture.codex_home, fixture.config, auto_bridge=transport)
+        saved = projection.call("swarm_project_tickets", request)
+        self.assertEqual(next(r for r in saved["records"] if r["id"] == "reserved-first")["display_id"], "TEST-1")
+        self.assertEqual(sum(r["id"] == "reserved-first" for r in saved["records"]), 1)
+        self.assertEqual(ledger_path.read_bytes(), reserved)
+        second = {**request, "record_id": "reserved-second", "expected_digest": saved["source_digest"]}
+        with patch.object(module, "_replace_brief_bytes", side_effect=OSError("private/path")):
+            self.assertEqual(projection.call("swarm_project_tickets", second)["code"], "SOURCE_WRITE_UNCERTAIN")
+        reserved = ledger_path.read_bytes()
+        edited = projection.call("swarm_project_tickets", {**read, "operation": "update", "acknowledge": True,
+            "collection": "goals", "record_id": "reserved-first", "expected_digest": saved["source_digest"],
+            "changes": {"label": "Another author's edit"}})
+        source = brief.read_bytes()
+        projection._app = server.App(fixture.codex_home, fixture.config, auto_bridge=transport)
+        retry = {**second, "expected_digest": edited["source_digest"]}
+        self.assertEqual(projection.call("swarm_project_tickets", retry)["code"], "RECORD_ID_RESERVED")
+        self.assertEqual(brief.read_bytes(), source)
+        self.assertEqual(ledger_path.read_bytes(), reserved)
+        fresh = projection.call("swarm_project_tickets", {**retry, "record_id": "fresh-third"})
+        self.assertEqual(next(r for r in fresh["records"] if r["id"] == "fresh-third")["display_id"], "TEST-3")
+        self.assertEqual(transport.mock_calls, [])
+
+    def test_ticket_tool_real_app_prefix_retry_reload_and_no_dispatch(self):
+        sys.path.insert(0, str(mcp.REPO_ROOT))
+        from console.server import App
+        from console.tests.test_console import SwarmConsoleTests
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        fixture = SwarmConsoleTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        brief = fixture.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        transport = Mock()
+        projection = mcp.SwarmProjection()
+        projection._app = App(fixture.codex_home, fixture.config, auto_bridge=transport)
+        read = {"operation": "read", "project_id": "project:alpha"}
+        initial = projection.call("swarm_project_tickets", read)
+        request = {**read, "operation": "create", "expected_digest": initial["source_digest"],
+                   "acknowledge": True, "collection": "goals", "record_id": "proof-ticket", "changes": {"label": "Proof goal"}}
+        before = brief.read_bytes()
+        self.assertEqual(projection.call("swarm_project_tickets", request)["code"], "PROJECT_CODE_REQUIRED")
+        self.assertEqual(brief.read_bytes(), before)
+        self.assertFalse(projection._app.progress_ledger._state.path.exists())
+        request["project_code"] = "abcd"
+        result = projection.call("swarm_project_tickets", request)
+        self.assertTrue(result["ok"])
+        self.assertEqual(next(r for r in result["records"] if r["id"] == "proof-ticket")["display_id"], "ABCD-1")
+        saved = brief.read_bytes()
+        ledger = projection._app.progress_ledger._state.path.read_bytes()
+        projection._app = App(fixture.codex_home, fixture.config, auto_bridge=transport)
+        self.assertTrue(projection.call("swarm_project_tickets", request)["replayed"])
+        self.assertEqual(brief.read_bytes(), saved)
+        self.assertEqual(projection._app.progress_ledger._state.path.read_bytes(), ledger)
+        self.assertEqual(projection.call("swarm_project_tickets", {**request, "changes": {"label": "Changed"}})["state"], "CONFLICT")
+        self.assertEqual(projection.call("swarm_project_tickets", {**request, "project_code": "ABCDE"})["code"], "PROJECT_CODE_INVALID")
+        self.assertEqual(projection.call("swarm_project_tickets", {**request, "acknowledge": True, "collection": "blocks", "record_id": "orphan",
+            "expected_digest": result["source_digest"]})["state"], "REJECTED")
+        self.assertEqual(brief.read_bytes(), saved)
+        self.assertEqual(projection._app.progress_ledger._state.path.read_bytes(), ledger)
+        self.assertEqual(transport.mock_calls, [])
+
     def test_library_mcp_save_readback_restart_and_invalid_write(self):
         sys.path.insert(0, str(mcp.REPO_ROOT))
         from console.server import App
@@ -359,8 +447,8 @@ class SwarmMCPTests(unittest.TestCase):
                 self.assertEqual(mcp.serve(hq_app=app), 0)
             rows = [json.loads(line) for line in output.getvalue().splitlines()]
             self.assertIn("resources", rows[0]["result"]["capabilities"])
-            self.assertEqual(rows[1]["result"]["tools"][:8], list(mcp.TOOLS))
-            self.assertEqual(len(rows[1]["result"]["tools"]), 9)
+            self.assertEqual(rows[1]["result"]["tools"][:9], list(mcp.TOOLS))
+            self.assertEqual(len(rows[1]["result"]["tools"]), 10)
             tool = rows[1]["result"]["tools"][-1]
             self.assertEqual(tool["name"], "swarm_hq_view")
             self.assertEqual(tool["_meta"], {"ui": {"resourceUri": app.uri}, "openai/ui": {"entrypoints": [{"type": "global"}]}})
@@ -466,7 +554,7 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertTrue(rows[7]["result"]["isError"])
             self.assertFalse(rows[8]["result"]["isError"])
             self.assertFalse(rows[9]["result"]["isError"])
-            self.assertEqual(len(rows[-1]["result"]["tools"]), 8)
+            self.assertEqual(len(rows[-1]["result"]["tools"]), 9)
             self.assertNotIn("SECRET", output.getvalue() + telemetry.read_text())
 
     def test_output_cap_and_scratch_validation(self) -> None:

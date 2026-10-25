@@ -2564,10 +2564,34 @@ def _bound_block_payload(
     }
 
 
+BRIEF_TICKET_PREFIX = "brief:"
+BRIEF_TICKET_KINDS = frozenset({"goal", "milestone", "task", "block"})
+_BRIEF_TICKET_BINDING = frozenset({"kind", "record_id", "root_digest", "source_digest", "request_digest", "record_digest"})
+
+
 def _ticket_identity(payload: dict[str, Any]) -> dict[str, Any]:
-    _exact_fields(payload, frozenset({"schema_version", "record_type", "project_id", "project_code", "assignments"}), "ticket identity")
-    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1 or payload["record_type"] != "TICKET_IDENTITY":
+    # Schema 1 numbers retained Ledger tasks. Schema 2 numbers canonical project-brief records
+    # from the same per-project counter and carries each record's exact retained binding.
+    brief = isinstance(payload, dict) and type(payload.get("schema_version")) is int and payload["schema_version"] == 2
+    fields = {"schema_version", "record_type", "project_id", "project_code", "assignments"} | ({"brief_records"} if brief else set())
+    _exact_fields(payload, frozenset(fields), "ticket identity")
+    if (type(payload["schema_version"]) is not int or payload["schema_version"] not in {1, 2}
+            or payload["record_type"] != "TICKET_IDENTITY"):
         raise ProgressEventError("unsupported ticket identity schema")
+    if brief:
+        bindings, assignments = payload.get("brief_records"), payload.get("assignments")
+        if not isinstance(bindings, dict) or not isinstance(assignments, dict) or set(bindings) != set(assignments):
+            raise ProgressEventError("brief ticket bindings must match their assignments exactly")
+        for key, binding in bindings.items():
+            if (not isinstance(binding, dict) or set(binding) != _BRIEF_TICKET_BINDING
+                    or not isinstance(binding["kind"], str) or binding["kind"] not in BRIEF_TICKET_KINDS or not isinstance(binding["record_id"], str)
+                    or key != BRIEF_TICKET_PREFIX + binding["record_id"]
+                    or not isinstance(binding["root_digest"], str) or re.fullmatch(r"[0-9a-f]{64}", binding["root_digest"]) is None
+                    or not isinstance(binding["request_digest"], str) or re.fullmatch(r"[0-9a-f]{64}", binding["request_digest"]) is None
+                    or not isinstance(binding["record_digest"], str) or re.fullmatch(r"[0-9a-f]{64}", binding["record_digest"]) is None
+                    or not isinstance(binding["source_digest"], str)
+                    or re.fullmatch(r"sha256:[0-9a-f]{64}", binding["source_digest"]) is None):
+                raise ProgressEventError("brief ticket binding is invalid")
     if not isinstance(payload["project_id"], str) or _safe_id(payload["project_id"], "ticket project") != payload["project_id"]:
         raise ProgressEventError("ticket project id must be canonical text")
     if not isinstance(payload["project_code"], str) or re.fullmatch(r"[A-Z]{1,4}", payload["project_code"]) is None:
@@ -2798,6 +2822,8 @@ class Ledger:
         if sorted(event["assignments"].values()) != list(range(start, start + len(event["assignments"]))):
             raise ProgressEventError("ticket numbers must append contiguously")
         existing.update(event["assignments"])
+        if event["schema_version"] == 2:
+            current.setdefault("brief_records", {}).update(json.loads(json.dumps(event["brief_records"])))
         projection["cursor"] = {"event_seq": event_seq, "event_id": "ticket-identity-" + event_digest, "event_digest": event_digest}
 
     def assign_ticket_ids(self, project_id: str, project_code: str, task_ids: tuple[str, ...]) -> dict[str, Any]:
@@ -2826,6 +2852,9 @@ class Ledger:
             current = identities.get(project_id, {"project_code": code, "assignments": {}})
             if current["project_code"] != code:
                 raise ProgressEventError("retained ticket project code cannot be renamed")
+            if any(task in current.get("brief_records", {}) or BRIEF_TICKET_PREFIX + task in current.get("brief_records", {})
+                   for task in task_ids):
+                raise ProgressEventError("ticket identity already belongs to canonical brief work")
             pending = sorted(set(task_ids) - set(current["assignments"]), key=lambda task: (observed[task], task))
             if pending:
                 start = max(current["assignments"].values(), default=0) + 1
@@ -2846,6 +2875,79 @@ class Ledger:
         if pending:
             with self._condition:
                 self._condition.notify_all()
+        return result
+
+    def reserve_brief_ticket_id(
+        self, *, project_id: str, kind: str, record_id: str, root_digest: str, source_digest: str, request_digest: str, record_digest: str,
+        project_code: str | None = None,
+    ) -> dict[str, Any]:
+        """Allocate one number from the project's existing ticket counter for a canonical brief record.
+
+        Called after the brief edit is fully validated and before its source write. The retained
+        binding is the replayable reservation: retrying the same record and request returns the
+        same number, a different request is refused, and no number is ever rolled back or reused.
+        The registered project code is the only prefix authority; it is never inferred.
+        """
+        project_id = _safe_id(project_id, "ticket project")
+        if not isinstance(record_id, str) or _safe_id(record_id, "ticket record", maximum=128) != record_id:
+            raise ProgressEventError("brief ticket record id must be a canonical safe identifier")
+        binding = {"kind": kind, "record_id": record_id, "root_digest": root_digest,
+                   "source_digest": source_digest, "request_digest": request_digest, "record_digest": record_digest}
+        key = BRIEF_TICKET_PREFIX + record_id
+        if project_code is not None and (not isinstance(project_code, str) or re.fullmatch(r"[A-Za-z]{1,4}", project_code) is None):
+            raise ProgressEventError("PROJECT_CODE_INVALID: use 1-4 ASCII letters")
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            current = projection["ticket_identities"].get(project_id)
+            if current is None:
+                if project_code is None:
+                    raise ProgressEventError("PROJECT_CODE_REQUIRED: choose a project code")
+                current = {"project_code": project_code.upper(), "assignments": {}}
+            code = current["project_code"]
+            if project_code is not None and project_code.upper() != code:
+                raise ProgressEventError("PROJECT_CODE_CONFLICT: the retained project code cannot change")
+            if any(other != project_id and identity["project_code"] == code
+                   for other, identity in projection["ticket_identities"].items()):
+                raise ProgressEventError("PROJECT_CODE_CONFLICT: this code belongs to another project")
+            if record_id in current["assignments"]:
+                raise ProgressEventError("ticket already identifies retained host work; edit or attach it instead")
+            if key in current["assignments"]:
+                retained = current.get("brief_records", {}).get(key)
+                if retained != binding:
+                    raise ProgressEventError("RECORD_ID_RESERVED: brief ticket record id is already bound to another record, root or request")
+                status, binding = "REPLAY", retained
+            else:
+                event = _ticket_identity({"schema_version": 2, "record_type": "TICKET_IDENTITY", "project_id": project_id,
+                    "project_code": code, "assignments": {key: max(current["assignments"].values(), default=0) + 1},
+                    "brief_records": {key: binding}})
+                digest = hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                seq = len(records) + 1
+                self._apply_ticket_identity(projection, event, seq, digest)
+                encoded = json.dumps({"event_seq": seq, "event_digest": digest, "event": event}, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+                self._state.path.parent.mkdir(parents=True, exist_ok=True)
+                self._state.replace_bytes_unlocked(self._state.read_bytes_unlocked() + encoded)
+                self._write_projection_unlocked(projection)
+                status = "APPENDED"
+            identity = projection["ticket_identities"][project_id]
+            result = {"status": status, "project_id": project_id, "record_id": record_id, "kind": binding["kind"],
+                      "display_id": f"{code}-{identity['assignments'][key]}", "source_digest": binding["source_digest"],
+                      "cursor": projection["cursor"]}
+        if status == "APPENDED":
+            with self._condition:
+                self._condition.notify_all()
+        return result
+
+    @staticmethod
+    def brief_ticket_display_ids(projection: Mapping[str, Any], project_id: str, root_digest: str) -> dict[str, dict[str, str]]:
+        """Read-only: retained brief bindings for one exact project root. Never allocates."""
+        identity = projection.get("ticket_identities", {}).get(project_id, {})
+        result = {key: {"kind": "task", "display_id": f"{identity['project_code']}-{number}"}
+                  for key, number in identity.get("assignments", {}).items()
+                  if key not in identity.get("brief_records", {})}
+        result.update({binding["record_id"]: {"kind": binding["kind"], "request_digest": binding["request_digest"],
+                                       "record_digest": binding["record_digest"],
+                                       "display_id": f"{identity['project_code']}-{identity['assignments'][key]}"}
+                for key, binding in identity.get("brief_records", {}).items() if binding["root_digest"] == root_digest})
         return result
 
     @staticmethod
@@ -3618,7 +3720,8 @@ class Ledger:
                     self._apply_task_handoff(projection, event, expected_seq)
                     self._apply_handoff_expected(projection, event, expected_seq, event_digest)
                 elif kind == "TICKET_IDENTITY":
-                    if any((event["project_id"], task) not in retained_tasks for task in event["assignments"]):
+                    # Schema-2 keys are validated brief-record bindings, never synthetic Ledger tasks.
+                    if event["schema_version"] == 1 and any((event["project_id"], task) not in retained_tasks for task in event["assignments"]):
                         raise ProgressEventError("ticket task must already exist in the exact project Ledger")
                     self._apply_ticket_identity(projection, event, expected_seq, event_digest)
                 else:

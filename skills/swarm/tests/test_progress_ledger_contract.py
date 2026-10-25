@@ -45,6 +45,48 @@ from skills.swarm.runtime.core import AcceptanceContract, ArtifactIdentity, Cont
 
 
 class ProgressLedgerContractTests(unittest.TestCase):
+    def test_brief_ticket_shared_sequence_concurrency_restart_and_original_task(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.ledger.append(self.event("original-task", "original-block", task_id="original-task"))
+        self.ledger.assign_ticket_ids("project-alpha", "SWRM", ("original-task",))
+        before = self.ledger.replay()
+        def allocate(index):
+            return Ledger(self.root).reserve_brief_ticket_id(project_id="project-alpha", kind=("goal", "milestone", "task", "block")[index],
+                record_id=f"opaque-{index}", root_digest="a" * 64, source_digest="sha256:" + "b" * 64, request_digest=str(index + 1) * 64,
+                record_digest="f" * 64)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(allocate, [0, 1, 2, 3, 0, 1, 2, 3]))
+        for index in range(4):
+            self.assertEqual(len({r["display_id"] for r in results if r["record_id"] == f"opaque-{index}"}), 1)
+        self.assertEqual({r["display_id"] for r in results}, {"SWRM-2", "SWRM-3", "SWRM-4", "SWRM-5"})
+        retained = self.ledger._state.path.read_bytes()
+        self.assertEqual(allocate(0)["status"], "REPLAY")
+        with self.assertRaises(ProgressEventError):
+            self.ledger.reserve_brief_ticket_id(project_id="project-alpha", kind="task", record_id="original-task",
+                root_digest="a" * 64, source_digest="sha256:" + "b" * 64, request_digest="c" * 64, record_digest="f" * 64)
+        self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+        after = Ledger(self.root).replay()
+        self.assertEqual(after["ticket_identities"]["project-alpha"]["assignments"]["original-task"], 1)
+        for key in before.keys() - {"cursor", "ticket_identities"}:
+            self.assertEqual(after[key], before[key], key)
+
+    def test_brief_ticket_prefix_and_binding_conflicts_fail_before_write(self):
+        args = dict(project_id="project-alpha", kind="goal", record_id="first", root_digest="a" * 64,
+                    source_digest="sha256:" + "b" * 64, request_digest="c" * 64, record_digest="f" * 64)
+        for extra in ({}, {"project_code": "ABCDE"}, {"project_code": "A1"}):
+            with self.assertRaises(ProgressEventError):
+                self.ledger.reserve_brief_ticket_id(**args, **extra)
+            self.assertFalse(self.ledger._state.path.exists())
+        self.assertEqual(self.ledger.reserve_brief_ticket_id(**args, project_code="swrm")["display_id"], "SWRM-1")
+        retained = self.ledger._state.path.read_bytes()
+        for delta in ({"root_digest": "d" * 64}, {"request_digest": "e" * 64},
+                      {"source_digest": "sha256:" + "f" * 64}, {"kind": "task"},
+                      {"project_code": "NEW"}, {"project_id": "other", "project_code": "SWRM"}):
+            with self.subTest(delta=delta), self.assertRaises(ProgressEventError):
+                self.ledger.reserve_brief_ticket_id(**{**args, **delta})
+            self.assertEqual(self.ledger._state.path.read_bytes(), retained)
+        self.assertEqual(self.ledger.brief_ticket_display_ids(self.ledger.replay(), "project-alpha", "d" * 64), {})
+
     def _runtime(self):
         import importlib
         return importlib.import_module(type(self.ledger).__module__.rpartition(".")[0])

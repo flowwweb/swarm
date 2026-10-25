@@ -60,6 +60,17 @@ _LIFECYCLE_FIELDS = frozenset({
 })
 _UPDATE_LOCK = threading.Lock()
 _MAX_BRIEF_BYTES = 512 * 1024
+# Planning tickets: Goal(root) -> Milestone -> Task -> Block(terminal), all inside one project brief.
+_TICKET_KINDS = {"goals": "goal", "milestones": "milestone", "tasks": "task", "blocks": "block"}
+_TICKET_PARENT_KINDS = {"goal": None, "milestone": "goal", "task": "milestone", "block": "task"}
+_TICKET_PARENT_FIELDS = {"milestone": "goal_id", "task": "milestone_id", "block": "task_id"}
+_TICKET_PRIORITIES = ("critical", "high", "medium", "low")
+_TICKET_FIELDS = frozenset({"label", "description", "rank", "priority", "parent_id", "assignment"})
+_TICKET_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+_TICKET_CLAIM_LIMIT = (
+    "Project brief planning metadata only. Priority, parent and assignment never grant execution, "
+    "completion, Ledger, host-goal or acceptance authority; declared state is not progress."
+)
 
 
 class ProjectModelError(ValueError):
@@ -468,15 +479,7 @@ def _mutate_project_brief(
     changes: Mapping[str, Any],
     updated_at: str,
 ) -> str:
-    if path.name != "SWARM.md" or path.is_symlink() or not path.is_file():
-        raise ProjectModelError("project brief path must be an existing regular SWARM.md")
-    try:
-        text = path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise ProjectModelError("project brief is unreadable") from exc
-    document, digest = parse_project_brief_markdown(text, root=path.parent)
-    if digest != expected_digest:
-        raise ProjectModelError("project brief digest conflict")
+    text, document, _ = _read_brief_for_edit(path, expected_digest)
     if collection in {"flow_definitions", "flow_assignments"}:
         if operation != "create" or not isinstance(changes, Mapping) or "id" in changes:
             raise ProjectModelError("Flow versions are append-only; edit a new draft version")
@@ -559,6 +562,310 @@ def _mutate_project_brief(
                 raise ProjectModelError("project brief reopen requires a terminal record and nonterminal target state")
         matches[0].update(patch)
     return _write_project_brief(path, text, document, updated_at)
+
+
+def _read_brief_for_edit(path: Path, expected_digest: str, *, compare: bool = True) -> tuple[str, dict[str, Any], str]:
+    if path.name != "SWARM.md" or path.is_symlink() or not path.is_file():
+        raise ProjectModelError("project brief path must be an existing regular SWARM.md")
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ProjectModelError("project brief is unreadable") from exc
+    document, digest = parse_project_brief_markdown(text, root=path.parent)
+    # Every mutation compares an exact digest string; None/omitted never bypasses CAS.
+    if compare and (not isinstance(expected_digest, str) or digest != expected_digest):
+        raise ProjectModelError("project brief digest conflict")
+    return text, document, digest
+
+
+def _require_ticket_project(document: Mapping[str, Any], project_ids: Any) -> None:
+    identities = {str(item).strip().casefold() for item in project_ids}
+    if str(document["project"]["id"]).strip().casefold() not in identities:
+        raise ProjectModelError("project brief belongs to another saved project")
+
+
+def _ticket_index(document: Mapping[str, Any]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, tuple[str, dict[str, Any]]]]:
+    """Index the four ticket kinds; any casefold identity collision in the brief fails closed."""
+    objective = document["objective"]
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for collection, kind in _TICKET_KINDS.items():
+        records = objective.get("ranked_outcomes", []) if collection == "goals" else document.get(collection, [])
+        records = [] if records is None else records
+        if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+            raise ProjectModelError(f"project brief field {collection} is invalid")
+        groups[kind] = records
+    index: dict[str, tuple[str, dict[str, Any]]] = {}
+    seen: set[str] = set()
+    for kind, records in groups.items():
+        for record in records:
+            identity = record.get("id")
+            if not isinstance(identity, str) or not identity.strip():
+                raise ProjectModelError(f"{kind} ticket requires a stable id")
+            if identity.strip().casefold() in seen:
+                raise ProjectModelError(f"duplicate stable id: {identity.strip()}")
+            seen.add(identity.strip().casefold())
+            index[identity.strip()] = (kind, record)
+    for key in ("risks_blockers", "artifacts"):
+        for record in document.get(key) or []:
+            identity = record.get("id") if isinstance(record, dict) else None
+            if isinstance(identity, str) and identity.strip():
+                if identity.strip().casefold() in seen:
+                    raise ProjectModelError(f"duplicate stable id: {identity.strip()}")
+                seen.add(identity.strip().casefold())
+    return groups, index
+
+
+def _ticket_parent(kind: str, record: Mapping[str, Any], groups: Mapping[str, list[dict[str, Any]]],
+                   index: Mapping[str, tuple[str, dict[str, Any]]]) -> tuple[dict[str, str] | None, str]:
+    """Resolve every existing parent representation; more than one distinct parent is a conflict."""
+    expected = _TICKET_PARENT_KINDS[kind]
+    if expected is None:
+        return None, "ROOT"
+    identity = record["id"].strip()
+    candidates: set[str] = set()
+    value = record.get(_TICKET_PARENT_FIELDS[kind])
+    if value is not None:
+        if not isinstance(value, str) or not value.strip():
+            raise ProjectModelError(f"{kind} {_TICKET_PARENT_FIELDS[kind]} is invalid")
+        candidates.add(value.strip())
+    if kind == "milestone":
+        candidates.update(goal["id"].strip() for goal in groups["goal"]
+                          if isinstance(goal.get("milestone_id"), str) and goal["milestone_id"].strip() == identity)
+    elif kind == "task":
+        candidates.update(milestone["id"].strip() for milestone in groups["milestone"]
+                          if identity in _ids(milestone.get("task_ids")))
+        ref = record.get("milestone_ref")
+        if isinstance(ref, Mapping) and isinstance(ref.get("milestone_id"), str) and ref["milestone_id"].strip():
+            candidates.add(ref["milestone_id"].strip())
+    if not candidates:
+        return None, "ROOT"
+    if len(candidates) > 1:
+        return None, "CONFLICT"
+    parent = next(iter(candidates))
+    entry = index.get(parent)
+    return {"kind": expected, "id": parent}, ("BOUND" if entry is not None and entry[0] == expected else "DANGLING")
+
+
+def _ticket_assignment(value: Any) -> dict[str, str]:
+    if (not isinstance(value, dict) or not value or not set(value) <= {"assignee_id", "role_id"}
+            or any(not isinstance(item, str) or _TICKET_TOKEN.fullmatch(item) is None for item in value.values())):
+        raise ProjectModelError("ticket assignment must name a bounded assignee_id and/or role_id")
+    return dict(value)
+
+
+def _ticket_record(kind: str, record: Mapping[str, Any], groups: Mapping[str, list[dict[str, Any]]],
+                   index: Mapping[str, tuple[str, dict[str, Any]]], order: int) -> dict[str, Any]:
+    identity = record["id"].strip()
+    parent, status = _ticket_parent(kind, record, groups, index)
+    label, description, rank = record.get("label"), record.get("description"), record.get("rank")
+    state = record.get("state")
+    try:
+        assignment = _ticket_assignment(record.get("assignment"))
+    except ProjectModelError:
+        assignment = None
+    return {
+        "id": identity,
+        "kind": kind,
+        "label": label.strip() if isinstance(label, str) and label.strip() else _label(record, identity),
+        "description": description if isinstance(description, str) else None,
+        "rank": rank if isinstance(rank, (int, float)) and not isinstance(rank, bool) and math.isfinite(rank) else None,
+        "priority": record.get("priority") if record.get("priority") in _TICKET_PRIORITIES else None,
+        "parent": parent, "parent_status": status, "assignment": assignment,
+        "declared_state": state.strip() if isinstance(state, str) and state.strip() else None,
+        "order": order,
+    }
+
+
+def _ticket_result(document: Mapping[str, Any], digest: str) -> dict[str, Any]:
+    groups, index = _ticket_index(document)
+    kinds = list(_TICKET_PARENT_KINDS)
+    records = [_ticket_record(kind, record, groups, index, order)
+               for kind, items in groups.items() for order, record in enumerate(items)]
+    records.sort(key=lambda item: (kinds.index(item["kind"]), item["rank"] is None, item["rank"] or 0, item["order"], item["id"]))
+    return {"source_digest": digest, "hierarchy": kinds, "records": records, "claim_limit": _TICKET_CLAIM_LIMIT}
+
+
+def _ticket_depth(identity: str, groups: Mapping[str, list[dict[str, Any]]],
+                  index: Mapping[str, tuple[str, dict[str, Any]]]) -> int:
+    chain: list[str] = []
+    current: str | None = identity
+    while current is not None:
+        if current in chain or len(chain) >= len(_TICKET_PARENT_KINDS):
+            raise ProjectModelError("ticket hierarchy has a cycle or exceeds four levels")
+        chain.append(current)
+        kind, record = index[current]
+        parent, status = _ticket_parent(kind, record, groups, index)
+        if status in {"CONFLICT", "DANGLING"}:
+            raise ProjectModelError("ticket hierarchy has an ambiguous or dangling parent")
+        current = parent["id"] if parent else None
+    return len(chain)
+
+
+def _reparent_ticket(groups: Mapping[str, list[dict[str, Any]]], index: Mapping[str, tuple[str, dict[str, Any]]],
+                     kind: str, record: dict[str, Any], parent_id: Any, *, creating: bool) -> None:
+    """Rewrite one parent coherently across every representation, or refuse."""
+    identity = record["id"].strip()
+    expected = _TICKET_PARENT_KINDS[kind]
+    if kind == "block" and parent_id is None:
+        raise ProjectModelError("block parent must remain an existing task")
+    if parent_id is not None:
+        if not isinstance(parent_id, str) or not parent_id or parent_id != parent_id.strip():
+            raise ProjectModelError("ticket parent_id is invalid")
+        if parent_id.casefold() == identity.casefold():
+            raise ProjectModelError("ticket cannot be its own parent")
+        if expected is None:
+            raise ProjectModelError("goal tickets are hierarchy roots")
+        entry = index.get(parent_id)
+        if entry is None or entry[0] != expected:
+            raise ProjectModelError(f"{kind} parent must be an existing {expected} in this project brief")
+    elif expected is None:
+        return
+    if not creating:
+        current, status = _ticket_parent(kind, record, groups, index)
+        if status in {"CONFLICT", "DANGLING"}:
+            raise ProjectModelError("ticket has an ambiguous or external parent; refusing to rewrite it")
+        state = record.get("state")
+        if (kind == "block" and (current or {}).get("id") != parent_id and isinstance(state, str)
+                and state.strip().casefold() in _REOPENABLE_STATES):
+            raise ProjectModelError("terminal ticket hierarchy is retained history; reopen it before reparenting")
+    if kind == "milestone":
+        legacy = {goal["id"].strip() for goal in groups["goal"]
+                  if isinstance(goal.get("milestone_id"), str) and goal["milestone_id"].strip() == identity}
+        if legacy - {parent_id}:
+            raise ProjectModelError("legacy goal milestone association conflicts with the requested parent")
+    elif kind == "task":
+        ref = record.get("milestone_ref")
+        if ref is not None and not (isinstance(ref, Mapping) and ref.get("milestone_id") == parent_id):
+            raise ProjectModelError("legacy milestone_ref conflicts with the requested parent")
+        for milestone in groups["milestone"]:
+            listed = identity in _ids(milestone.get("task_ids"))
+            if listed and milestone["id"].strip() != parent_id:
+                milestone["task_ids"] = [item for item in milestone["task_ids"] if item.strip() != identity]
+            elif not listed and milestone["id"].strip() == parent_id and isinstance(milestone.get("task_ids"), list):
+                milestone["task_ids"].append(identity)
+    if parent_id is None:
+        record.pop(_TICKET_PARENT_FIELDS[kind], None)
+    else:
+        record[_TICKET_PARENT_FIELDS[kind]] = parent_id
+
+
+def _apply_ticket_changes(groups: Mapping[str, list[dict[str, Any]]], index: Mapping[str, tuple[str, dict[str, Any]]],
+                          kind: str, record: dict[str, Any], patch: Mapping[str, Any], *, creating: bool) -> None:
+    def remove_or(key: str, value: Any, valid: bool, message: str) -> None:
+        if value is None and key != "label":
+            record.pop(key, None)
+        elif valid:
+            record[key] = value.strip() if key == "label" else value
+        else:
+            raise ProjectModelError(message)
+
+    for key, value in patch.items():
+        if key == "label":
+            remove_or(key, value, isinstance(value, str) and 0 < len(value.strip()) <= 160 and _flow_text(value)
+                      and "\n" not in value and "\t" not in value, "ticket label must be bounded single-line text")
+        elif key == "description":
+            remove_or(key, value, isinstance(value, str) and len(value) <= 4096 and _flow_text(value),
+                      "ticket description must be bounded text")
+        elif key == "rank":
+            remove_or(key, value, type(value) is int and 0 <= value <= 1_000_000, "ticket rank must be an integer from 0 to 1000000")
+        elif key == "priority":
+            remove_or(key, value, isinstance(value, str) and value in _TICKET_PRIORITIES,
+                      "ticket priority must be critical, high, medium or low")
+        elif key == "assignment":
+            remove_or(key, None if value is None else _ticket_assignment(value), True, "")
+    if "parent_id" in patch:
+        _reparent_ticket(groups, index, kind, record, patch["parent_id"], creating=creating)
+
+
+def read_project_tickets(path: Path, *, project_ids: Any) -> dict[str, Any]:
+    _, document, digest = _read_brief_for_edit(path, "", compare=False)
+    _require_ticket_project(document, project_ids)
+    return _ticket_result(document, digest)
+
+
+def mutate_project_tickets(
+    path: Path,
+    *,
+    expected_digest: str,
+    operation: str,
+    collection: str,
+    record_id: str,
+    changes: Mapping[str, Any],
+    updated_at: str,
+    project_ids: Any,
+    registry: Any = None,
+    project_id: str | None = None,
+    root_digest: str | None = None,
+    project_code: str | None = None,
+) -> dict[str, Any]:
+    """Create/update planning tickets; every check runs under the brief lock before the single write."""
+    with _brief_update_lock(path):
+        text, document, current_digest = _read_brief_for_edit(path, "", compare=False)
+        _require_ticket_project(document, project_ids)
+        if not isinstance(expected_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest) is None:
+            raise ProjectModelError("project brief digest conflict")
+        if operation not in {"create", "update"} or not isinstance(collection, str) or collection not in _TICKET_KINDS:
+            raise ProjectModelError("project ticket operation or collection is invalid")
+        if (not isinstance(record_id, str) or not record_id.strip() or not _flow_text(record_id)
+                or len(record_id.strip().encode("utf-8")) > 128 or any(ord(char) < 32 for char in record_id)):
+            raise ProjectModelError("project brief record id is invalid")
+        record_id = record_id.strip()
+        if not isinstance(changes, Mapping) or not changes:
+            raise ProjectModelError("project ticket changes are invalid")
+        if not set(changes) <= _TICKET_FIELDS:
+            raise ProjectModelError("project ticket changes contain unsupported or authority-owned fields")
+        try:
+            patch = json.loads(json.dumps(dict(changes), ensure_ascii=False, allow_nan=False))
+        except (TypeError, ValueError) as exc:
+            raise ProjectModelError("project ticket changes must be finite JSON") from exc
+        kind = _TICKET_KINDS[collection]
+        request_digest = _digest({"operation": operation, "collection": collection, "record_id": record_id,
+                                  "changes": patch, "expected_digest": expected_digest, "project_code": project_code})
+        if registry is not None and operation == "create":
+            retained = registry.brief_ticket_display_ids(registry.replay(), project_id, root_digest).get(record_id)
+            if retained and retained.get("request_digest") == request_digest and retained["kind"] == kind:
+                _, old_index = _ticket_index(document)
+                if record_id in old_index:
+                    if old_index[record_id][0] != kind:
+                        raise ProjectModelError("retained ticket kind conflict")
+                    if _digest(old_index[record_id][1]) != retained["record_digest"]:
+                        raise ProjectModelError("retained ticket record conflict")
+                    return {**_ticket_result(document, current_digest), "replayed": True}
+        if current_digest != expected_digest:
+            raise ProjectModelError("project brief digest conflict")
+        if collection == "goals":
+            records = document["objective"].setdefault("ranked_outcomes", [])
+        else:
+            records = document.setdefault(collection, [])
+        groups, index = _ticket_index(document)
+        if operation == "create":
+            existing = {key.casefold() for key in index} | {
+                item["id"].strip().casefold() for key in ("risks_blockers", "artifacts") for item in document.get(key) or []
+                if isinstance(item, dict) and isinstance(item.get("id"), str)}
+            if record_id.casefold() in existing:
+                raise ProjectModelError("project brief record id already exists")
+            if "label" not in patch:
+                raise ProjectModelError("project ticket creation requires a label")
+            if kind in {"milestone", "block"} and not patch.get("parent_id"):
+                raise ProjectModelError(f"new {kind} requires its parent")
+            record = {"id": record_id, "state": "planned"}
+            records.append(record)
+            groups, index = _ticket_index(document)
+        else:
+            matches = [item for item in records if isinstance(item.get("id"), str) and item["id"].strip() == record_id]
+            if len(matches) != 1:
+                raise ProjectModelError("project ticket edit requires one exact record")
+            record = matches[0]
+        _apply_ticket_changes(groups, index, kind, record, patch, creating=operation == "create")
+        if "parent_id" in patch:
+            _ticket_depth(record_id, *_ticket_index(document))
+        result = _ticket_result(document, current_digest)  # Validate projection before either durable write.
+        if registry is not None and operation == "create":
+            registry.reserve_brief_ticket_id(project_id=project_id, kind=kind, record_id=record_id,
+                root_digest=root_digest, source_digest=current_digest, request_digest=request_digest,
+                record_digest=_digest(record), project_code=project_code)
+        digest = _write_project_brief(path, text, document, updated_at)
+    return {**result, "source_digest": digest, "replayed": False}
 
 
 def _write_project_brief(path: Path, text: str, document: dict[str, Any], updated_at: str) -> str:

@@ -94,6 +94,8 @@ from project_model_views import (  # noqa: E402
     validate_flow_definition,
     validate_flow_assignment,
     mutate_project_brief,
+    mutate_project_tickets,
+    read_project_tickets,
     create_flow_draft,
 )
 
@@ -10308,6 +10310,56 @@ class App:
     def create_bound_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._submit_task_command(payload, HQCommandAction.MANUAL_AGENT)
 
+    def project_ticket_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Read or edit planning tickets in the canonical project brief only.
+
+        Planning metadata uses the brief; display numbers use existing non-material Ledger identities.
+        Task manifests, host goals, dispatch and acceptance are never changed.
+        """
+        operation = payload.get("operation") if isinstance(payload, dict) else None
+        write_fields = {"operation", "project_id", "expected_digest", "acknowledge", "collection", "record_id", "changes"}
+        if operation == "read":
+            if set(payload) != {"operation", "project_id"}:
+                raise ConsoleError("ticket read requires exact operation and project_id")
+        elif operation in {"create", "update"}:
+            if operation == "create" and "project_code" in payload:
+                write_fields.add("project_code")
+                if not isinstance(payload["project_code"], str) or re.fullmatch(r"[A-Za-z]{1,4}", payload["project_code"]) is None:
+                    raise ConsoleError("PROJECT_CODE_INVALID: use 1-4 ASCII letters")
+            if set(payload) != write_fields or payload["acknowledge"] is not True:
+                raise ConsoleError("ticket edits require the exact fields and explicit acknowledgement")
+            if not isinstance(payload["expected_digest"], str) or re.fullmatch(r"sha256:[0-9a-f]{64}", payload["expected_digest"]) is None:
+                raise ConsoleError("ticket edits require the exact current brief digest")
+        else:
+            raise ConsoleError("ticket operation must be read, create or update; tickets are never hard-deleted")
+        project_id = _auto_id(payload["project_id"], "project_id")
+        path = Path(self._canonical_project_root(project_id)) / "SWARM.md"
+        identities = frozenset(self._canonical_project_identities(project_id))
+        root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(path.parent))})
+        try:
+            if operation == "read":
+                result = read_project_tickets(path, project_ids=identities)
+            else:
+                result = mutate_project_tickets(
+                    path, expected_digest=payload["expected_digest"], operation=operation,
+                    collection=payload["collection"], record_id=payload["record_id"], changes=payload["changes"],
+                    updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), project_ids=identities,
+                    registry=self.progress_ledger, project_id=project_id, root_digest=root_digest,
+                    project_code=payload.get("project_code"))
+            displays = self.progress_ledger.brief_ticket_display_ids(self.progress_ledger.replay(), project_id, root_digest)
+            for row in result["records"]:
+                binding = displays.get(row["id"], {})
+                row["display_id"] = binding.get("display_id") if binding.get("kind") == row["kind"] else None
+        except (ProjectModelError, ProgressEventError) as exc:
+            if str(exc) == "project brief update failed":
+                raise ConsoleError("SOURCE_WRITE_UNCERTAIN: reload and reconcile the same request") from exc
+            if str(exc) in {"project brief digest conflict", "project brief changed before replacement", "retained ticket record conflict"}:
+                raise ConsoleConflict(str(exc)) from exc
+            raise ConsoleError(str(exc)) from exc
+        except OSError as exc:
+            raise ConsoleError("SOURCE_WRITE_UNCERTAIN: reload and reconcile the same request") from exc
+        return {"ok": True, "project_id": project_id, "operation": operation, **result}
+
     def _observe_bound_review(self, root: Path, thread_id: str, turn_id: str, expected: dict[str, Any]) -> str:
         """Read one explicitly named reviewer turn through the root-bound host transport.
 
@@ -17689,6 +17741,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.FORBIDDEN, "Flow editing requires strict loopback authorization")
                     return
                 self._json(HTTPStatus.OK, self.server.app.project_flow_command(self._payload()))
+                return
+            if path == "/api/project-tickets":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "ticket editing requires strict loopback authorization")
+                    return
+                self._json(HTTPStatus.OK, self.server.app.project_ticket_command(self._payload()))
                 return
             if path in {"/api/tasks/create", "/api/tasks/message"}:
                 if not self._authorized_auto():

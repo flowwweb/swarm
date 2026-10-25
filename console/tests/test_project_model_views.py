@@ -4,6 +4,7 @@ import copy
 import concurrent.futures
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -622,6 +623,265 @@ class FlowDefinitionTests(unittest.TestCase):
             self.assertEqual(pinned["definitions"][0], definition)
             human_request = {**request, "expected_digest": current["source_digest"], "version": 2, "flow_digest": current["definitions"][-1]["digest"]}
             self.assertEqual(call(human_request)["preview"]["readiness"], "WAITING")
+
+
+class ProjectTicketTests(unittest.TestCase):
+    ACCEPTED_TASK = {"id": "t-accepted", "state": "accepted", "acceptance_receipt_ids": ["r-1"], "milestone_id": "m-flat"}
+
+    def test_concurrent_create_replays_one_identity_and_stale_competitors_do_not_allocate(self):
+        request = dict(operation="create", expected_digest=self.call({"operation": "read"})["source_digest"],
+                       acknowledge=True, collection="goals", record_id="concurrent", changes={"label": "One"}, project_code="SWRM")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda _: self.call(request), range(4)))
+        self.assertEqual(sum(not r["replayed"] for r in results), 1)
+        digest = results[0]["source_digest"]
+        def competing(index):
+            try:
+                return self.call({**request, "expected_digest": digest, "record_id": f"next-{index}"})
+            except server.ConsoleConflict:
+                return None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(competing, range(4)))
+        self.assertEqual(sum(r is not None for r in results), 1)
+        identities = self.ticket_ledger.replay()["ticket_identities"]["swarm"]["assignments"]
+        self.assertEqual(sorted(identities.values()), [1, 2])
+        self.assertEqual(sum(r["id"] == "concurrent" for r in self.document()["objective"]["ranked_outcomes"]), 1)
+
+    def test_ticket_allocation_uncertain_write_restart_and_exact_replay(self):
+        from unittest import mock
+        request = {"operation": "create", "collection": "goals", "record_id": "opaque-proof",
+                   "changes": {"label": "Proof goal"}, "expected_digest": self.call({"operation": "read"})["source_digest"],
+                   "acknowledge": True, "project_code": "swrm"}
+        before = self.path.read_bytes()
+        # Server imports its own module identity; patch the production writer actually called.
+        module = sys.modules[server.mutate_project_tickets.__module__]
+        with mock.patch.object(module, "_replace_brief_bytes", side_effect=OSError("simulated interrupted source write")):
+            with self.assertRaisesRegex(server.ConsoleError, "SOURCE_WRITE_UNCERTAIN"):
+                self.call(request)
+        self.assertEqual(self.path.read_bytes(), before)
+        retained = self.ticket_ledger._state.path.read_bytes()
+        self.ticket_ledger = server.ProgressLedger(self.root / "ledger")
+        result = self.call(request)
+        self.assertEqual(self.by_id(result)["opaque-proof"]["display_id"], "SWRM-1")
+        saved = self.path.read_bytes()
+        self.assertTrue(self.call(request)["replayed"])
+        self.assertEqual(self.path.read_bytes(), saved)
+        self.assertEqual(self.ticket_ledger._state.path.read_bytes(), retained)
+        document = self.document()
+        next(r for r in document["objective"]["ranked_outcomes"] if r["id"] == "opaque-proof")["label"] = "Other author's edit"
+        self.path.write_text(markdown_fixture(document), encoding="utf-8")
+        edited = self.path.read_bytes()
+        with self.assertRaises(server.ConsoleConflict):
+            self.call(request)
+        self.assertEqual(self.path.read_bytes(), edited)
+        self.assertEqual(self.ticket_ledger._state.path.read_bytes(), retained)
+        with self.assertRaises(server.ConsoleConflict):
+            self.call({**request, "changes": {"label": "Different delivery"}})
+        self.assertEqual(self.path.read_bytes(), edited)
+        self.assertEqual(self.ticket_ledger._state.path.read_bytes(), retained)
+
+    def test_missing_invalid_code_and_stale_source_do_not_allocate(self):
+        digest = self.call({"operation": "read"})["source_digest"]
+        request = dict(operation="create", expected_digest=digest, acknowledge=True,
+                       collection="goals", record_id="new-goal", changes={"label": "Goal"})
+        before = self.path.read_bytes()
+        for extra, message in (({}, "PROJECT_CODE_REQUIRED"), ({"project_code": "TOOLONG"}, "PROJECT_CODE_INVALID"),
+                               ({"project_code": None}, "PROJECT_CODE_INVALID"),
+                               ({"project_code": "AA", "expected_digest": "sha256:" + "0" * 64}, "digest conflict")):
+            with self.subTest(extra=extra), self.assertRaisesRegex(server.ConsoleError, message):
+                self.call({**request, **extra})
+            self.assertEqual(self.path.read_bytes(), before)
+            self.assertFalse(self.ticket_ledger._state.path.exists())
+        saved = self.call({**request, "project_code": "SWRM"})
+        self.assertEqual(self.by_id(saved)["new-goal"]["display_id"], "SWRM-1")
+
+    def test_old_and_new_mutators_require_digest_and_accepted_task_reparent_preserves_evidence(self):
+        before = self.path.read_bytes()
+        kwargs = dict(path=self.path, operation="update", collection="tasks", record_id="t-flat",
+                      changes={"label": "Changed"}, updated_at="2026-10-25T00:00:00Z")
+        with self.assertRaises(views.ProjectModelError):
+            views.mutate_project_brief(expected_digest=None, **kwargs)
+        with self.assertRaises(TypeError):
+            views.mutate_project_brief(**kwargs)
+        for digest in (None, ""):
+            with self.assertRaises(server.ConsoleError):
+                self.write(digest, "update", "tasks", "t-flat", {"label": "Changed"})
+        self.assertEqual(self.path.read_bytes(), before)
+        result = self.write(self.call({"operation": "read"})["source_digest"], "update", "tasks", "t-accepted", {"parent_id": None})
+        self.assertEqual(self.by_id(result)["t-accepted"]["parent_status"], "ROOT")
+        record = next(r for r in self.document()["tasks"] if r["id"] == "t-accepted")
+        self.assertEqual(record, {k: v for k, v in self.ACCEPTED_TASK.items() if k != "milestone_id"})
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.ticket_ledger = server.ProgressLedger(self.root / "ledger")
+        self.path = self.root / "SWARM.md"
+        self.path.write_text(markdown_fixture(project_fixture(
+            "swarm",
+            objective={"current": "Advance swarm", "ranked_outcomes": [{"id": "g-legacy", "rank": 1, "milestone_id": "m-legacy", "note": "kept"}]},
+            milestones=[{"id": "m-legacy", "state": "active", "task_ids": ["t-legacy"], "evidence_ids": ["e-1"]},
+                        {"id": "m-flat", "state": "active"}],
+            tasks=[{"id": "t-legacy", "state": "active", "custom": {"keep": True}},
+                   {"id": "t-flat", "task_name": "Flat task"}, copy.deepcopy(self.ACCEPTED_TASK)],
+            blocks=[{"id": "b-host", "task_id": "host-thread-1", "state": "accepted"}],
+            artifacts=[{"id": "a-1", "revision": "abc", "proof_class": "SOURCE_STATIC"}],
+        )), encoding="utf-8")
+
+    def call(self, payload, project="swarm"):
+        app = SimpleNamespace(_canonical_project_root=lambda *args: self.root,
+                              _canonical_project_identities=lambda project_id: frozenset({project_id}),
+                              progress_ledger=self.ticket_ledger)
+        return server.App.project_ticket_command(app, {"project_id": project, **payload})
+
+    def write(self, digest, operation, collection, record_id, changes):
+        return self.call({**({"project_code": "SWRM"} if operation == "create" else {}),
+                          "operation": operation, "expected_digest": digest, "acknowledge": True,
+                          "collection": collection, "record_id": record_id, "changes": changes})
+
+    @staticmethod
+    def by_id(result):
+        return {item["id"]: item for item in result["records"]}
+
+    def document(self):
+        return views.parse_project_brief_markdown(self.path.read_text(encoding="utf-8"))[0]
+
+    def test_all_four_kinds_priority_assignment_reparent_and_restart(self):
+        read = self.call({"operation": "read"})
+        records = self.by_id(read)
+        self.assertEqual(read["hierarchy"], ["goal", "milestone", "task", "block"])
+        self.assertEqual((records["m-legacy"]["parent"], records["m-legacy"]["parent_status"]), ({"kind": "goal", "id": "g-legacy"}, "BOUND"))
+        self.assertEqual(records["t-legacy"]["parent"], {"kind": "milestone", "id": "m-legacy"})
+        self.assertEqual((records["t-flat"]["parent"], records["t-flat"]["parent_status"], records["t-flat"]["label"]), (None, "ROOT", "Flat task"))
+        self.assertEqual(records["b-host"]["parent_status"], "DANGLING")  # External host task is never claimed.
+        self.assertTrue(all("progress_percent" not in item and "accepted" not in item for item in read["records"]))
+        result = self.write(read["source_digest"], "create", "goals", "g-ship", {"label": "Ship tickets", "priority": "high", "rank": 2})
+        result = self.write(result["source_digest"], "create", "milestones", "m-ship", {"label": "Ticket API", "parent_id": "g-ship", "priority": "critical"})
+        result = self.write(result["source_digest"], "create", "tasks", "t-ship",
+                            {"label": "Implement", "parent_id": "m-ship", "assignment": {"assignee_id": "agent-7", "role_id": "developer"}})
+        result = self.write(result["source_digest"], "create", "blocks", "b-ship", {"label": "Validator", "parent_id": "t-ship", "description": "Fail closed"})
+        records = self.by_id(result)
+        self.assertEqual([records[key]["kind"] for key in ("g-ship", "m-ship", "t-ship", "b-ship")], ["goal", "milestone", "task", "block"])
+        self.assertEqual(records["m-ship"]["parent"], {"kind": "goal", "id": "g-ship"})
+        self.assertEqual(records["b-ship"]["parent"], {"kind": "task", "id": "t-ship"})
+        self.assertEqual(records["t-ship"]["assignment"], {"assignee_id": "agent-7", "role_id": "developer"})
+        self.assertEqual((records["g-ship"]["priority"], records["g-ship"]["rank"], records["b-ship"]["description"]), ("high", 2, "Fail closed"))
+        self.assertEqual(records["b-ship"]["declared_state"], "planned")  # Planning only, never execution credit.
+        self.assertTrue(all(records[key]["declared_state"] == "planned" for key in ("g-ship", "m-ship", "t-ship", "b-ship")))
+        self.assertIsNone(records["t-flat"]["declared_state"])  # Historical absence stays unknown.
+        self.assertEqual(self.document()["objective"]["ranked_outcomes"][-1], {"id": "g-ship", "state": "planned", "label": "Ship tickets", "priority": "high", "rank": 2})
+
+        result = self.write(result["source_digest"], "update", "tasks", "t-legacy", {"parent_id": "m-ship", "priority": "low", "label": "Moved"})
+        milestones = {item["id"]: item for item in self.document()["milestones"]}
+        moved = next(item for item in self.document()["tasks"] if item["id"] == "t-legacy")
+        self.assertEqual((milestones["m-legacy"]["task_ids"], milestones["m-legacy"]["evidence_ids"]), ([], ["e-1"]))
+        self.assertEqual((moved["milestone_id"], moved["state"], moved["custom"], moved["label"]), ("m-ship", "active", {"keep": True}, "Moved"))
+        result = self.write(result["source_digest"], "update", "tasks", "t-flat", {"parent_id": "m-flat", "rank": 5})
+        self.assertEqual(self.by_id(result)["t-flat"]["parent"], {"kind": "milestone", "id": "m-flat"})
+        result = self.write(result["source_digest"], "update", "tasks", "t-flat", {"parent_id": None, "rank": None, "assignment": {"assignee_id": "agent-8"}})
+        result = self.write(result["source_digest"], "update", "tasks", "t-flat", {"assignment": None})
+        self.assertEqual((self.by_id(result)["t-flat"]["parent_status"], self.by_id(result)["t-flat"]["rank"], self.by_id(result)["t-flat"]["assignment"]), ("ROOT", None, None))
+        result = self.write(result["source_digest"], "update", "tasks", "t-accepted", {"label": "Retained label"})
+        result = self.write(result["source_digest"], "update", "blocks", "b-host", {"priority": "medium"})
+        document = self.document()
+        self.assertEqual(next(item for item in document["tasks"] if item["id"] == "t-accepted"), {**self.ACCEPTED_TASK, "label": "Retained label"})
+        self.assertEqual(next(item for item in document["blocks"] if item["id"] == "b-host"),
+                         {"id": "b-host", "task_id": "host-thread-1", "state": "accepted", "priority": "medium"})
+        self.assertEqual(document["objective"]["ranked_outcomes"][0], {"id": "g-legacy", "rank": 1, "milestone_id": "m-legacy", "note": "kept"})
+        self.assertEqual(document["milestones"][1], {"id": "m-flat", "state": "active"})
+        restarted = self.call({"operation": "read"})
+        self.assertEqual((restarted["source_digest"], restarted["records"]), (result["source_digest"], result["records"]))
+
+    def test_invalid_stale_cross_project_and_ambiguous_edits_write_nothing(self):
+        digest = self.call({"operation": "read"})["source_digest"]
+        digest = self.write(digest, "create", "blocks", "b-new", {"label": "New block", "parent_id": "t-flat"})["source_digest"]
+        before = self.path.read_bytes()
+        rejected = (
+            ("create", "tasks", "T-LEGACY", {"label": "Duplicate"}),
+            ("create", "tasks", "a-1", {"label": "Duplicates an artifact"}),
+            ("create", "tasks", "t-unlabelled", {"priority": "high"}),
+            ("create", "risks_blockers", "r-new", {"label": "Not a ticket"}),
+            ("create", "flow_definitions", "flow", {"label": "Not a ticket"}),
+            ("create", "tasks", "", {"label": "Empty id"}),
+            ("create", "tasks", "bad\x00id", {"label": "Control id"}),
+            ("update", "tasks", "t-missing", {"label": "Missing"}),
+            ("update", "tasks", "b-new", {"label": "Wrong collection"}),
+            ("update", "tasks", "t-flat", {}),
+            ("update", "tasks", "t-flat", {"state": "complete"}),
+            ("update", "tasks", "t-flat", {"progress_percent": 50}),
+            ("update", "tasks", "t-flat", {"owner_id": "agent-1"}),
+            ("update", "tasks", "t-flat", {"acceptance_receipt": "forged"}),
+            ("update", "tasks", "t-flat", {"label": "Done", "completed": True}),
+            ("update", "tasks", "t-flat", {"id": "renamed"}),
+            ("update", "tasks", "t-flat", {"priority": "urgent"}),
+            ("update", "tasks", "t-flat", {"rank": -1}),
+            ("update", "tasks", "t-flat", {"rank": True}),
+            ("update", "tasks", "t-flat", {"rank": 1.5}),
+            ("update", "tasks", "t-flat", {"label": ""}),
+            ("update", "tasks", "t-flat", {"label": None}),
+            ("update", "tasks", "t-flat", {"label": "two\nlines"}),
+            ("update", "tasks", "t-flat", {"description": "x" * 4097}),
+            ("update", "tasks", "t-flat", {"assignment": {}}),
+            ("update", "tasks", "t-flat", {"assignment": {"assignee_id": "bad id!"}}),
+            ("update", "tasks", "t-flat", {"assignment": {"executor": "agent-1"}}),
+            ("update", "tasks", "t-flat", {"parent_id": "t-flat"}),  # self
+            ("update", "tasks", "t-flat", {"parent_id": "m-missing"}),  # dangling
+            ("update", "tasks", "t-flat", {"parent_id": "g-legacy"}),  # wrong kind
+            ("update", "tasks", "t-flat", {"parent_id": " m-flat"}),
+            ("update", "goals", "g-legacy", {"parent_id": "m-flat"}),  # goals are roots
+            ("update", "milestones", "m-flat", {"parent_id": "t-flat"}),  # cycle attempt
+            ("update", "blocks", "b-new", {"parent_id": None}),  # blocks remain under tasks
+            ("update", "blocks", "b-new", {"parent_id": "b-host"}),  # deep nesting
+            ("update", "blocks", "b-new", {"parent_id": "m-flat"}),
+            ("update", "milestones", "m-legacy", {"parent_id": None}),  # legacy goal association
+            ("update", "blocks", "b-host", {"parent_id": "t-flat"}),  # external host parent retained
+        )
+        for operation, collection, record_id, changes in rejected:
+            with self.subTest(operation=operation, record_id=record_id, changes=changes):
+                with self.assertRaises(server.ConsoleError):
+                    self.write(digest, operation, collection, record_id, changes)
+                self.assertEqual(self.path.read_bytes(), before)
+        with self.assertRaises(server.ConsoleConflict):
+            self.write("sha256:" + "0" * 64, "update", "tasks", "t-flat", {"label": "Stale"})
+        base = {"operation": "update", "expected_digest": digest, "acknowledge": True, "collection": "tasks",
+                "record_id": "t-flat", "changes": {"label": "Changed"}}
+        for payload in ({**base, "acknowledge": False}, {**base, "approved": True}, {**base, "operation": "delete"},
+                        {**base, "expected_digest": "latest"}, {"operation": "read", "expected_digest": digest}):
+            with self.subTest(payload=payload), self.assertRaises(server.ConsoleError):
+                self.call(payload)
+        with self.assertRaises(server.ConsoleError):
+            self.call({"operation": "read"}, project="foreign")
+        with self.assertRaises(server.ConsoleError):
+            self.call(base, project="foreign")
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_conflicting_duplicate_absent_and_empty_briefs_fail_closed(self):
+        document = self.document()
+        document["tasks"][0]["milestone_id"] = "m-flat"  # also listed by m-legacy.task_ids
+        self.path.write_text(markdown_fixture(document), encoding="utf-8")
+        read = self.call({"operation": "read"})
+        self.assertEqual(self.by_id(read)["t-legacy"]["parent_status"], "CONFLICT")
+        before = self.path.read_bytes()
+        for changes in ({"parent_id": "m-flat"}, {"parent_id": None}):
+            with self.assertRaises(server.ConsoleError):
+                self.write(read["source_digest"], "update", "tasks", "t-legacy", changes)
+        with self.assertRaises(server.ConsoleError):
+            self.write(read["source_digest"], "create", "blocks", "b-child", {"label": "Child", "parent_id": "t-legacy"})
+        self.assertEqual(self.path.read_bytes(), before)
+        self.write(read["source_digest"], "update", "tasks", "t-legacy", {"label": "Label edits keep legacy shape"})
+        document = self.document()
+        document["blocks"].append({"id": "T-FLAT"})
+        self.path.write_text(markdown_fixture(document), encoding="utf-8")
+        with self.assertRaisesRegex(server.ConsoleError, "duplicate stable id"):
+            self.call({"operation": "read"})
+        self.path.write_text("", encoding="utf-8")
+        with self.assertRaises(server.ConsoleError):
+            self.call({"operation": "read"})
+        self.path.unlink()
+        with self.assertRaises(server.ConsoleError):
+            self.call({"operation": "read"})
+        self.assertFalse(self.path.exists())
 
 
 if __name__ == "__main__":

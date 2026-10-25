@@ -29,8 +29,8 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "9392a86974c3356f34b3126ed8ee987cb14bb00634eaef69958f5949539f12f4"
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "2d697967f0dbd58f240c32f7366e7fbaed4d59aaab5b19e6b62cc8e2f88081ea", "skills/swarm/assets/ui/swarm-hq-host.css": "4be3d5bb191f32ef5908b174f70d65ad88d9b631a2b873183eb28ea4e7be70e7", "skills/swarm/assets/swarm-wordmark.png": "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
+HQ_SDK_SHA256 = "011aba526f458001b6b46a8e6c251b641244d3e9b311728c15f501d6b708c3de"
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "2d697967f0dbd58f240c32f7366e7fbaed4d59aaab5b19e6b62cc8e2f88081ea", "skills/swarm/assets/ui/swarm-hq-host.css": "8c7a65e6d6fbb28599a8b4eebdf9e96b01dc819460a342133d494cc5c7940034", "skills/swarm/assets/swarm-wordmark.png": "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
 
 
 PROJECTS_SUPPORT_IMAGES = {
@@ -56,6 +56,19 @@ PROJECTS_PUBLIC_IMAGES = {
 
 
 TOOLS: tuple[dict[str, Any], ...] = (
+    {
+        "name": "swarm_project_tickets", "title": "Project tickets",
+        "description": "Read or explicitly create/edit project planning tickets. No host dispatch or completion authority.",
+        "inputSchema": {"type": "object", "properties": {
+            "operation": {"type": "string", "enum": ["read", "create", "update"]},
+            "project_id": {"type": "string"}, "expected_digest": {"type": "string"},
+            "acknowledge": {"type": "boolean", "enum": [True]},
+            "collection": {"type": "string", "enum": ["goals", "milestones", "tasks", "blocks"]},
+            "record_id": {"type": "string"}, "changes": {"type": "object"}, "project_code": {"type": "string"}},
+            "required": ["operation", "project_id"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
     {
         "name": "swarm_library_read", "title": "Read Units or Roles",
         "description": "Read the existing inventory and project-scoped Flow preferences. No dispatch or execution authority.",
@@ -277,6 +290,22 @@ class SwarmProjection:
             raise MCPError("unknown tool")
         _validate_arguments(spec, arguments)
         app = self._load_app()
+        if name == "swarm_project_tickets":
+            from console.server import ConsoleError, ConsoleConflict
+            try:
+                return app.project_ticket_command(arguments)
+            except ConsoleConflict:
+                return {"ok": False, "state": "CONFLICT", "code": "SOURCE_CONFLICT", "project_id": arguments["project_id"],
+                        "message": "The project changed. Keep your draft and reload before saving."}
+            except ConsoleError as exc:
+                code = str(exc).split(":", 1)[0]
+                messages = {"PROJECT_CODE_REQUIRED": "Choose a project code of 1–4 letters.",
+                            "PROJECT_CODE_INVALID": "Use 1–4 letters for the project code.",
+                            "SOURCE_WRITE_UNCERTAIN": "Save is unconfirmed. Keep this draft and reload to reconcile before retrying the same request.",
+                            "RECORD_ID_RESERVED": "This draft identity is reserved for an earlier request. Keep its content and start a new draft.",
+                            "PROJECT_CODE_CONFLICT": "That project code is already assigned. Keep the existing code or choose another."}
+                return {"ok": False, "state": "REJECTED", "code": code if code in messages else "TICKET_REJECTED",
+                        "project_id": arguments["project_id"], "message": messages.get(code, "The ticket could not be saved. Keep your draft and check its project and parent.")}
         if name in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign"}:
             from console.server import ConsoleError, ConsoleConflict
             try:
@@ -631,7 +660,7 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
                     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                     if len(encoded.encode("utf-8")) > 262144:
                         raise MCPError("projection exceeds 262144 bytes; narrow the requested scope")
-                    rejected = name in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign"} and value.get("ok") is False
+                    rejected = name in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign", "swarm_project_tickets"} and value.get("ok") is False
                     _telemetry(telemetry_path, tool=name, started=started, ok=not rejected,
                                result_bytes=len(encoded.encode("utf-8")), error="projection_rejected" if rejected else "")
                     result = {"content": [{"type": "text", "text": encoded}], "structuredContent": value, "isError": rejected}

@@ -1254,6 +1254,72 @@ class SwarmConsoleTests(unittest.TestCase):
         artifact_sha = hashlib.sha256(b"# Acceptance report\ndifferent accepted bytes\n").hexdigest()
         refused({**replay_body, "artifact_sha256": artifact_sha}, restarted, "different bytes")
 
+    def test_project_ticket_api_edits_canonical_brief_without_runtime_writes(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        app.progress_ledger.append(self._progress_queue_event(
+            "ticket-seed", "seed-milestone", "task", "root", "BLOCK_CREATED", "ACTIVE", 10,
+            eta=(20, 30, 80), milestone_acceptance=True,
+        ))
+        ledger_path = app.progress_ledger._state.path
+        ledger_bytes, ledger_state = ledger_path.read_bytes(), app.progress_ledger.replay()
+        root = app._canonical_project_root("project:alpha")
+        model_id = sorted(app._canonical_project_identities("project:alpha"))[0]
+        brief = {"schema_version": 1, "updated_at": "2026-10-25T00:00:00Z", "project": {"id": model_id},
+                 "users_outcomes": [], "objective": {"current": "Plan tickets", "ranked_outcomes": []}, "repo": {},
+                 "authority": {}, "milestones": [{"id": "m-plan"}], "decisions": [], "ownership": {},
+                 "proof_acceptance": {}, "risks_blockers": [], "links": [],
+                 "tasks": [{"id": "task", "state": "accepted", "acceptance_receipt_ids": ["ticket-seed"]}]}
+        (root / "SWARM.md").write_text(
+            "# Brief\n\n<!-- swarm-project-brief:schema=1 -->\n```json\n" + json.dumps(brief, indent=2) + "\n```\n", encoding="utf-8")
+
+        def post(body, token=None):
+            handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=token or app.token)
+            handler.server.app = app
+            handler.path = "/api/project-tickets"
+            handler._payload = mock.Mock(return_value=body)
+            handler._json = mock.Mock()
+            handler._error = mock.Mock()
+            handler.do_POST()
+            return handler
+
+        def edit(digest, operation, collection, record_id, changes):
+            return post({**({"project_code": "SWRM"} if operation == "create" else {}),
+                         "operation": operation, "project_id": "project:alpha", "expected_digest": digest,
+                         "acknowledge": True, "collection": collection, "record_id": record_id, "changes": changes})
+
+        denied = post({"operation": "read", "project_id": "project:alpha"}, token="wrong")
+        denied._json.assert_not_called()
+        denied._error.assert_called_once()
+        read = post({"operation": "read", "project_id": "project:alpha"})._json.call_args.args[1]
+        self.assertEqual({item["id"]: item["parent_status"] for item in read["records"]}, {"m-plan": "ROOT", "task": "ROOT"})
+        digest = read["source_digest"]
+        for operation, collection, record_id, changes in (
+                ("create", "goals", "g-plan", {"label": "Plan", "priority": "high"}),
+                ("update", "milestones", "m-plan", {"parent_id": "g-plan"}),
+                ("create", "blocks", "b-plan", {"label": "Ticket block", "parent_id": "task"})):
+            handler = edit(digest, operation, collection, record_id, changes)
+            handler._error.assert_not_called()
+            digest = handler._json.call_args.args[1]["source_digest"]
+        brief_bytes = (root / "SWARM.md").read_bytes()
+        for refused in (edit(digest, "update", "tasks", "task", {"state": "open"}),  # completion is not editable here
+                        edit(read["source_digest"], "update", "tasks", "task", {"label": "Stale"})):
+            refused._json.assert_not_called()
+            refused._error.assert_called_once()
+        self.assertEqual((root / "SWARM.md").read_bytes(), brief_bytes)
+        restarted = console.App(self.codex_home, self.config)
+        current = restarted.project_ticket_command({"operation": "read", "project_id": "project:alpha"})
+        records = {item["id"]: item for item in current["records"]}
+        self.assertEqual(current["source_digest"], digest)
+        self.assertEqual(records["m-plan"]["parent"], {"kind": "goal", "id": "g-plan"})
+        self.assertEqual(records["b-plan"]["parent"], {"kind": "task", "id": "task"})
+        self.assertEqual((records["task"]["declared_state"], records["task"]["parent_status"]), ("accepted", "ROOT"))
+        self.assertTrue(ledger_path.read_bytes().startswith(ledger_bytes))
+        state = restarted.progress_ledger.replay()
+        for key in ledger_state.keys() - {"ticket_identities", "cursor"}:
+            self.assertEqual(state[key], ledger_state[key], key)
+        self.assertEqual((records["g-plan"]["display_id"], records["b-plan"]["display_id"]), ("SWRM-1", "SWRM-2"))
+
     def test_work_unit_creation_persists_native_coordinators_and_pending_goals(self) -> None:
         from contextlib import contextmanager
         with closing(sqlite3.connect(self.database)) as connection:
