@@ -80,7 +80,13 @@ from runtime.execution_adapters import (  # noqa: E402
     ExecutionFailureKind,
     ExecutionReservation,
 )
-from runtime.core import ArtifactIdentity  # noqa: E402
+from runtime.core import (  # noqa: E402
+    AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactParityReceipt,
+    DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract,
+    InvariantError, LaneKind, ProofClass, ProofOutcome, ReviewEvidence,
+    ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState,
+)
+from runtime.incidents import IncidentLedger  # noqa: E402
 from project_model_views import (  # noqa: E402
     ProjectModelError,
     parse_project_brief_markdown,
@@ -7089,6 +7095,42 @@ def active_goal_thread_ids(codex_home: Path, *, observed_after_ms: int) -> set[s
         return set()
 
 
+def host_thread_goal_id(codex_home: Path, thread_id: str) -> str:
+    """Read the host's own durable goal ID for one exact thread; never invent one."""
+    database = goals_database(codex_home)
+    try:
+        with closing(_readonly_connection(database)) as connection:
+            rows = connection.execute("SELECT goal_id FROM thread_goals WHERE thread_id=? AND status='active'", (thread_id,)).fetchall()
+    except (sqlite3.Error, OSError, ConsoleError) as exc:
+        raise ConsoleError("GOAL_UNBOUND: the host has no readable durable goal for this task") from exc
+    if len(rows) != 1:
+        raise ConsoleError("GOAL_UNBOUND: the host has no exact durable goal for this task")
+    return _auto_id(rows[0]["goal_id"], "host goal_id")
+
+
+BOUND_TASK_REVIEW_SCHEMA = "swarm.bound_task_review.v1"
+
+
+def bound_task_acceptance_binding(
+    *, project_id: str, task_id: str, block_id: str, manifest_digest: str, goal_id: str,
+    artifact_path: str, artifact_sha256: str, gates: list[list[Any]], review_strategy: str,
+    ctrl_id: str, root_digest: str, role_manifest_ref: dict[str, Any],
+) -> dict[str, Any]:
+    """The exact state an independent reviewer's typed verdict must restate before any gate runs.
+
+    The reviewer's final assistant message in its explicitly named, completed host turn must be
+    exactly {"schema": BOUND_TASK_REVIEW_SCHEMA, "verdict": "ACCEPT", "binding": <this object>}.
+    Reviewer identity is the observed host thread, never a field the reviewer asserts.
+    """
+    return {
+        "kind": "SWARM_BOUND_TASK_ACCEPTANCE", "project_id": project_id, "task_id": task_id,
+        "block_id": block_id, "manifest_digest": manifest_digest, "goal_id": goal_id,
+        "artifact_path": artifact_path, "artifact_sha256": artifact_sha256, "gates": gates,
+        "review_strategy": review_strategy, "ctrl_id": ctrl_id, "root_digest": root_digest,
+        "role_manifest_ref": role_manifest_ref,
+    }
+
+
 def observed_task_project_id(codex_home: Path, task_id: str) -> str | None:
     """Resolve one exact unarchived task to its observed project without reading messages."""
     try:
@@ -10265,6 +10307,211 @@ class App:
     def create_bound_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._submit_task_command(payload, HQCommandAction.MANUAL_AGENT)
 
+    def _observe_bound_review(self, root: Path, thread_id: str, turn_id: str, expected: dict[str, Any]) -> str:
+        """Read one explicitly named reviewer turn through the root-bound host transport.
+
+        Only the final non-analysis agentMessage of a completed turn counts, and only if it is
+        exactly the typed verdict. User/tool/analysis items and free prose never authorize.
+        """
+        def reviewer_root():
+            with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+                rows = connection.execute("SELECT cwd,archived FROM threads WHERE id=?", (thread_id,)).fetchall()
+            if len(rows) != 1 or rows[0]["archived"] or not isinstance(rows[0]["cwd"], str):
+                raise ValueError("reviewer host identity is missing or archived")
+            path = Path(rows[0]["cwd"])
+            if not path.is_absolute() or not path.is_dir():
+                raise ValueError("reviewer host directory is unavailable")
+            return path.resolve(strict=True)
+
+        def unique_fields(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("reviewer verdict has duplicate fields")
+                value[key] = item
+            return value
+        try:
+            # Independent reviewers may own another worktree or a projectless task.
+            # Observe that exact host directory; target authority remains in the typed binding.
+            observed_root = reviewer_root()
+            with self.auto_bridge.command_session(root) as (send, receive):
+                send({"id": 1, "method": "thread/read", "params": {"threadId": thread_id, "includeTurns": True}})
+                response = receive(lambda message: message.get("id") == 1 and "method" not in message)
+            thread = response.get("result", {}).get("thread") if response.get("error") is None else None
+            if (not isinstance(thread, dict) or thread.get("id") != thread_id or not isinstance(thread.get("cwd"), str)
+                    or Path(thread["cwd"]).resolve(strict=True) != observed_root):
+                raise ValueError("reviewer thread identity or root is unverified")
+            turns = [turn for turn in thread.get("turns") or [] if isinstance(turn, dict) and turn.get("id") == turn_id]
+            if (len(turns) != 1 or turns[0].get("status") != "completed" or not isinstance(turns[0].get("items"), list)
+                    or len(json.dumps(turns[0]).encode()) > 524288):
+                raise ValueError("reviewer turn is missing, ambiguous or not completed")
+            texts = [item.get("text") for item in turns[0]["items"]
+                     if isinstance(item, dict) and item.get("type") == "agentMessage" and item.get("phase") in (None, "final_answer")]
+            if not texts or any(not isinstance(text, str) for text in texts):
+                raise ValueError("reviewer turn has no final assistant result")
+            canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            verdict = {"schema": BOUND_TASK_REVIEW_SCHEMA, "verdict": "ACCEPT", "binding": expected}
+            if canonical(json.loads(texts[-1].strip(), object_pairs_hook=unique_fields)) != canonical(verdict):
+                raise ValueError("reviewer final result is not the exact typed verdict")
+            for text in texts[:-1]:
+                try:
+                    prior = json.loads(text.strip(), object_pairs_hook=unique_fields)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(prior, dict) and prior.get("schema") == BOUND_TASK_REVIEW_SCHEMA and canonical(prior) != canonical(verdict):
+                    raise ValueError("reviewer turn carries a conflicting typed verdict")
+            if reviewer_root() != observed_root:
+                raise ValueError("reviewer root changed during observation")
+        except ConsoleError:
+            raise
+        except (OSError, sqlite3.Error, RecursionError, ValueError, TypeError, AttributeError, TimeoutError, queue.Empty, subprocess.SubprocessError) as exc:
+            raise ConsoleError(f"HOST_REVIEW_UNVERIFIED: {exc}") from exc
+        return _auto_digest({"thread_id": thread_id, "turn_id": turn_id, "reviewer_cwd": _normalized_project_path(str(observed_root)),
+                             "status": "completed", "verdict": verdict})
+
+    def complete_bound_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Accept one block of an existing host-created task through the live runtime.
+
+        Authority is an explicitly named, independent, completed host reviewer turn observed through
+        the existing root-bound thread/read transport, whose final assistant result is the exact typed
+        verdict over this binding. Gates then run for real, Swarm.review/complete decide acceptance,
+        and the Ledger records it. Nothing here dispatches, renames identities, allocates tickets or
+        credits progress directly.
+        """
+        fields = {"project_id", "task_id", "block_id", "manifest_digest", "expected_ledger_revision",
+                  "artifact_path", "artifact_sha256", "gates", "review_strategy", "host_review", "acknowledge"}
+        if not isinstance(payload, dict) or set(payload) != fields or payload["acknowledge"] is not True:
+            raise ConsoleError("bound task completion requires the exact fields and explicit acknowledgement")
+        project_id = _auto_id(payload["project_id"], "project_id")
+        task_id = _auto_id(payload["task_id"], "task_id")
+        block_id = _auto_id(payload["block_id"], "block_id")
+        manifest_digest, revision, artifact_path = payload["manifest_digest"], payload["expected_ledger_revision"], payload["artifact_path"]
+        artifact_sha256, strategy, gates, review = payload["artifact_sha256"], payload["review_strategy"], payload["gates"], payload["host_review"]
+        if (not isinstance(manifest_digest, str) or type(revision) is not int or revision < 0
+                or not isinstance(artifact_path, str) or not isinstance(artifact_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", artifact_sha256) is None
+                or strategy not in {item.value for item in ReviewStrategy}):
+            raise ConsoleError("bound task completion fields are invalid")
+        if (not isinstance(gates, list) or not 1 <= len(gates) <= 8
+                or any(not isinstance(gate, list) or len(gate) != 2 or not isinstance(gate[1], list) or not 1 <= len(gate[1]) <= 64
+                       or any(not isinstance(part, str) or not part or len(part) > 4096 for part in gate[1]) for gate in gates)):
+            raise ConsoleError("bound task completion requires 1-8 exact [gate_id, argv] gates")
+        gate_ids = [_auto_id(gate[0], "gate_id") for gate in gates]
+        if len(set(gate_ids)) != len(gate_ids):
+            raise ConsoleError("bound task gate identities must be unique")
+        if not isinstance(review, dict) or set(review) != {"reviewer_thread_id", "reviewer_turn_id"}:
+            raise ConsoleError("bound task completion requires one exact reviewer thread and turn")
+        reviewer_id = _auto_id(review["reviewer_thread_id"], "reviewer_thread_id")
+        reviewer_turn = _auto_id(review["reviewer_turn_id"], "reviewer_turn_id")
+        root = self._observed_task_root(project_id, task_id)  # Exact host thread membership and root.
+        projection = self.progress_ledger.replay()
+        try:
+            operation_id, manifest, _, _, _ = type(self.progress_ledger)._bound_block_context(projection, project_id, task_id, block_id, manifest_digest)
+        except ProgressEventError as exc:
+            raise ConsoleError(str(exc)) from exc
+        if manifest["role_scope"] != "DOER_SINGLE" or "work_unit" in manifest:
+            raise ConsoleError("only an ordinary producer task block can be accepted here")
+        creation = projection["task_creation_bindings"][operation_id]
+        ctrl_id = manifest["ctrl_id"]
+        root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
+        if creation["root_digest"] != root_digest or self._observed_task_root(project_id, ctrl_id) != root:
+            raise ConsoleError("bound task owning CTRL or root changed")
+        if reviewer_id in {task_id, ctrl_id}:
+            raise ConsoleError("bound task requires an independent reviewer, not its producer or creator")
+        _, config, _ = load_config(self.config_path)
+        # Ordinary tasks inherit their retained owning CTRL goal; they need no duplicate native goal.
+        goal_id = host_thread_goal_id(self.codex_home, ctrl_id) if config["goals"]["use_goals"] else ""
+        binding = bound_task_acceptance_binding(
+            project_id=project_id, task_id=task_id, block_id=block_id, manifest_digest=manifest_digest,
+            goal_id=goal_id, artifact_path=artifact_path, artifact_sha256=artifact_sha256,
+            gates=[[gate_id, list(gate[1])] for gate_id, gate in zip(gate_ids, gates)], review_strategy=strategy,
+            ctrl_id=ctrl_id, root_digest=root_digest, role_manifest_ref=creation["role_manifest_ref"])
+        accepted_id = f"bound-accepted:{task_id}:{block_id}"
+        retained = next((item for item in projection["blocks"].values()
+                         if item["project_id"] == project_id and item["block_id"] == block_id and item["task_id"] == task_id), None)
+        def task_completed(snapshot):
+            return App._bound_blocks_accepted(snapshot, project_id, task_id, manifest)[0]
+        replay = retained is not None and retained["latest_event_id"] == accepted_id
+        if not replay and projection["cursor"]["event_seq"] != revision:
+            raise ConsoleError("progress ledger changed; reload before completing")
+        try:
+            artifact = ArtifactIdentity.capture(f"{project_id}:{task_id}", manifest_digest, f"bound-block:{block_id}",
+                                                root=str(root), paths=(artifact_path,))
+            relative = artifact.observed_paths[0]
+            observed_turn = f"host-turn:{reviewer_id}:{reviewer_turn}"
+            marks = (("acceptance", observed_turn), ("host_binding", _auto_digest(binding)))
+            marks += (("specialist", observed_turn),) if strategy == "specialist" else ()
+            review_evidence = ReviewEvidence(ReviewStrategy(strategy), reviewer_id, True, artifact,
+                                             receipt=marks, scope=ReviewScope.ACCEPTANCE)
+            if replay:
+                expected = [f"sha256:{artifact_sha256}", f"runtime-review:{Swarm._topology_review_digest(review_evidence)}"]
+                if retained["proof_receipt_ids"][:2] != expected:
+                    raise InvariantError("bound task block was accepted for different bytes or review binding")
+                return {"ok": True, "status": "REPLAY", "event_id": accepted_id, "cursor": projection["cursor"],
+                        "goal_id": goal_id, "reviewer": reviewer_id, "block_completed": True,
+                        "work_completed": task_completed(projection)}
+        except InvariantError as exc:
+            raise ConsoleError(str(exc)) from exc
+        observed_review = self._observe_bound_review(root, reviewer_id, reviewer_turn, binding)
+        try:
+            raw = (root / relative).read_bytes()
+            if hashlib.sha256(raw).hexdigest() != artifact_sha256:
+                raise InvariantError("artifact bytes differ from the reviewed digest")
+            swarm = Swarm.from_config(config)
+            task = Task(task_id, task_id, ctrl_id, swarm.architecture_version, {}, goal_id=goal_id,
+                        subagent_receipt=f"host:thread:{task_id}", lane_kind=LaneKind.CODE,
+                        acceptance_contract=AcceptanceContract(artifact, tuple(gate_ids), observation_root=str(root)),
+                        delegation_contract=DelegationContract(task_id, f"Return the exact {block_id} artifact.", task_id,
+                            (relative,), artifact, (relative,), (ProofClass.SOURCE,), 60))
+            swarm.start_atomic(Role.CTRL, task)
+            swarm.consult_incidents(Role.DOER, task_id, IncidentLedger(root), artifact=artifact.key(),
+                                    scope=f"bound-block:{block_id}", actor_id=task_id)
+            for gate_id, gate in zip(gate_ids, gates):
+                if swarm.run_gate(Role.DOER, task_id, gate_id, tuple(gate[1]), cwd=str(root), actor_id=task_id).outcome is not ProofOutcome.PASS:
+                    raise InvariantError(f"gate {gate_id} did not pass")
+            parity = ArtifactParityReceipt.from_files(artifact, (ArtifactFileEvidence(relative, len(raw), artifact_sha256),))
+            evidence = DelegatedEvidence(f"evidence-{task_id}", ProofClass.SOURCE, artifact.key(), artifact_sha256,
+                                         "Exact artifact bytes named by the observed independent review.")
+            swarm.record_delegated_return(Role.DOER, task_id, DelegatedReturnReceipt(
+                f"return-{task_id}", task_id, task_id, DelegatedReceiptVerdict.ACCEPT, artifact,
+                "Exact bound-block artifact observed under host-observed independent review.", (evidence,), parity, (), 1), actor_id=task_id)
+            swarm.review(Role.REVIEW, task_id, review_evidence, True)
+            swarm.complete(Role.DOER, task_id, True, True, int(time.time()), actor_id=task_id)
+            if swarm.tasks[task_id].state is not TaskState.COMPLETE:
+                raise InvariantError("runtime did not complete the task")
+            if (self._observed_task_root(project_id, task_id) != root
+                    or self._observed_task_root(project_id, ctrl_id) != root
+                    or (config["goals"]["use_goals"] and host_thread_goal_id(self.codex_home, ctrl_id) != goal_id)
+                    or self._observe_bound_review(root, reviewer_id, reviewer_turn, binding) != observed_review):
+                raise InvariantError("host task/root/goal/review binding changed during verification")
+            self.progress_ledger.append_bound_block_evidence(
+                project_id=project_id, task_id=task_id, block_id=block_id, manifest_digest=manifest_digest,
+                expected_event_seq=revision, evidence_path=root / relative, expected_sha256=artifact_sha256)
+            result = self.progress_ledger.append_runtime_block_acceptance(
+                swarm=swarm, project_id=project_id, task_id=task_id, block_id=block_id, manifest_digest=manifest_digest,
+                expected_event_seq=self.progress_ledger.replay()["cursor"]["event_seq"])
+        except (InvariantError, ProgressEventError, OSError, ValueError) as exc:
+            raise ConsoleError(str(exc)) from exc
+        with self.overview_lock:
+            self._store_generation += 1
+        completed = task_completed(self.progress_ledger.replay())
+        return {"ok": True, "status": "ACCEPTED", "event_id": result["event_id"], "cursor": result["cursor"],
+                "goal_id": goal_id, "reviewer": reviewer_id, "reviewer_turn_id": reviewer_turn, "block_completed": True,
+                "work_completed": completed, "claim_limit": result["claim_limit"]}
+
+    @staticmethod
+    def _bound_blocks_accepted(ledger: dict[str, Any], project_id: str, task_id: str, manifest: dict[str, Any]) -> tuple[bool, int, int]:
+        """All declared blocks of the original manifest carry their exact retained acceptance event."""
+        declared = [block["block_id"] for block in manifest.get("blocks", [])]
+        if manifest.get("supersedes_digest") is not None:
+            return False, 0, len(declared)
+        accepted = {block["block_id"] for block in ledger["blocks"].values()
+                    if block["project_id"] == project_id and block["task_id"] == task_id
+                    and block["lifecycle_state"] == "ACCEPTED"
+                    and block["latest_event_id"] == f"bound-accepted:{task_id}:{block['block_id']}"}
+        count = sum(block_id in accepted for block_id in declared)
+        return bool(declared) and count == len(declared), count, len(declared)
+
     def message_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._submit_task_command(payload, HQCommandAction.TASK)
 
@@ -13184,10 +13431,18 @@ class App:
                         or not isinstance(code, str) or not re.fullmatch(r"[A-Z]{1,4}", code)
                         or not isinstance(label, str) or not label.strip()):
                     continue
+                completed, accepted, total = self._bound_blocks_accepted(ledger, project_id, task_id, manifest)
                 identities[task_id] = {
                     "project_id": project_id, "display_id": f"{code}-{number}", "label": label,
                     "binding_event_digest": matches[0]["event_digest"],
                     "manifest_digest": manifest["manifest_digest"],
+                    # Durable acceptance is separate from host activity in row["state"].
+                    "durable_lifecycle": {
+                        "state": "COMPLETED" if completed else "OPEN",
+                        "accepted_blocks": accepted, "total_blocks": total,
+                        "manifest_digest": manifest["manifest_digest"], "ledger_cursor": ledger["cursor"],
+                        "source": "ledger:bound-task-acceptance",
+                    },
                 }
         progress = view.get("progress", {})
         scopes = [progress.get("all_projects", {})]
@@ -13198,9 +13453,10 @@ class App:
             for row in scope.get("tasks", []):
                 row.pop("display_id", None)
                 row.pop("label", None)
+                row.pop("durable_lifecycle", None)
                 identity = identities.get(row.get("id"))
                 if identity is not None and identity["project_id"] == row.get("project_id"):
-                    row.update({key: identity[key] for key in ("display_id", "label")})
+                    row.update({key: copy.deepcopy(identity[key]) for key in ("display_id", "label", "durable_lifecycle")})
                     used[row["id"]] = identity
         source = {"state": "KNOWN" if ledger is not None else "UNAVAILABLE",
                   "ledger_cursor": ledger["cursor"] if ledger is not None else None,
@@ -17438,6 +17694,14 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.app.write_lock:
                     submit = self.server.app.create_bound_task if path.endswith("/create") else self.server.app.message_task
                     result = submit(self._payload())
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/tasks/complete":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "task completion requires strict loopback authorization")
+                    return
+                with self.server.app.write_lock:
+                    result = self.server.app.complete_bound_task(self._payload())
                 self._json(HTTPStatus.OK, result)
                 return
             if path in {"/api/tasks/approvals", "/api/tasks/approvals/respond"}:

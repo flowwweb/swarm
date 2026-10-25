@@ -964,6 +964,261 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(len(sent), calls)
         self.assertEqual(app.progress_ledger.project_task_creation_bindings("project:alpha")["bindings"], binding["bindings"])
 
+    def test_bound_task_completion_composes_creation_runtime_review_and_ledger_acceptance(self) -> None:
+        from contextlib import contextmanager
+        app = console.App(self.codex_home, self.config)  # Production default: no injected signer.
+        root = app._canonical_project_root("project:alpha")
+        role = next(item for item in app.builtin_role_manifests if item["id"] == "developer")
+        draft = build_task_manifest(manifest_id="task:complete", task_id="draft-only", task_name="Bound task",
+            project_id="project:alpha", ctrl_id="ctrl-a",
+            milestones=[{"milestone_id": "m", "order": 0, "title": "M", "verification_policy": "source", "supersedes_milestone_id": None}],
+            blocks=[{"block_id": block_id, "milestone_id": "m", "order": order, "title": block_id, "verification_policy": "source", "estimate_minutes": 1, "weight": None, "supersedes_block_id": None} for order, block_id in enumerate(("b", "b2"))])
+        contract = {"role_manifest": role, "task_manifest_draft": {k: v for k, v in draft.items() if k not in {"task_id", "manifest_digest"}},
+                    "parent_task_id": None, "topology_manifest_receipt_id": "topology-receipt", "task_receipt_id": "task-receipt",
+                    "milestone_receipts": [{"id": "m", "receipt_id": "m-receipt"}], "block_receipts": [{"id": block_id, "receipt_id": block_id + "-receipt"} for block_id in ("b", "b2")],
+                    "explicit_empty_work_receipt_id": None, "independent_host_task": False, "project_code": "SWRM"}
+        now = int(time.time() * 1000)
+        instruction = "Create the explicitly authorized task."
+        root_digest = console._auto_digest({"project_id": "project:alpha", "canonical_root": console._normalized_project_path(str(root))})
+        creation = {"acknowledge": True, "instruction": instruction, "envelope": {
+            "command_id": "create-complete", "idempotency_key": "create-complete-key", "action": "MANUAL_AGENT",
+            "project_id": "project:alpha", "root_digest": root_digest,
+            "ctrl_id": "ctrl-a", "target_intent": "NEW_THREAD", "target_thread_id": "",
+            "payload_digest": hashlib.sha256(instruction.encode()).hexdigest(), "expected_ledger_revision": 0,
+            "submitted_at_ms": now, "expires_at_ms": now + 60000, "task_creation": contract}}
+        sent, reviews = [], {}
+        responses = [{"thread": {"id": "host-new", "cwd": str(root)}}, {"turn": {"id": "turn-new"}}]
+
+        @contextmanager
+        def session(cwd, *, retain_turn=False, approval_project_id=""):
+            def send(message):
+                sent.append(message)
+            def receive(predicate):
+                message = sent[-1]
+                if message["method"] == "thread/read":
+                    self.assertEqual(Path(cwd).resolve(), root.resolve())  # Reviewer cwd is identity, not process launch scope.
+                    thread = reviews.get(message["params"]["threadId"])
+                    return {"id": message["id"], "result": {"thread": copy.deepcopy(thread)}} if thread else {"id": message["id"], "error": {"message": "unknown thread"}}
+                return {"id": message["id"], "result": responses.pop(0)}
+            yield send, receive
+
+        def post(path, body, active=None):
+            handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=(active or app).token)
+            handler.server.app = active or app
+            handler.path = path
+            handler._payload = mock.Mock(return_value=body)
+            handler._json = mock.Mock()
+            handler._error = mock.Mock()
+            handler.do_POST()
+            return handler
+
+        app.auto_bridge.command_session = session
+        created = post("/api/tasks/create", creation)._json.call_args.args[1]
+        self.assertEqual((created["status"], created["thread_id"], created["work_completed"]), ("RESULT", "host-new", False))
+        with closing(sqlite3.connect(self.database)) as connection:
+            for thread_id, cwd in (("host-new", root), ("ctrl-a", root), ("reviewer-host", self.root), ("reviewer-foreign", root)):
+                connection.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+                    thread_id, "untrusted label", str(cwd), 2_000_000_000, 2_000_000_000, 2_000_000_000_000,
+                    2_000_000_000_001, "gpt-5.6-terra", "high", 0, 0, "", "main", "", "", "", 0))
+            connection.commit()
+        goals = console.goals_database(self.codex_home)
+        with closing(sqlite3.connect(goals)) as connection:
+            connection.execute("CREATE TABLE thread_goals (thread_id TEXT PRIMARY KEY, goal_id TEXT, objective TEXT, status TEXT, token_budget INTEGER, tokens_used INTEGER, time_used_seconds INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER)")
+            connection.execute("INSERT INTO thread_goals VALUES (?,?,?,?,?,?,?,?,?)", ("ctrl-a", "goal-host-1", "private", "active", 0, 0, 0, now, now))
+            connection.commit()
+        body_bytes = b"# Acceptance report\nAll declared checks passed.\n"
+        (root / "deliverable.md").write_bytes(body_bytes)
+        artifact_sha = hashlib.sha256(body_bytes).hexdigest()
+        projection = app.progress_ledger.replay()
+        state = projection["task_manifests"]["host-new"]
+        manifest_digest = state["versions"][state["active_version"]]["manifest_digest"]
+        role_ref = next(iter(projection["task_creation_bindings"].values()))["role_manifest_ref"]
+        connectors, tickets = projection["connector_receipts"], projection["ticket_identities"]
+
+        def gate(expected_sha):
+            check = ("import hashlib, pathlib, sys; data = pathlib.Path('deliverable.md').read_bytes(); "
+                     f"sys.exit(0 if hashlib.sha256(data).hexdigest() == {expected_sha!r} and data.startswith(b'# Acceptance report') else 4)")
+            return [["report-integrity", [sys.executable, "-c", check]]]
+
+        def agent(text, *, phase=None, item_id="agent-1"):
+            return {"type": "agentMessage", "id": item_id, "text": text, **({"phase": phase} if phase else {})}
+
+        def request(*, block_id="b", gates=None, goal="goal-host-1", strategy="light", reviewer="reviewer-host",
+                    turn="review-turn", items=None, status="completed", binding_changes=None, observed=None, **changes):
+            gates = gates or gate(artifact_sha)
+            body = {"project_id": "project:alpha", "task_id": "host-new", "block_id": block_id, "manifest_digest": manifest_digest,
+                    "expected_ledger_revision": app.progress_ledger.replay()["cursor"]["event_seq"],
+                    "artifact_path": "deliverable.md", "artifact_sha256": artifact_sha, "gates": gates,
+                    "review_strategy": strategy, "acknowledge": True,
+                    "host_review": {"reviewer_thread_id": reviewer, "reviewer_turn_id": turn}}
+            binding = console.bound_task_acceptance_binding(
+                project_id="project:alpha", task_id="host-new", block_id=block_id, manifest_digest=manifest_digest,
+                goal_id=goal, artifact_path="deliverable.md", artifact_sha256=artifact_sha, gates=gates, review_strategy=strategy,
+                ctrl_id="ctrl-a", root_digest=root_digest, role_manifest_ref=role_ref)
+            binding.update(binding_changes or {})
+            verdict = json.dumps({"schema": console.BOUND_TASK_REVIEW_SCHEMA, "verdict": "ACCEPT", "binding": binding})
+            prompt = {"type": "userMessage", "id": "user-1", "content": [{"type": "text", "text": "Review the exact artifact."}]}
+            reviews[observed or reviewer] = {"id": observed or reviewer, "cwd": str(self.root),
+                                             "turns": [{"id": turn, "status": status, "items": [prompt, agent(verdict)] if items is None else items(verdict)}]}
+            body.update(changes)
+            return body
+
+        def refused(body, active=None, pattern=None):
+            before = (active or app).progress_ledger._state.path.read_bytes()
+            handler = post("/api/tasks/complete", body, active)
+            handler._json.assert_not_called()
+            handler._error.assert_called_once()
+            if pattern:
+                self.assertRegex(handler._error.call_args.args[1], pattern)
+            self.assertEqual((active or app).progress_ledger._state.path.read_bytes(), before)
+
+        wrong_token = self._handler("127.0.0.1", "127.0.0.1:4788", token="wrong")
+        wrong_token.server.app, wrong_token.path = app, "/api/tasks/complete"
+        wrong_token._payload, wrong_token._json, wrong_token._error = mock.Mock(return_value=request()), mock.Mock(), mock.Mock()
+        wrong_token.do_POST()
+        wrong_token._error.assert_called_once()
+        refused({**request(), "approved": True})
+        refused({**request(), "reviewer": "independent"})
+        refused(request(reviewer="host-new"), pattern="independent reviewer")
+        refused(request(reviewer="ctrl-a"), pattern="independent reviewer")
+        refused(request(reviewer="reviewer-foreign"), pattern="HOST_REVIEW_UNVERIFIED")  # Returned cwd conflicts with that host thread.
+        refused(request(reviewer="reviewer-absent"), pattern="HOST_REVIEW_UNVERIFIED")
+        duplicate_verdict = lambda verdict: [agent(verdict.replace('"verdict": "ACCEPT"', '"verdict": "REJECT", "verdict": "ACCEPT"'))]
+        refused(request(items=duplicate_verdict), pattern="duplicate fields")
+        refused(request(items=lambda verdict: duplicate_verdict(verdict) + [agent(verdict, item_id="agent-2")]), pattern="duplicate fields")
+        refused(request(items=lambda verdict: [agent("[" * 2000 + "0" + "]" * 2000)]), pattern="HOST_REVIEW_UNVERIFIED")
+        with mock.patch.object(console, "_readonly_connection", side_effect=sqlite3.OperationalError("unavailable")):
+            with self.assertRaisesRegex(console.ConsoleError, "HOST_REVIEW_UNVERIFIED"):
+                app._observe_bound_review(root, "reviewer-host", "review-turn", {})
+        refused(request(items=lambda verdict: [{"type": "userMessage", "id": "user-1", "content": [{"type": "text", "text": verdict}]}]), pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(items=lambda verdict: [agent(verdict, phase="analysis")]), pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(items=lambda verdict: [agent(verdict), agent("Looks good. ACCEPT.", item_id="agent-2")]), pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(items=lambda verdict: [{"type": "commandExecution", "id": "tool-1", "aggregatedOutput": verdict}]), pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(status="inProgress"), pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(turn="other-turn", observed="reviewer-host") | {"host_review": {"reviewer_thread_id": "reviewer-host", "reviewer_turn_id": "missing-turn"}}, pattern="HOST_REVIEW_UNVERIFIED")
+        conflicting = json.dumps({"schema": console.BOUND_TASK_REVIEW_SCHEMA, "verdict": "REJECT", "binding": {}})
+        refused(request(items=lambda verdict: [agent(conflicting), agent(verdict, item_id="agent-2")]), pattern="conflicting")
+        mismatched = request()
+        reviews["reviewer-host"]["id"] = "impostor"
+        refused(mismatched, pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(binding_changes={"artifact_sha256": "0" * 64}), pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(binding_changes={"goal_id": "goal-invented"}), pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(binding_changes={"gates": gate("1" * 64)}), pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(binding_changes={"root_digest": "2" * 64}), pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(binding_changes={"task_id": "task"}), pattern="HOST_REVIEW_UNVERIFIED")
+        refused(request(project_id="project:beta"))
+        refused(request(task_id="host-unknown"))
+        refused(request(task_id="task"))  # Host task without a retained creation binding.
+        refused(request(task_id="unsafe"))  # Host task outside the registered root.
+        refused(request(block_id="missing-block"))
+        refused(request(manifest_digest="sha256:" + "0" * 64))
+        refused(request(gates=[]) | {"gates": []})
+        refused(request(gates=gate("3" * 64)), pattern="did not pass")  # Reviewed gate really executes and fails.
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET archived=1 WHERE id='ctrl-a'")
+            connection.commit()
+        refused(request(), pattern="host project membership")
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET archived=0 WHERE id='ctrl-a'")
+            connection.commit()
+        stale = request()
+        stale["expected_ledger_revision"] -= 1
+        refused(stale, pattern="changed")
+        review_now = request()
+        (root / "deliverable.md").write_bytes(b"# Acceptance report\naltered after review\n")
+        refused(review_now, pattern="reviewed digest")
+        (root / "deliverable.md").write_bytes(body_bytes)
+        for change in ("UPDATE thread_goals SET thread_id='other-thread'", "UPDATE thread_goals SET status='complete'"):
+            with closing(sqlite3.connect(goals)) as connection:
+                connection.execute(change)
+                connection.commit()
+            refused(request(), pattern="GOAL_UNBOUND")
+            with closing(sqlite3.connect(goals)) as connection:
+                connection.execute("UPDATE thread_goals SET thread_id='ctrl-a', status='active'")
+                connection.commit()
+        enabled = self.config.read_text(encoding="utf-8")
+        self.config.write_text(enabled.replace("use_goals = true", "use_goals = false"), encoding="utf-8")
+        refused(request(), pattern="HOST_REVIEW_UNVERIFIED")  # Opt-out binds no goal and never reads the host goal.
+        self.config.write_text(enabled, encoding="utf-8")
+        self.assertNotIn("host-new", json.dumps(app.progress_ledger.replay()["blocks"]))
+
+        def task_row(active):
+            overview = active.overview("project:alpha")
+            return {row["id"]: row for row in overview["progress"]["projects"]["project:alpha"]["tasks"]}
+
+        rows = task_row(app)
+        self.assertEqual(rows["host-new"]["durable_lifecycle"]["state"], "OPEN")
+        self.assertEqual((rows["host-new"]["durable_lifecycle"]["accepted_blocks"], rows["host-new"]["durable_lifecycle"]["total_blocks"]), (0, 2))
+        self.assertNotIn("durable_lifecycle", rows["task"])  # Unbound host task never gains a durable lifecycle.
+        pending = request()
+        retained_review = copy.deepcopy(reviews["reviewer-host"])
+        # A durable evidence prefix survives a crash without requiring another reviewer turn.
+        app.progress_ledger.append_bound_block_evidence(
+            project_id="project:alpha", task_id="host-new", block_id="b", manifest_digest=manifest_digest,
+            expected_event_seq=pending["expected_ledger_revision"], evidence_path=root / "deliverable.md", expected_sha256=artifact_sha)
+        refused(pending, pattern="ledger changed")
+        pending["expected_ledger_revision"] = app.progress_ledger.replay()["cursor"]["event_seq"]
+        self.assertEqual(reviews["reviewer-host"], retained_review)
+        accepted = post("/api/tasks/complete", pending)
+        accepted._error.assert_not_called()
+        result = accepted._json.call_args.args[1]
+        self.assertEqual((result["status"], result["goal_id"], result["reviewer"], result["reviewer_turn_id"], result["work_completed"]),
+                         ("ACCEPTED", "goal-host-1", "reviewer-host", "review-turn", False))
+        self.assertTrue(result["block_completed"])
+        partial = task_row(console.App(self.codex_home, self.config))["host-new"]
+        self.assertEqual((partial["durable_lifecycle"]["state"], partial["durable_lifecycle"]["accepted_blocks"]), ("OPEN", 1))
+        second = post("/api/tasks/complete", request(block_id="b2", turn="review-turn-b2"))
+        second._error.assert_not_called()
+        self.assertTrue(second._json.call_args.args[1]["work_completed"])
+        self.assertFalse(app.write_lock.locked())
+        retained = app.progress_ledger._state.path.read_bytes()
+        restarted = console.App(self.codex_home, self.config)
+        restarted.auto_bridge.command_session = session
+        done = task_row(restarted)["host-new"]
+        self.assertEqual((done["durable_lifecycle"]["state"], done["durable_lifecycle"]["accepted_blocks"]), ("COMPLETED", 2))
+        self.assertNotEqual(done["state"], "COMPLETED")  # Host activity stays separate from durable acceptance.
+        overview = restarted.overview("project:alpha")
+        poisoned = copy.deepcopy(overview)
+        next(node for node in poisoned["nodes"] if node["id"] == "host-new")["manifest_identity"]["manifest_digest"] = "sha256:" + "0" * 64
+        withheld = restarted._with_ticket_identity(poisoned)
+        withheld_row = next(row for row in withheld["progress"]["projects"]["project:alpha"]["tasks"] if row["id"] == "host-new")
+        self.assertNotIn("durable_lifecycle", withheld_row)
+        ledger_copy = copy.deepcopy(restarted.progress_ledger.replay())
+        changed_state = ledger_copy["task_manifests"]["host-new"]
+        original = changed_state["versions"][changed_state["active_version"]]
+        revised = build_task_manifest(**{**{key: value for key, value in original.items() if key != "manifest_digest"},
+                                        "manifest_version": "2", "supersedes_digest": original["manifest_digest"]})
+        changed_state["versions"]["2"] = revised
+        changed_state["active_version"] = "2"
+        revised_overview = copy.deepcopy(overview)
+        revised_identity = next(node for node in revised_overview["nodes"] if node["id"] == "host-new")["manifest_identity"]
+        revised_identity.update(manifest_version="2", manifest_digest=revised["manifest_digest"])
+        with mock.patch.object(restarted.progress_ledger, "replay", return_value=ledger_copy):
+            stale = restarted._with_ticket_identity(revised_overview)
+        stale_row = next(row for row in stale["progress"]["projects"]["project:alpha"]["tasks"] if row["id"] == "host-new")
+        self.assertEqual((stale_row["durable_lifecycle"]["state"], stale_row["durable_lifecycle"]["accepted_blocks"],
+                          stale_row["durable_lifecycle"]["total_blocks"]), ("OPEN", 0, 2))
+        self.assertEqual(stale_row["durable_lifecycle"]["manifest_digest"], revised["manifest_digest"])
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained)
+        block = next(item for item in restarted.progress_ledger.replay()["blocks"].values() if item["block_id"] == "b")
+        self.assertEqual((block["lifecycle_state"], block["admitted_proof_weight"], block["latest_event_id"]),
+                         ("ACCEPTED", 0, "bound-accepted:host-new:b"))
+        self.assertEqual(block["proof_receipt_ids"][0], "sha256:" + artifact_sha)
+        reads = sum(item["method"] == "thread/read" for item in sent)
+        replay_body = request()  # Current revision does not change the retained immutable review binding.
+        reviews.clear()  # Replay needs no host read and never re-runs gates.
+        replay = post("/api/tasks/complete", replay_body, restarted)._json.call_args.args[1]
+        self.assertEqual((replay["status"], replay["reviewer"], replay["work_completed"]), ("REPLAY", "reviewer-host", True))
+        self.assertEqual(sum(item["method"] == "thread/read" for item in sent), reads)
+        refused({**replay_body, "host_review": {"reviewer_thread_id": "reviewer-host", "reviewer_turn_id": "other-turn"}}, restarted, "review binding")
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained)
+        after = restarted.progress_ledger.replay()
+        self.assertEqual((after["connector_receipts"], after["ticket_identities"]), (connectors, tickets))
+        self.assertEqual([item["method"] for item in sent if item["method"] != "thread/read"], ["thread/start", "turn/start"])
+        (root / "deliverable.md").write_bytes(b"# Acceptance report\ndifferent accepted bytes\n")
+        artifact_sha = hashlib.sha256(b"# Acceptance report\ndifferent accepted bytes\n").hexdigest()
+        refused({**replay_body, "artifact_sha256": artifact_sha}, restarted, "different bytes")
+
     def test_work_unit_creation_persists_native_coordinators_and_pending_goals(self) -> None:
         from contextlib import contextmanager
         with closing(sqlite3.connect(self.database)) as connection:
