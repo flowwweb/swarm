@@ -7100,11 +7100,12 @@ def host_thread_goal_id(codex_home: Path, thread_id: str) -> str:
     database = goals_database(codex_home)
     try:
         with closing(_readonly_connection(database)) as connection:
-            rows = connection.execute("SELECT goal_id FROM thread_goals WHERE thread_id=? AND status='active'", (thread_id,)).fetchall()
+            rows = connection.execute("SELECT goal_id, status FROM thread_goals WHERE thread_id=?", (thread_id,)).fetchall()
     except (sqlite3.Error, OSError, ConsoleError) as exc:
         raise ConsoleError("GOAL_UNBOUND: the host has no readable durable goal for this task") from exc
-    if len(rows) != 1:
-        raise ConsoleError("GOAL_UNBOUND: the host has no exact durable goal for this task")
+    # Existing-work acceptance retains blocked goal identity; it does not resume dispatch.
+    if len(rows) != 1 or rows[0]["status"] not in {"active", "blocked"}:
+        raise ConsoleError("GOAL_UNBOUND: the host has no exact nonterminal durable goal for this task")
     return _auto_id(rows[0]["goal_id"], "host goal_id")
 
 

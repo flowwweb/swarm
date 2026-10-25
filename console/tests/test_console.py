@@ -1138,13 +1138,27 @@ class SwarmConsoleTests(unittest.TestCase):
         (root / "deliverable.md").write_bytes(b"# Acceptance report\naltered after review\n")
         refused(review_now, pattern="reviewed digest")
         (root / "deliverable.md").write_bytes(body_bytes)
-        for change in ("UPDATE thread_goals SET thread_id='other-thread'", "UPDATE thread_goals SET status='complete'"):
+        for change in ("UPDATE thread_goals SET thread_id='other-thread'",
+                       *(f"UPDATE thread_goals SET status='{status}'" for status in ("complete", "paused", "unknown"))):
             with closing(sqlite3.connect(goals)) as connection:
                 connection.execute(change)
                 connection.commit()
             refused(request(), pattern="GOAL_UNBOUND")
             with closing(sqlite3.connect(goals)) as connection:
                 connection.execute("UPDATE thread_goals SET thread_id='ctrl-a', status='active'")
+                connection.commit()
+        # Missing and ambiguous host rows fail before any Ledger write, even for the same goal ID.
+        for copies in (0, 2):
+            with closing(sqlite3.connect(goals)) as connection:
+                connection.execute("ALTER TABLE thread_goals RENAME TO retained_thread_goals")
+                connection.execute("CREATE TABLE thread_goals AS SELECT * FROM retained_thread_goals WHERE 0")
+                for _ in range(copies):
+                    connection.execute("INSERT INTO thread_goals SELECT * FROM retained_thread_goals")
+                connection.commit()
+            refused(request(), pattern="GOAL_UNBOUND")
+            with closing(sqlite3.connect(goals)) as connection:
+                connection.execute("DROP TABLE thread_goals")
+                connection.execute("ALTER TABLE retained_thread_goals RENAME TO thread_goals")
                 connection.commit()
         enabled = self.config.read_text(encoding="utf-8")
         self.config.write_text(enabled.replace("use_goals = true", "use_goals = false"), encoding="utf-8")
@@ -1160,6 +1174,9 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(rows["host-new"]["durable_lifecycle"]["state"], "OPEN")
         self.assertEqual((rows["host-new"]["durable_lifecycle"]["accepted_blocks"], rows["host-new"]["durable_lifecycle"]["total_blocks"]), (0, 2))
         self.assertNotIn("durable_lifecycle", rows["task"])  # Unbound host task never gains a durable lifecycle.
+        with closing(sqlite3.connect(goals)) as connection:
+            connection.execute("UPDATE thread_goals SET status='blocked'")
+            connection.commit()
         pending = request()
         retained_review = copy.deepcopy(reviews["reviewer-host"])
         # A durable evidence prefix survives a crash without requiring another reviewer turn.
@@ -1177,11 +1194,18 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertTrue(result["block_completed"])
         partial = task_row(console.App(self.codex_home, self.config))["host-new"]
         self.assertEqual((partial["durable_lifecycle"]["state"], partial["durable_lifecycle"]["accepted_blocks"]), ("OPEN", 1))
+        with closing(sqlite3.connect(goals)) as connection:
+            self.assertEqual(connection.execute("SELECT status FROM thread_goals").fetchone()[0], "blocked")
+            connection.execute("UPDATE thread_goals SET status='active'")
+            connection.commit()
         second = post("/api/tasks/complete", request(block_id="b2", turn="review-turn-b2"))
         second._error.assert_not_called()
         self.assertTrue(second._json.call_args.args[1]["work_completed"])
         self.assertFalse(reviewer_cwd.exists())  # Default observer never recreates historical host directories.
         self.assertFalse(app.write_lock.locked())
+        with closing(sqlite3.connect(goals)) as connection:
+            connection.execute("UPDATE thread_goals SET status='blocked'")
+            connection.commit()
         retained = app.progress_ledger._state.path.read_bytes()
         restarted = console.App(self.codex_home, self.config)
         restarted.auto_bridge.command_session = session
