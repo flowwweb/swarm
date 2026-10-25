@@ -63,12 +63,16 @@ class ReleasePackageTests(unittest.TestCase):
                 'PROJECTS_ASSETS = ' + repr({dependencies[1]: digest}) +
                 '\nHQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/sdk.js"\nHQ_SDK_SHA256 = ' + repr(digest), encoding='utf-8')
             config = root / '.mcp.json'
-            entry = {'type': 'stdio', 'command': sys.executable,
+            entry = {'type': 'stdio', 'command': 'python',
                      'args': ['-B', 'skills/swarm/scripts/swarm_desktop.py'], 'cwd': '.'}
             config.write_text(json.dumps({'mcpServers': {'swarm': entry}}), encoding='utf-8')
             package_builder.validate_plugin_manifest(root)
-            # Codex resolves a plugin-relative cwd against the package root.
-            # Exercise that exact cwd/argv without invoking a real MCP server.
+            # Acceptance must not depend on the interpreter running the validator.
+            for host in ('C:/Users/other/AppData/Local/Programs/Python/Python313/python.exe', '/usr/bin/python3'):
+                with self.subTest(host=host), mock.patch.object(sys, 'executable', host):
+                    package_builder.validate_plugin_manifest(root)
+            # Supply the package root here and exercise host command resolution.
+            # Actual Codex cwd resolution remains a separate host proof.
             launcher = root / entry['args'][1]
             with launcher.open('a', encoding='utf-8') as stream:
                 stream.write('\nfrom pathlib import Path\nprint(Path.cwd().resolve())\n')
@@ -78,6 +82,8 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertEqual(Path(launch.stdout.strip()), root.resolve())
             self.assertFalse((root / '${PLUGIN_ROOT}').exists())
             for field, invalid in (('command', 'cmd.exe'), ('command', 'C:/other/python.exe'),
+                                   ('command', sys.executable), ('command', '/usr/bin/python3'),
+                                   ('command', 'python3'),
                                    ('args', ['-c', 'print(1)']), ('args', ['-B', '../swarm_desktop.py']),
                                    ('args', entry['args'] + ['--extra']), ('cwd', '..'),
                                    ('type', 'http'), ('cwd', '${PLUGIN_ROOT}'),
@@ -143,7 +149,7 @@ class ReleasePackageTests(unittest.TestCase):
             (scripts / 'swarm_desktop.py').write_text('ASSETS = ' + repr({'console/static/app.js': pins['console/static/app.js']}))
             (root / 'skills/swarm/assets/ui/swarm-hq-snapshot.json').write_text('{}')
             (root / '.mcp.json').write_text(json.dumps({'mcpServers': {'swarm': {
-                'type': 'stdio', 'command': sys.executable, 'args': ['-B', 'skills/swarm/scripts/swarm_desktop.py'], 'cwd': '.'}}}))
+                'type': 'stdio', 'command': 'python', 'args': ['-B', 'skills/swarm/scripts/swarm_desktop.py'], 'cwd': '.'}}}))
             bundle = root / 'skills/swarm/assets/ui/swarm-hq-mcp-app.js'
             def write_bundle(header):
                 bundle.write_bytes(header + b'\ncompiled code')

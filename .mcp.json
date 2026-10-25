@@ -2,7 +2,7 @@
   "mcpServers": {
     "swarm": {
       "type": "stdio",
-      "command": "C:\\Users\\peikg\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+      "command": "python",
       "args": [
         "-B",
         "skills/swarm/scripts/swarm_desktop.py"

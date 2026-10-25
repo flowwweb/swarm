@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -16,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[3]
 class PackagedDesktopTests(unittest.TestCase):
     def test_packaged_settings_and_sidebar(self):
         config = json.loads((ROOT / '.mcp.json').read_bytes())['mcpServers']['swarm']
-        self.assertEqual(config['command'], sys.executable)
+        self.assertEqual(config['command'], 'python')
         self.assertEqual(config['type'], 'stdio')
         self.assertEqual(config['cwd'], '.')
         self.assertEqual(config['args'], ['-B', 'skills/swarm/scripts/swarm_desktop.py'])
@@ -51,7 +50,7 @@ class PackagedDesktopTests(unittest.TestCase):
         tool = next(t for t in tools if t['name'] == 'swarm_hq_view')
         self.assertEqual(tool['title'], 'SWARM')
         self.assertTrue(tool['icons'][0]['src'].startswith('data:image/svg+xml;base64,'))
-        self.assertEqual(tool['_meta']['openai/ui']['entrypoints'], [{'type': 'global'}])
+        self.assertEqual(tool['_meta']['openai/ui']['entrypoints'], [{'type': 'global'}, {'type': 'thread'}])
         resource = responses[2]['result']['contents'][0]
         self.assertEqual(resource['_meta']['openai/ui']['availableDisplayModes'], ['fullscreen'])
         html = resource['text']

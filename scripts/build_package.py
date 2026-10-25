@@ -16,7 +16,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import tomllib
 import unicodedata
 import zipfile
@@ -269,7 +268,7 @@ def validate_plugin_manifest(root: Path, files: dict[str, str] | None = None) ->
             "cwd": "${PLUGIN_ROOT}",
         }}}
         desktop = {"mcpServers": {"swarm": {
-            "type": "stdio", "command": sys.executable,
+            "type": "stdio", "command": "python",
             "args": ["-B", "skills/swarm/scripts/swarm_desktop.py"], "cwd": ".",
         }}}
         if declaration == desktop:
