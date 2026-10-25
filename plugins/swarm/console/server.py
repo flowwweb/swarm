@@ -10319,9 +10319,10 @@ class App:
             if len(rows) != 1 or rows[0]["archived"] or not isinstance(rows[0]["cwd"], str):
                 raise ValueError("reviewer host identity is missing or archived")
             path = Path(rows[0]["cwd"])
-            if not path.is_absolute() or not path.is_dir():
-                raise ValueError("reviewer host directory is unavailable")
-            return path.resolve(strict=True)
+            if not path.is_absolute():
+                raise ValueError("reviewer host directory identity is invalid")
+            # Historical cwd is host identity, not a filesystem dependency or launch root.
+            return _normalized_project_path(str(path))
 
         def unique_fields(pairs):
             value = {}
@@ -10339,7 +10340,8 @@ class App:
                 response = receive(lambda message: message.get("id") == 1 and "method" not in message)
             thread = response.get("result", {}).get("thread") if response.get("error") is None else None
             if (not isinstance(thread, dict) or thread.get("id") != thread_id or not isinstance(thread.get("cwd"), str)
-                    or Path(thread["cwd"]).resolve(strict=True) != observed_root):
+                    or not Path(thread["cwd"]).is_absolute()
+                    or _normalized_project_path(thread["cwd"]) != observed_root):
                 raise ValueError("reviewer thread identity or root is unverified")
             turns = [turn for turn in thread.get("turns") or [] if isinstance(turn, dict) and turn.get("id") == turn_id]
             if (len(turns) != 1 or turns[0].get("status") != "completed" or not isinstance(turns[0].get("items"), list)
@@ -10366,7 +10368,7 @@ class App:
             raise
         except (OSError, sqlite3.Error, RecursionError, ValueError, TypeError, AttributeError, TimeoutError, queue.Empty, subprocess.SubprocessError) as exc:
             raise ConsoleError(f"HOST_REVIEW_UNVERIFIED: {exc}") from exc
-        return _auto_digest({"thread_id": thread_id, "turn_id": turn_id, "reviewer_cwd": _normalized_project_path(str(observed_root)),
+        return _auto_digest({"thread_id": thread_id, "turn_id": turn_id, "reviewer_cwd": observed_root,
                              "status": "completed", "verdict": verdict})
 
     def complete_bound_task(self, payload: dict[str, Any]) -> dict[str, Any]:

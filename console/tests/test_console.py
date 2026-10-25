@@ -1015,8 +1015,10 @@ class SwarmConsoleTests(unittest.TestCase):
         app.auto_bridge.command_session = session
         created = post("/api/tasks/create", creation)._json.call_args.args[1]
         self.assertEqual((created["status"], created["thread_id"], created["work_completed"]), ("RESULT", "host-new", False))
+        reviewer_cwd = self.root / "retired-reviewer-worktree"
+        self.assertFalse(reviewer_cwd.exists())
         with closing(sqlite3.connect(self.database)) as connection:
-            for thread_id, cwd in (("host-new", root), ("ctrl-a", root), ("reviewer-host", self.root), ("reviewer-foreign", root)):
+            for thread_id, cwd in (("host-new", root), ("ctrl-a", root), ("reviewer-host", reviewer_cwd), ("reviewer-foreign", root)):
                 connection.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
                     thread_id, "untrusted label", str(cwd), 2_000_000_000, 2_000_000_000, 2_000_000_000_000,
                     2_000_000_000_001, "gpt-5.6-terra", "high", 0, 0, "", "main", "", "", "", 0))
@@ -1058,7 +1060,7 @@ class SwarmConsoleTests(unittest.TestCase):
             binding.update(binding_changes or {})
             verdict = json.dumps({"schema": console.BOUND_TASK_REVIEW_SCHEMA, "verdict": "ACCEPT", "binding": binding})
             prompt = {"type": "userMessage", "id": "user-1", "content": [{"type": "text", "text": "Review the exact artifact."}]}
-            reviews[observed or reviewer] = {"id": observed or reviewer, "cwd": str(self.root),
+            reviews[observed or reviewer] = {"id": observed or reviewer, "cwd": str(reviewer_cwd),
                                              "turns": [{"id": turn, "status": status, "items": [prompt, agent(verdict)] if items is None else items(verdict)}]}
             body.update(changes)
             return body
@@ -1083,6 +1085,14 @@ class SwarmConsoleTests(unittest.TestCase):
         refused(request(reviewer="ctrl-a"), pattern="independent reviewer")
         refused(request(reviewer="reviewer-foreign"), pattern="HOST_REVIEW_UNVERIFIED")  # Returned cwd conflicts with that host thread.
         refused(request(reviewer="reviewer-absent"), pattern="HOST_REVIEW_UNVERIFIED")
+        for invalid_cwd in ("", "relative-reviewer"):
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE threads SET cwd=? WHERE id='reviewer-host'", (invalid_cwd,))
+                connection.commit()
+            refused(request(), pattern="HOST_REVIEW_UNVERIFIED")
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET cwd=? WHERE id='reviewer-host'", (str(reviewer_cwd),))
+            connection.commit()
         duplicate_verdict = lambda verdict: [agent(verdict.replace('"verdict": "ACCEPT"', '"verdict": "REJECT", "verdict": "ACCEPT"'))]
         refused(request(items=duplicate_verdict), pattern="duplicate fields")
         refused(request(items=lambda verdict: duplicate_verdict(verdict) + [agent(verdict, item_id="agent-2")]), pattern="duplicate fields")
@@ -1170,6 +1180,7 @@ class SwarmConsoleTests(unittest.TestCase):
         second = post("/api/tasks/complete", request(block_id="b2", turn="review-turn-b2"))
         second._error.assert_not_called()
         self.assertTrue(second._json.call_args.args[1]["work_completed"])
+        self.assertFalse(reviewer_cwd.exists())  # Default observer never recreates historical host directories.
         self.assertFalse(app.write_lock.locked())
         retained = app.progress_ledger._state.path.read_bytes()
         restarted = console.App(self.codex_home, self.config)
