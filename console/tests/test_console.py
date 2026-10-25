@@ -1797,6 +1797,74 @@ class SwarmConsoleTests(unittest.TestCase):
             restarted.project_ticket_execution_command({**bind, "manifest_digest":"sha256:" + "0"*64})
         self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), before)
 
+    def test_existing_owner_admission_preserves_historical_builtin_assignment(self) -> None:
+        app, request, sent, controls, session = self._existing_owner_admission_fixture()
+        current = next(role for role in app.builtin_role_manifests if role["id"] == "developer")
+        draft = {key: value for key, value in current.items() if key not in {"id", "version", "source", "provenance"}}
+        old = console.build_role_manifest("developer", {**draft, "instructions": ["Retained older developer instructions."]},
+                                          "builtin", ["historical-installed-package"])
+        self.assertNotEqual(old["version"], current["version"])
+        app.progress_ledger.append(console.role_material_event("ROLE_ASSIGNMENT_BOUND", event_id="old-role-binding",
+            dedupe_key="old-role-binding", role_id="developer", manifest=old, expected_active_version=old["version"],
+            assignment_task_id="historical-owner", provenance="historical-installed-package", observed_at_ms=1))
+        before = app.progress_ledger.replay()
+        history = app.progress_ledger._state.path.read_bytes()
+        visible = next(role for role in app.role_manifest_projection()["roles"] if role["id"] == "developer")
+        self.assertEqual(visible["active_version"], current["version"])
+        self.assertEqual(before["role_manifests"]["developer"]["active_version"], old["version"])
+        request["expected_ledger_revision"] = before["cursor"]["event_seq"]
+        result = app.adopt_existing_task(request)
+        self.assertEqual(result["status"], "APPENDED")
+        after = app.progress_ledger.replay()
+        self.assertTrue(app.progress_ledger._state.path.read_bytes().startswith(history))
+        self.assertEqual(after["role_assignments"]["historical-owner"], before["role_assignments"]["historical-owner"])
+        self.assertEqual(after["role_manifests"]["developer"]["versions"][old["version"]], old)
+        self.assertEqual(after["role_manifests"]["developer"]["active_version"], old["version"])
+        self.assertEqual(after["role_assignments"]["task"]["manifest_version"], current["version"])
+        self.assertEqual(after["blocks"], {})
+        retained = app.progress_ledger._state.path.read_bytes()
+        restarted = console.App(self.codex_home, self.config)
+        restarted.auto_bridge.command_session = session
+        self.assertEqual(restarted.adopt_existing_task(request)["status"], "REPLAY")
+        self.assertEqual(restarted.progress_ledger.replay(), after)
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained)
+
+    def test_existing_owner_admission_respects_active_override_and_role_race(self) -> None:
+        app, request, sent, controls, session = self._existing_owner_admission_fixture()
+        current = next(role for role in app.builtin_role_manifests if role["id"] == "developer")
+        draft = {key: value for key, value in current.items() if key not in {"id", "version", "source", "provenance"}}
+        override = console.build_role_manifest("developer", {**draft, "instructions": ["Explicit user-owned instructions."]},
+                                               "user_override", ["explicit-user-change"])
+        def revise(manifest, expected, identity):
+            app.progress_ledger.append(console.role_material_event("ROLE_MANIFEST_REVISE", event_id=identity,
+                dedupe_key=identity, role_id="developer", manifest=manifest, expected_active_version=expected,
+                assignment_task_id=None, provenance="explicit-user-change", observed_at_ms=2))
+        revise(override, current["version"], "user-role")
+        request["expected_ledger_revision"] = app.progress_ledger.replay()["cursor"]["event_seq"]
+        retained = app.progress_ledger._state.path.read_bytes()
+        with self.assertRaisesRegex(console.ConsoleError, "role reference is missing or stale"):
+            app.adopt_existing_task(request)
+        self.assertEqual(sent, [])
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), retained)
+        request["role_manifest_ref"] = role_manifest_reference(override)
+        newer = console.build_role_manifest("developer", {**draft, "instructions": ["Newer explicit instructions."]},
+                                            "user_override", ["explicit-user-change-again"])
+        raced = []
+        def change_during_read(response):
+            if not raced:
+                revise(newer, override["version"], "user-role-race")
+                raced.append(app.progress_ledger._state.path.read_bytes())
+        controls["mutate"] = change_during_read
+        with self.assertRaisesRegex(console.ConsoleError, "ledger changed"):
+            app.adopt_existing_task(request)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), raced[0])
+        self.assertEqual(app.progress_ledger.replay()["task_creation_bindings"], {})
+        controls.clear()
+        request.update(role_manifest_ref=role_manifest_reference(newer),
+                       expected_ledger_revision=app.progress_ledger.replay()["cursor"]["event_seq"])
+        self.assertEqual(app.adopt_existing_task(request)["status"], "APPENDED")
+        self.assertEqual(app.progress_ledger.replay()["role_assignments"]["task"]["manifest_version"], newer["version"])
+
     def test_ticket_execution_binding_completes_only_through_bound_block_acceptance(self) -> None:
         from contextlib import contextmanager
         app = console.App(self.codex_home, self.config)

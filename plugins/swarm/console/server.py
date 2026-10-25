@@ -10522,6 +10522,10 @@ class App:
                 explicit_empty_work_receipt_id=operation + ":empty" if not task["blocks"] and not task["milestones"] else None,
                 host_result_receipt_id=receipts[-1]["receipt_id"], observed_at_ms=now,
                 existing_host={"authorization_digest": request_digest, "subject": observations[subject], "ctrl": observations[ctrl]})
+            # The current builtin may supersede a retained assignment snapshot. Bind the
+            # selected content, but compare against the exact stored role in this revision.
+            creation["topology"]["role_manifest"]["expected_active_version"] = projection["role_manifests"].get(
+                role["id"], {}).get("active_version", role["version"])
             result = self.progress_ledger.append_connector_result_with_task_creation(receipts[-1], creation,
                 command_prefix=tuple(receipts[:2]), expected_revision=envelope.expected_ledger_revision)
             retained = self.progress_ledger.replay()["task_creation_bindings"][operation]
