@@ -53,3 +53,30 @@ partial.progress.projects.alpha.tasks=[{...task,project_id:'foreign'}];
 assert.equal(projectDetail(partial,'alpha').tasksTruncated,false);
 assert.ok(bootstrap.includes("data.tasksTruncated?'<p>More tasks unavailable.</p>':''"));
 console.log('PASS: partial-list flag, unsafe display controls rejected, stable identity retained');
+
+// Durable acceptance is a separate, cursor-bound server projection, never host activity.
+const ledgerCursor={event_seq:13,event_id:'bound-accepted:retained-task:b',event_digest:'a'.repeat(64)};
+const lifecycle={state:'COMPLETED',accepted_blocks:2,total_blocks:2,manifest_digest:'sha256:'+'b'.repeat(64),
+ source:'ledger:bound-task-acceptance',ledger_cursor:ledgerCursor};
+const completed=view([{...task,state:'active',durable_lifecycle:lifecycle}]);
+completed.progress.task_identity={state:'KNOWN',digest:'c'.repeat(64),ledger_cursor:ledgerCursor};
+const taskStatus=raw=>projectDetail(raw,'alpha').taskRows[0].status;
+assert.equal(taskStatus(completed),'COMPLETED');
+completed.progress.projects.alpha.tasks[0].state='quiet';
+assert.equal(taskStatus(completed),'COMPLETED');
+const revised=structuredClone(completed);
+Object.assign(revised.progress.projects.alpha.tasks[0].durable_lifecycle,{state:'OPEN',accepted_blocks:0,manifest_digest:'sha256:'+'d'.repeat(64)});
+assert.equal(taskStatus(revised),'OPEN');
+for(const mutate of [
+ raw=>raw.progress.task_identity.state='UNAVAILABLE',
+ raw=>raw.progress.task_identity.ledger_cursor.event_seq++,
+ raw=>raw.progress.projects.alpha.tasks[0].durable_lifecycle.source='host:activity',
+ raw=>raw.progress.projects.alpha.tasks[0].durable_lifecycle.manifest_digest='bad',
+ raw=>raw.progress.projects.alpha.tasks[0].durable_lifecycle.state='ACCEPT',
+ raw=>raw.progress.projects.alpha.tasks[0].durable_lifecycle=null,
+]){const bad=structuredClone(completed);bad.progress.task_identity.ledger_cursor={...ledgerCursor};mutate(bad);assert.equal(taskStatus(bad),'Unknown');}
+assert.equal(read([{...task,state:'active'}]).taskRows[0].status,'active');
+assert.equal(read([{...task,state:'quiet'}]).taskRows[0].status,'quiet');
+assert.deepEqual(completed,JSON.parse(JSON.stringify(completed)));
+assert.equal(taskStatus(JSON.parse(JSON.stringify(completed))),'COMPLETED');
+console.log('PASS: durable completion separate from host activity; revised OPEN, cursor mismatch and malformed lifecycle fail closed; reload parity');

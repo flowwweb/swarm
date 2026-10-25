@@ -25,8 +25,14 @@ export function projectDetail(raw,id) {
   const taskRows=tasksAvailable?[...scope.tasks].sort((a,b)=>Number(b.state==='ACTIVE')-Number(a.state==='ACTIVE')).map(t=>{
     const candidateId=taskText(t.display_id,64);
     const displayId=candidateId&&/^[A-Z]{1,4}-[1-9][0-9]*$/.test(candidateId)?candidateId:null,label=taskText(t.label,160);
+    const lifecycle=t.durable_lifecycle,identity=raw.progress?.task_identity,cursor=identity?.ledger_cursor;
+    const lifecycleBound=identity?.state==='KNOWN'&&lifecycle?.source==='ledger:bound-task-acceptance'&&
+      /^sha256:[a-f0-9]{64}$/.test(lifecycle.manifest_digest||'')&&Number.isSafeInteger(cursor?.event_seq)&&
+      typeof cursor?.event_id==='string'&&typeof cursor?.event_digest==='string'&&cursor.event_digest.length>0&&
+      ['event_seq','event_id','event_digest'].every(key=>lifecycle.ledger_cursor?.[key]===cursor[key])&&
+      ['OPEN','COMPLETED'].includes(lifecycle.state);
     return {id:t.id,name:[displayId,label].filter(Boolean).join(' \u00b7 ')||'Task '+t.id,
-      status:typeof t.state==='string'&&t.state.trim()?t.state:'Unknown'};
+      status:lifecycle!==undefined?(lifecycleBound?lifecycle.state:'Unknown'):typeof t.state==='string'&&t.state.trim()?t.state:'Unknown'};
   }):[];
   return {taskRows,tasksAvailable,tasksTruncated:tasksAvailable&&scope.truncated===true,updated:Number.isSafeInteger(p.updated_at)&&p.updated_at>0?p.updated_at:null,
     milestone:m?.state==='KNOWN'&&typeof m.name==='string'?m.name:null,
