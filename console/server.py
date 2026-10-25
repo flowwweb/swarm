@@ -95,6 +95,7 @@ from project_model_views import (  # noqa: E402
     validate_flow_assignment,
     mutate_project_brief,
     mutate_project_tickets,
+    migrate_legacy_project_tickets,
     read_project_tickets,
     create_flow_draft,
 )
@@ -129,6 +130,11 @@ PROJECT_BRIEF_REQUIRED_FIELDS = frozenset({
     "authority", "milestones", "decisions", "ownership", "proof_acceptance", "risks_blockers", "links",
 })
 PROJECT_SETTING_FIELDS = frozenset({"inheritance_enabled", "profile", "preferred_ids"})
+# Observed Codex saved-state shape: native projects plus the per-host native -> SQLite project map.
+HOST_STATE_FILENAME = ".codex-global-state.json"
+HOST_STATE_PROJECTS_KEY = "local-projects"
+HOST_STATE_PROJECT_MAP_KEY = "app-server-project-id-by-legacy-project-id-by-host"
+HOST_STATE_MAX_BYTES = 32 * 1024 * 1024  # Measured host file was 21,941,280 bytes; finite, strict bound.
 PROJECT_VIEW_RENDERERS = {
     "canvas": frozenset({"network", "spatial", "freeform"}),
     "table": frozenset({"entities", "records", "log"}),
@@ -8208,6 +8214,13 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     return overview
 
 
+def _binding_identities(binding: dict[str, Any]) -> frozenset[str]:
+    """Planning identities of one saved-project binding snapshot, or the exact existing refusal."""
+    if binding["identities"] is None:
+        raise ConsoleError(str(binding["identity_error"]))
+    return binding["identities"]
+
+
 class SwarmHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -8288,34 +8301,113 @@ class App:
     def _auto_project_root(self, project_id: str) -> Path:
         return self._canonical_project_root(project_id, "Auto")
 
-    def _canonical_project_root(self, project_id: str, purpose: str = "Project view") -> Path:
+    def _native_project_map(self) -> dict[str, dict[str, Any]]:
+        """Read-only compatibility with the host saved-state file; never a registry, store or write.
+
+        Only the two observed namespaces are read. An absent file or an absent map for this host
+        means no native binding. Malformed relevant state raises instead of granting a fallback.
+        """
+        path = self.codex_home / HOST_STATE_FILENAME
+        try:
+            if not path.exists():
+                return {}
+            if _is_reparse_point(path) or not path.is_file():
+                raise ConsoleError("host saved-state file is not a regular file")
+            with path.open("rb") as stream:
+                raw = stream.read(HOST_STATE_MAX_BYTES + 1)
+            if len(raw) > HOST_STATE_MAX_BYTES:
+                raise ConsoleError("host saved-state file exceeds the read bound")
+            state = json.loads(raw.decode("utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ConsoleError("host saved-state file is unreadable") from exc
+        if not isinstance(state, dict):
+            raise ConsoleError("host saved-state file is invalid")
+        projects = state.get(HOST_STATE_PROJECTS_KEY, {})
+        maps = state.get(HOST_STATE_PROJECT_MAP_KEY, {})
+        if not isinstance(projects, dict) or not isinstance(maps, dict):
+            raise ConsoleError("host saved-state project namespaces are invalid")
+        host_map = maps.get("local:" + str(self.codex_home.resolve()))
+        if host_map is None:
+            return {}
+        if (not isinstance(host_map, dict)
+                or any(not key.strip() or not isinstance(value, str) or not value.strip() for key, value in host_map.items())
+                or len(set(host_map.values())) != len(host_map) or set(host_map) & set(host_map.values())):
+            raise ConsoleError("host saved-state project map is not one-to-one")
+        bindings: dict[str, dict[str, Any]] = {}
+        for native_id, sqlite_id in host_map.items():
+            record = projects.get(native_id)
+            roots = record.get("rootPaths") if isinstance(record, dict) else None
+            root = roots[0] if isinstance(roots, list) and len(roots) == 1 else None
+            valid = (isinstance(record, dict) and record.get("id") == native_id
+                     and isinstance(root, str) and self._project_path_is_absolute(root))
+            binding = {"native_id": native_id, "project_id": sqlite_id, "native_root": root if valid else None, "valid": valid}
+            bindings[native_id] = binding
+            bindings[sqlite_id] = binding
+        return bindings
+
+    def _saved_project_binding(self, project_id: str, purpose: str = "Project view") -> dict[str, Any]:
+        """One snapshot of planning root identity: SQLite authority plus a proven native alias.
+
+        A native ID and its mapped SQLite ID are aliases only when the host map names them and both
+        saved roots resolve strictly to the same canonical directory. Labels or a shared cwd never do.
+        """
+        native = self._native_project_map().get(project_id)
+        if native is not None and not native["valid"]:
+            raise ConsoleError(f"{purpose} host saved-state native project record is invalid")
+        canonical_id = native["project_id"] if native is not None else project_id
         database = state_database(self.codex_home)
         with closing(sqlite3.connect(database)) as connection:
-            row = connection.execute(
-                "SELECT path FROM project_roots WHERE project_id = ? ORDER BY position LIMIT 1",
-                (project_id,),
-            ).fetchone()
-        if row is None:
+            saved_roots = connection.execute("SELECT project_id, path FROM project_roots ORDER BY position").fetchall()
+            rows = connection.execute("SELECT id, name FROM projects WHERE id = ?", (canonical_id,)).fetchall()
+            name = str(rows[0][1] or "").strip() if len(rows) == 1 else ""
+            duplicates = connection.execute("SELECT COUNT(*) FROM projects WHERE name = ?", (name,)).fetchone()[0] if name else 0
+        own_roots = [str(path) for owner, path in saved_roots if owner == canonical_id]
+        if not own_roots:
             raise ConsoleError(f"{purpose} requires a canonical host project root")
-        root = Path(str(row[0]))
+        root = Path(own_roots[0])  # SQLite-only identity keeps the existing first-row behaviour.
         if not root.is_absolute():
             raise ConsoleError(f"{purpose} project root must be an absolute host path")
-        return root
+        identities: frozenset[str] | None = None
+        identity_error = None
+        if len(rows) != 1:
+            identity_error = "Project view requires one canonical saved project identity"
+        elif not name:
+            identity_error = "Project view canonical saved project name is unavailable"
+        elif duplicates != 1:
+            identity_error = "Project view canonical saved project name is ambiguous"
+        else:
+            identities = frozenset({canonical_id, name})
+        if native is not None:
+            # Native admission never infers from the first row: exactly one saved root, owned by one project.
+            if len(own_roots) != 1:
+                raise ConsoleError(f"{purpose} native binding requires exactly one saved project root")
+            try:
+                native_root = Path(native["native_root"]).resolve(strict=True)
+                root = root.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise ConsoleError(f"{purpose} native project root does not resolve to the saved root") from exc
+            if native_root != root or not root.is_dir():
+                raise ConsoleError(f"{purpose} native and saved project roots differ")
+            for owner, path in saved_roots:
+                if owner == canonical_id:
+                    continue
+                shared = _normalized_project_path(path) == _normalized_project_path(own_roots[0])
+                try:
+                    shared = shared or Path(str(path)).resolve(strict=True) == root
+                except (OSError, RuntimeError, ValueError):
+                    pass
+                if shared:
+                    raise ConsoleError(f"{purpose} native binding requires unique canonical root ownership")
+            if identities is not None:
+                identities = identities | {native["native_id"]}
+        return {"project_id": canonical_id, "root": root, "identities": identities,
+                "identity_error": identity_error, "native_id": native["native_id"] if native is not None else None}
+
+    def _canonical_project_root(self, project_id: str, purpose: str = "Project view") -> Path:
+        return self._saved_project_binding(project_id, purpose)["root"]
 
     def _canonical_project_identities(self, project_id: str) -> frozenset[str]:
-        self._canonical_project_root(project_id)
-        database = state_database(self.codex_home)
-        with closing(sqlite3.connect(database)) as connection:
-            rows = connection.execute("SELECT id, name FROM projects WHERE id = ?", (project_id,)).fetchall()
-            if len(rows) != 1:
-                raise ConsoleError("Project view requires one canonical saved project identity")
-            name = str(rows[0][1] or "").strip()
-            if not name:
-                raise ConsoleError("Project view canonical saved project name is unavailable")
-            duplicates = connection.execute("SELECT COUNT(*) FROM projects WHERE name = ?", (name,)).fetchone()[0]
-        if duplicates != 1:
-            raise ConsoleError("Project view canonical saved project name is ambiguous")
-        return frozenset({project_id, name})
+        return _binding_identities(self._saved_project_binding(project_id))
 
     def _asset_project_scope(self, project_id: Any) -> Path:
         """Bind an asset request to exactly one saved host project and root."""
@@ -8612,6 +8704,7 @@ class App:
         project_id: str,
         display_name: str,
         root: Path | None = None,
+        aliases: frozenset[str] = frozenset(),
     ) -> tuple[str, str | None, str]:
         """Validate the canonical schema-1 SWARM.md brief without returning its contents."""
         if PROJECT_BRIEF_MARKER not in text:
@@ -8635,7 +8728,7 @@ class App:
         purpose = App._host_project_text(project.get("purpose"), 4096)
         if brief_id is None or purpose is None:
             return "INVALID", None, "the project brief identity is invalid"
-        if brief_id.casefold() not in {project_id.casefold(), display_name.casefold()}:
+        if brief_id.casefold() not in {project_id.casefold(), display_name.casefold(), *(alias.casefold() for alias in aliases)}:
             return "INVALID", None, "the project brief belongs to another saved project"
         return "KNOWN", digest, ""
 
@@ -8682,10 +8775,17 @@ class App:
                 "logo": logo,
                 "artifact": artifact,
             }
-        if root_binding.get("availability") != "AVAILABLE":
-            manifest["status"] = "UNAVAILABLE"
-            project_view["status"] = "UNAVAILABLE"
-            project_view["manifest_status"] = "UNAVAILABLE"
+        # The same verified native-to-SQLite binding used by planning resolves this read projection;
+        # the saved alias string and IDs in root_binding stay exactly as the host recorded them.
+        try:
+            binding = self._saved_project_binding(record["id"])
+        except (ConsoleError, OSError, sqlite3.Error):
+            binding = None
+        if binding is None or (root_binding.get("availability") != "AVAILABLE" and binding["native_id"] is None):
+            status = "INVALID" if binding is None else "UNAVAILABLE"
+            manifest["status"] = status
+            project_view["status"] = status
+            project_view["manifest_status"] = status
             return {
                 "project_id": record["id"],
                 "display_name": record["display_name"],
@@ -8697,7 +8797,7 @@ class App:
                 "artifact": artifact,
             }
 
-        root = Path(str(root_binding["value"]))
+        root = Path(binding["root"]) if binding["native_id"] is not None else Path(str(root_binding["value"]))
         path = root / "SWARM.md"
         try:
             if not path.exists():
@@ -8753,6 +8853,7 @@ class App:
             project_id=record["id"],
             display_name=record["display_name"],
             root=root,
+            aliases=binding["identities"] or frozenset(),
         )
         manifest["status"] = brief_status
         manifest["digest"] = brief_digest
@@ -10321,8 +10422,10 @@ class App:
         if operation == "read":
             if set(payload) != {"operation", "project_id"}:
                 raise ConsoleError("ticket read requires exact operation and project_id")
-        elif operation in {"create", "update"}:
-            if operation == "create" and "project_code" in payload:
+        elif operation in {"create", "update", "migrate_legacy"}:
+            if operation == "migrate_legacy":
+                write_fields = {"operation", "project_id", "expected_digest", "acknowledge"}
+            elif operation == "create" and "project_code" in payload:
                 write_fields.add("project_code")
                 if not isinstance(payload["project_code"], str) or re.fullmatch(r"[A-Za-z]{1,4}", payload["project_code"]) is None:
                     raise ConsoleError("PROJECT_CODE_INVALID: use 1-4 ASCII letters")
@@ -10331,24 +10434,35 @@ class App:
             if not isinstance(payload["expected_digest"], str) or re.fullmatch(r"sha256:[0-9a-f]{64}", payload["expected_digest"]) is None:
                 raise ConsoleError("ticket edits require the exact current brief digest")
         else:
-            raise ConsoleError("ticket operation must be read, create or update; tickets are never hard-deleted")
-        project_id = _auto_id(payload["project_id"], "project_id")
-        path = Path(self._canonical_project_root(project_id)) / "SWARM.md"
-        identities = frozenset(self._canonical_project_identities(project_id))
+            raise ConsoleError("ticket operation must be read, create, update or migrate_legacy; tickets are never hard-deleted")
+        requested_id = _auto_id(payload["project_id"], "project_id")
+        # Root and allowed identities come from one binding snapshot; a native ID is only a proven alias.
+        binding = self._saved_project_binding(requested_id)
+        project_id = binding["project_id"]
+        path = Path(binding["root"]) / "SWARM.md"
+        identities = frozenset(_binding_identities(binding))
         root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(path.parent))})
         try:
             if operation == "read":
                 result = read_project_tickets(path, project_ids=identities)
             else:
-                retained = self.progress_ledger.replay()["ticket_identities"].get(project_id, {})
-                if payload["record_id"] in retained.get("assignments", {}):
-                    raise ProgressEventError("host-created ticket identity is read-only in planning")
-                result = mutate_project_tickets(
-                    path, expected_digest=payload["expected_digest"], operation=operation,
-                    collection=payload["collection"], record_id=payload["record_id"], changes=payload["changes"],
-                    updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), project_ids=identities,
-                    registry=self.progress_ledger, project_id=project_id, root_digest=root_digest,
-                    project_code=payload.get("project_code"))
+                if operation != "migrate_legacy":
+                    retained = self.progress_ledger.replay()["ticket_identities"].get(project_id, {})
+                    if payload["record_id"] in retained.get("assignments", {}):
+                        raise ProgressEventError("host-created ticket identity is read-only in planning")
+                if self._saved_project_binding(requested_id) != binding:  # Fresh source recheck before any mutation.
+                    raise ConsoleConflict("saved project binding changed; reload before saving")
+                updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                if operation == "migrate_legacy":
+                    result = migrate_legacy_project_tickets(
+                        path, expected_digest=payload["expected_digest"], updated_at=updated_at, project_ids=identities)
+                else:
+                    result = mutate_project_tickets(
+                        path, expected_digest=payload["expected_digest"], operation=operation,
+                        collection=payload["collection"], record_id=payload["record_id"], changes=payload["changes"],
+                        updated_at=updated_at, project_ids=identities,
+                        registry=self.progress_ledger, project_id=project_id, root_digest=root_digest,
+                        project_code=payload.get("project_code"))
             ledger = self.progress_ledger.replay()
             displays = self.progress_ledger.brief_ticket_display_ids(ledger, project_id, root_digest)
             for row in result["records"]:
@@ -10449,9 +10563,12 @@ class App:
                 raise ConsoleError("ticket execution binding fields are invalid")
         else:
             raise ConsoleError("ticket execution operation must be read or bind")
-        project_id = _auto_id(payload["project_id"], "project_id")
+        requested_id = _auto_id(payload["project_id"], "project_id")
         record_id = _auto_id(payload["record_id"], "record_id")
-        canonical = Path(self._canonical_project_root(project_id))
+        binding = self._saved_project_binding(requested_id, "Ticket execution")
+        _binding_identities(binding)
+        project_id = binding["project_id"]
+        canonical = Path(binding["root"])
         root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(canonical))})
         ledger = self.progress_ledger
         try:
@@ -10475,6 +10592,12 @@ class App:
                 raise ConsoleError("ticket execution requires an exact host-created task")
             if self._observed_task_root(project_id, ctrl_id) != root:
                 raise ConsoleError("ticket execution requires the owning CTRL in this project root")
+            try:
+                current_binding = self._saved_project_binding(requested_id, "Ticket execution")
+            except ConsoleError as exc:
+                raise ConsoleConflict("saved project binding changed; reload before binding") from exc
+            if current_binding != binding:
+                raise ConsoleConflict("saved project binding changed; reload before binding")
             result = ledger.bind_ticket_execution(
                 project_id=project_id, reference_id=reference_id, record_id=record_id, kind=kind,
                 record_digest=_auto_digest(record), root_digest=root_digest, task_id=task_id, block_id=block_id,

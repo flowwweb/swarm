@@ -30,6 +30,21 @@ def call(process: subprocess.Popen[str], request: dict) -> dict:
 
 
 class SwarmMCPTests(unittest.TestCase):
+    def test_execution_binding_tool_schema_is_closed_and_not_a_dispatch_tool(self):
+        specs = [tool for tool in mcp.TOOLS if tool["name"] == "swarm_project_ticket_execution"]
+        self.assertEqual(len(specs), 1)
+        spec = specs[0]
+        self.assertEqual(spec["_meta"]["ui"]["visibility"], ["model", "app"])
+        self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "bind"])
+        self.assertFalse(spec["inputSchema"]["additionalProperties"])
+        read = {"operation": "read", "project_id": "project:alpha", "record_id": "ticket-goal"}
+        mcp._validate_arguments(spec, read)
+        for changes in ({"operation": "start"}, {"completed": True}, {"instruction": "run"},
+                        {"attempt": True}, {"expected_ledger_revision": "1"}, {"membership": "OWNER"},
+                        {"acknowledge": False}):
+            with self.subTest(changes=changes), self.assertRaises(mcp.MCPError):
+                mcp._validate_arguments(spec, {**read, **changes})
+
     def test_model_ticket_discovery_and_wire_commands_keep_existing_authority(self):
         sys.path.insert(0, str(mcp.REPO_ROOT))
         from console.server import App
@@ -58,7 +73,7 @@ class SwarmMCPTests(unittest.TestCase):
         spec = next(t for t in tools if t["name"] == "swarm_project_tickets")
         self.assertEqual(spec["_meta"]["ui"]["visibility"], ["model", "app"])
         self.assertEqual(sum(t["name"] == spec["name"] for t in tools), 1)
-        self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "create", "update"])
+        self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "create", "update", "migrate_legacy"])
         for tool in tools:
             if tool["name"] in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign",
                                 "swarm_settings_read", "swarm_settings_save"}:
@@ -113,6 +128,60 @@ class SwarmMCPTests(unittest.TestCase):
         self.assertTrue(ticket({**update, "expected_digest": edited["structuredContent"]["source_digest"]})["isError"])
         self.assertEqual(brief.read_bytes(), foreign)
         self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_bytes)
+        self.assertEqual(transport.mock_calls, [])
+
+    def test_native_project_alias_and_legacy_migration_use_production_app(self):
+        sys.path.insert(0, str(mcp.REPO_ROOT))
+        from console import server
+        from console.tests.test_console import SwarmConsoleTests
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture, views
+        fixture = SwarmConsoleTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        native = "0f6d3f1e-7a2b-4c58-9e11-2b7d1c0a9f33"
+        host_state = fixture.codex_home / server.HOST_STATE_FILENAME
+        host_state.write_text(json.dumps({
+            server.HOST_STATE_PROJECTS_KEY: {native: {"id": native, "name": "alpha", "createdAt": 1, "updatedAt": 2,
+                                                     "rootPaths": [str(fixture.root / ".." / fixture.alpha_root.name)]}},
+            server.HOST_STATE_PROJECT_MAP_KEY: {"local:" + str(fixture.codex_home.resolve()): {native: "project:alpha"}},
+        }), encoding="utf-8")
+        brief = fixture.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture(native, milestones=["Ship the alias", {"id": "m-typed", "state": "active"}])),
+                         encoding="utf-8")
+        host_bytes, database_bytes, original = host_state.read_bytes(), fixture.database.read_bytes(), brief.read_bytes()
+        transport = Mock()
+        projection = mcp.SwarmProjection()
+        projection._app = server.App(fixture.codex_home, fixture.config, auto_bridge=transport)
+        read = {"operation": "read", "project_id": native}
+        rejected = projection.call("swarm_project_tickets", read)
+        self.assertEqual((rejected["ok"], rejected["state"], rejected["project_id"]), (False, "REJECTED", native))
+        self.assertEqual(brief.read_bytes(), original)  # Reads never migrate legacy strings.
+        _, digest = views.parse_project_brief_markdown(original.decode("utf-8"))
+        migrate = {"operation": "migrate_legacy", "project_id": native, "expected_digest": digest, "acknowledge": True}
+        for change in ({"acknowledge": False}, {"acknowledge": 1}):
+            with self.subTest(change=change), self.assertRaises(mcp.MCPError):
+                projection.call("swarm_project_tickets", {**migrate, **change})
+        self.assertEqual(projection.call("swarm_project_tickets", {**migrate, "collection": "milestones"})["state"], "REJECTED")
+        self.assertEqual(projection.call("swarm_project_tickets", {**migrate, "expected_digest": "sha256:" + "0" * 64})["state"], "CONFLICT")
+        self.assertEqual(brief.read_bytes(), original)
+        migrated = projection.call("swarm_project_tickets", migrate)
+        self.assertEqual((migrated["ok"], migrated["project_id"], migrated["migration"]["counts"]),
+                         (True, "project:alpha", {"milestones": 1, "ranked_outcomes": 0}))
+        legacy = next(row for row in migrated["records"] if row["label"] == "Ship the alias")
+        self.assertEqual((legacy["kind"], legacy["declared_state"], legacy["display_id"]), ("milestone", None, None))
+        self.assertEqual(next(row for row in migrated["records"] if row["id"] == "m-typed")["declared_state"], "active")
+        self.assertEqual(views.read_brief_content(fixture.alpha_root, migrated["migration"]["history"]), original)
+        self.assertEqual(projection.call("swarm_project_tickets", migrate)["state"], "CONFLICT")
+        again = projection.call("swarm_project_tickets", {**migrate, "expected_digest": migrated["source_digest"]})
+        self.assertEqual((again["source_digest"], again["migration"]["counts"]), (migrated["source_digest"], {"milestones": 0, "ranked_outcomes": 0}))
+        current = projection.call("swarm_project_tickets", read)
+        self.assertEqual((current["source_digest"], current["records"]), (migrated["source_digest"], migrated["records"]))
+        self.assertEqual(projection.call("swarm_project_tickets", {**read, "project_id": "project:alpha"})["records"], current["records"])
+        projection._app = server.App(fixture.codex_home, fixture.config, auto_bridge=transport)
+        self.assertEqual(projection.call("swarm_project_tickets", read)["source_digest"], migrated["source_digest"])
+        self.assertEqual(views.parse_project_brief_markdown(brief.read_text(encoding="utf-8"))[0]["project"]["id"], native)
+        self.assertEqual((host_state.read_bytes(), fixture.database.read_bytes()), (host_bytes, database_bytes))
+        self.assertFalse(projection._app.progress_ledger._state.path.exists())
         self.assertEqual(transport.mock_calls, [])
 
     def test_ticket_write_uncertainty_is_typed_and_reserved_identity_survives_restart(self):
@@ -537,8 +606,8 @@ class SwarmMCPTests(unittest.TestCase):
                 self.assertEqual(mcp.serve(hq_app=app), 0)
             rows = [json.loads(line) for line in output.getvalue().splitlines()]
             self.assertIn("resources", rows[0]["result"]["capabilities"])
-            self.assertEqual(rows[1]["result"]["tools"][:9], list(mcp.TOOLS))
-            self.assertEqual(len(rows[1]["result"]["tools"]), 10)
+            self.assertEqual(rows[1]["result"]["tools"][:10], list(mcp.TOOLS))
+            self.assertEqual(len(rows[1]["result"]["tools"]), 11)
             tool = rows[1]["result"]["tools"][-1]
             self.assertEqual(tool["name"], "swarm_hq_view")
             self.assertEqual(tool["_meta"], {"ui": {"resourceUri": app.uri}, "openai/ui": {"entrypoints": [{"type": "global"}, {"type": "thread"}]}})
@@ -644,7 +713,7 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertTrue(rows[7]["result"]["isError"])
             self.assertFalse(rows[8]["result"]["isError"])
             self.assertFalse(rows[9]["result"]["isError"])
-            self.assertEqual(len(rows[-1]["result"]["tools"]), 9)
+            self.assertEqual(len(rows[-1]["result"]["tools"]), 10)
             self.assertNotIn("SECRET", output.getvalue() + telemetry.read_text())
 
     def test_output_cap_and_scratch_validation(self) -> None:

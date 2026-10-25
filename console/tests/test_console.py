@@ -1320,6 +1320,187 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertEqual(state[key], ledger_state[key], key)
         self.assertEqual((records["g-plan"]["display_id"], records["b-plan"]["display_id"]), ("SWRM-1", "SWRM-2"))
 
+    def test_native_saved_project_binding_is_read_only_alias_for_tickets_and_brief_identity(self) -> None:
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture, views
+        native = "6c1f2a44-9b3d-4e7f-8a21-5d0c7e9b1f02"
+        host_state = self.codex_home / console.HOST_STATE_FILENAME
+        host_key = "local:" + str(self.codex_home.resolve())
+        alias = str(self.root / ".." / self.alpha_root.name)  # Host-owned alias spelling of the saved root.
+        projects_key, map_key = console.HOST_STATE_PROJECTS_KEY, console.HOST_STATE_PROJECT_MAP_KEY
+
+        def record(**changes):
+            return {"id": native, "name": "alpha", "rootPaths": [alias], "createdAt": 1, "updatedAt": 2, **changes}
+
+        def state(**changes):
+            return {projects_key: {native: record()}, map_key: {host_key: {native: "project:alpha"}}, **changes}
+
+        def write_state(value):
+            host_state.write_text(value if isinstance(value, str) else json.dumps(value), encoding="utf-8")
+            return host_state.read_bytes()
+
+        def briefs(app):
+            return [(item["project_id"], item["status"], item["digest"], item["root_binding_status"])
+                    for item in app._project_briefs_projection()["projects"]]
+
+        def identity(app):
+            _, records, _, root_owners = app._host_project_records()
+            return app._project_identity(records[0], root_owners)
+
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture(native)), encoding="utf-8")
+        _, brief_digest = views.parse_project_brief_markdown(brief.read_text(encoding="utf-8"))
+        database_bytes = self.database.read_bytes()
+        # SQLite-only: the native UUID is not a saved project and a brief naming it stays INVALID.
+        plain = console.App(self.codex_home, self.config)
+        self.assertEqual(plain._canonical_project_root("project:alpha"), self.alpha_root)
+        self.assertEqual(plain._canonical_project_identities("project:alpha"), frozenset({"project:alpha", "alpha"}))
+        for project in (native, "project:alpha"):
+            with self.assertRaises(console.ConsoleError):
+                plain.project_ticket_command({"operation": "read", "project_id": project})
+        with self.assertRaises(console.ConsoleError):
+            plain._canonical_project_root(native)
+        self.assertEqual(briefs(plain), [("project:alpha", "INVALID", None, "KNOWN")])
+        host_bytes = write_state(state())
+        app = console.App(self.codex_home, self.config)
+        self.assertEqual(app._canonical_project_root(native), self.alpha_root.resolve())
+        self.assertEqual(app._canonical_project_identities(native), frozenset({native, "project:alpha", "alpha"}))
+        self.assertEqual(app._canonical_project_identities("project:alpha"), app._canonical_project_identities(native))
+        read = app.project_ticket_command({"operation": "read", "project_id": native})
+        self.assertEqual((read["project_id"], read["source_digest"]), ("project:alpha", brief_digest))
+        self.assertEqual(app.project_ticket_command({"operation": "read", "project_id": "project:alpha"})["records"], read["records"])
+        self.assertEqual(briefs(app), [("project:alpha", "KNOWN", brief_digest, "KNOWN")])
+        bound = identity(app)
+        self.assertEqual((bound["root"], bound["root_binding"]["value"], bound["manifest"]["status"], bound["manifest"]["digest"]),
+                         (str(self.alpha_root), str(self.alpha_root), "KNOWN", brief_digest))
+        created = app.project_ticket_command({"operation": "create", "project_id": native, "expected_digest": read["source_digest"],
+            "acknowledge": True, "collection": "goals", "record_id": "alias-goal", "changes": {"label": "Alias goal"}, "project_code": "SWRM"})
+        self.assertEqual(next(row for row in created["records"] if row["id"] == "alias-goal")["display_id"], "SWRM-1")
+        self.assertEqual(set(app.progress_ledger.replay()["ticket_identities"]), {"project:alpha"})
+        restarted = console.App(self.codex_home, self.config)
+        by_sqlite = restarted.project_ticket_command({"operation": "read", "project_id": "project:alpha"})
+        self.assertEqual(next(row for row in by_sqlite["records"] if row["id"] == "alias-goal")["display_id"], "SWRM-1")
+        self.assertEqual(views.parse_project_brief_markdown(brief.read_text(encoding="utf-8"))[0]["project"]["id"], native)
+        self.assertEqual((host_state.read_bytes(), self.database.read_bytes()), (host_bytes, database_bytes))
+        ledger_path = restarted.progress_ledger._state.path
+        brief_bytes, ledger_bytes, digest = brief.read_bytes(), ledger_path.read_bytes(), by_sqlite["source_digest"]
+        edit = {"operation": "update", "project_id": native, "expected_digest": digest, "acknowledge": True,
+                "collection": "goals", "record_id": "alias-goal", "changes": {"label": "Changed"}}
+        # No relevant map for this host: ordinary SQLite-only behaviour, and no alias from a shared cwd or label.
+        for name, value in (("wrong_host", state(**{map_key: {"local:" + str(self.root): {native: "project:alpha"}}})),
+                            ("unmapped_same_root", state(**{map_key: {}})),
+                            ("other_host_only", state(**{map_key: {"local:" + str(self.root): {native: "project:alpha"}, host_key: {}}}))):
+            with self.subTest(case=name):
+                host_bytes = write_state(value)
+                app = console.App(self.codex_home, self.config)
+                self.assertEqual(app._canonical_project_root("project:alpha"), self.alpha_root)
+                self.assertEqual(app._canonical_project_identities("project:alpha"), frozenset({"project:alpha", "alpha"}))
+                for project in (native, "project:alpha"):
+                    with self.assertRaises(console.ConsoleError):
+                        app.project_ticket_command({"operation": "read", "project_id": project})
+                    with self.assertRaises(console.ConsoleError):
+                        app.project_ticket_command({**edit, "project_id": project})
+                self.assertEqual(briefs(app), [("project:alpha", "INVALID", None, "KNOWN")])
+                self.assertEqual((brief.read_bytes(), host_state.read_bytes()), (brief_bytes, host_bytes))
+        # Malformed relevant state never silently falls back to SQLite-only identity.
+        for name, value in (
+                ("duplicate_native", state(**{map_key: {host_key: {native: "project:alpha", "0000aaaa-1111-4222-8333-444455556666": "project:alpha"}}})),
+                ("id_collision", state(**{map_key: {host_key: {native: "project:alpha", "project:alpha": "project:beta"}}})),
+                ("root_mismatch", state(**{projects_key: {native: record(rootPaths=[str(self.root)])}})),
+                ("missing_root", state(**{projects_key: {native: record(rootPaths=[str(self.root / "missing")])}})),
+                ("two_roots", state(**{projects_key: {native: record(rootPaths=[alias, alias])}})),
+                ("relative_root", state(**{projects_key: {native: record(rootPaths=["alpha"])}})),
+                ("id_mismatch", state(**{projects_key: {native: record(id="other-native")}})),
+                ("absent_record", state(**{projects_key: {}})),
+                ("wrong_types", {projects_key: [], map_key: {}}),
+                ("malformed_json", "{")):
+            with self.subTest(case=name):
+                host_bytes = write_state(value)
+                app = console.App(self.codex_home, self.config)
+                for project in (native, "project:alpha"):
+                    with self.assertRaises(console.ConsoleError):
+                        app._canonical_project_root(project)
+                    with self.assertRaises(console.ConsoleError):
+                        app.project_ticket_command({**edit, "project_id": project})
+                self.assertEqual(briefs(app), [("project:alpha", "INVALID", None, "KNOWN")])
+                self.assertEqual((brief.read_bytes(), host_state.read_bytes()), (brief_bytes, host_bytes))
+        # The read is finite: exactly the bound is admitted, one byte more is rejected before parsing.
+        encoded = json.dumps(state()).encode("utf-8")
+        for size, admitted in ((console.HOST_STATE_MAX_BYTES, True), (console.HOST_STATE_MAX_BYTES + 1, False)):
+            with self.subTest(size=size):
+                host_state.write_bytes(encoded + b" " * (size - len(encoded)))  # Trailing whitespace keeps the JSON valid.
+                self.assertEqual(host_state.stat().st_size, size)
+                app = console.App(self.codex_home, self.config)
+                if admitted:
+                    self.assertEqual(app._canonical_project_root(native), self.alpha_root.resolve())
+                else:
+                    for project in (native, "project:alpha"):
+                        with self.assertRaises(console.ConsoleError):
+                            app._canonical_project_root(project)
+                    self.assertEqual(briefs(app), [("project:alpha", "INVALID", None, "KNOWN")])
+                self.assertEqual(brief.read_bytes(), brief_bytes)
+        # Native admission needs exactly one saved root with unique canonical ownership; SQLite-only keeps first-row identity.
+        host_bytes = write_state(state())
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:alpha", 1, str(self.root)))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        for project in (native, "project:alpha"):
+            with self.assertRaises(console.ConsoleError):
+                app._canonical_project_root(project)
+            with self.assertRaises(console.ConsoleError):
+                app.project_ticket_command({**edit, "project_id": project})
+        self.assertEqual(briefs(app), [("project:alpha", "UNAVAILABLE", None, "AMBIGUOUS")])
+        host_state.unlink()
+        self.assertEqual(console.App(self.codex_home, self.config)._canonical_project_root("project:alpha"), self.alpha_root)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("DELETE FROM project_roots WHERE project_id=? AND position=1", ("project:alpha",))
+            connection.commit()
+        self._add_host_project("project:beta", "beta", alias)  # Another saved project owning the same canonical directory.
+        host_bytes = write_state(state())
+        app = console.App(self.codex_home, self.config)
+        for project in (native, "project:alpha"):
+            with self.assertRaises(console.ConsoleError):
+                app._canonical_project_root(project)
+            with self.assertRaises(console.ConsoleError):
+                app.project_ticket_command({**edit, "project_id": project})
+        self.assertEqual(briefs(app)[0], ("project:alpha", "INVALID", None, "KNOWN"))
+        self.assertEqual((brief.read_bytes(), host_state.read_bytes()), (brief_bytes, host_bytes))
+        host_state.unlink()
+        self.assertEqual(console.App(self.codex_home, self.config)._canonical_project_root("project:alpha"), self.alpha_root)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("DELETE FROM project_roots WHERE project_id=?", ("project:beta",))
+            connection.execute("DELETE FROM projects WHERE id=?", ("project:beta",))
+            connection.commit()
+        # A saved root that is itself a host directory alias (reparse point) is admitted only through the verified binding.
+        linked = Path(self.temp.name) / "alpha-link"
+        try:
+            if os.name == "nt":
+                import _winapi
+                _winapi.CreateJunction(str(self.alpha_root), str(linked))
+            else:
+                os.symlink(self.alpha_root, linked, target_is_directory=True)
+            reparse = console._is_reparse_point(linked)
+        except (OSError, AttributeError, NotImplementedError):
+            reparse = False
+        if reparse:
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(linked), "project:alpha"))
+                connection.commit()
+            self.assertFalse(host_state.exists())  # SQLite-only until the verified native binding is written below.
+            plain = console.App(self.codex_home, self.config)
+            self.assertEqual(plain._canonical_project_root("project:alpha"), linked)
+            withheld = identity(plain)
+            self.assertEqual((withheld["root_binding"]["availability"], withheld["manifest"]["status"]), ("INVALID", "UNAVAILABLE"))
+            write_state(state(**{projects_key: {native: record(rootPaths=[str(self.alpha_root)])}}))
+            app = console.App(self.codex_home, self.config)
+            self.assertEqual(app._canonical_project_root(native), self.alpha_root.resolve())
+            verified = identity(app)
+            self.assertEqual((verified["root"], verified["root_binding"]["availability"], verified["manifest"]["status"], verified["manifest"]["digest"]),
+                             (str(linked), "INVALID", "KNOWN", digest))
+            self.assertEqual(app.project_ticket_command({"operation": "read", "project_id": native})["source_digest"], digest)
+            self.assertEqual(brief.read_bytes(), brief_bytes)
+        self.assertEqual(ledger_path.read_bytes(), ledger_bytes)
+
     def test_ticket_execution_binding_completes_only_through_bound_block_acceptance(self) -> None:
         from contextlib import contextmanager
         app = console.App(self.codex_home, self.config)
@@ -1427,6 +1608,20 @@ class SwarmConsoleTests(unittest.TestCase):
                     "manifest_digest": manifest_digest, "attempt": 1, "membership": "REQUIRED",
                     "expected_ledger_revision": app.progress_ledger.replay()["cursor"]["event_seq"], "acknowledge": True, **changes}
 
+        # Exercise the production JSON-RPC entrypoint against this same real App/SQLite/Ledger.
+        from skills.swarm.scripts import swarm_mcp as mcp
+        import io
+
+        def wire(body, active=None):
+            request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "swarm_project_ticket_execution", "arguments": body}}
+            with mock.patch.dict(sys.modules, {"console.server": console}), \
+                 mock.patch.object(mcp.SwarmProjection, "_load_app", return_value=active or app), \
+                 mock.patch.object(sys, "stdin", io.StringIO(json.dumps(request))), \
+                 mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(mcp.serve(telemetry_path=self.root / "execution-wire.jsonl"), 0)
+            return json.loads(output.getvalue())["result"]
+
         def refused(body, pattern, token=None):
             before = app.progress_ledger._state.path.read_bytes()
             handler = post("/api/project-tickets/execution", body, token=token)
@@ -1465,7 +1660,45 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(app.progress_ledger._state.path.read_bytes(), retained)
         refused(bind("tb", membership="SUPPLEMENTAL"), "TICKET_REFERENCE_CONFLICT")
         refused(bind("tb", reference_id="reuse"), "PROOF_BLOCK_ALREADY_BOUND")
-        post("/api/project-tickets/execution", bind("tb2"))._error.assert_not_called()
+        native = "6c1f2a44-9b3d-4e7f-8a21-5d0c7e9b1f02"
+        host_state = self.codex_home / console.HOST_STATE_FILENAME
+        host_value = {console.HOST_STATE_PROJECTS_KEY: {native: {"id": native, "rootPaths": [str(root)]}},
+                      console.HOST_STATE_PROJECT_MAP_KEY: {"local:" + str(self.codex_home.resolve()): {native: "project:alpha"}}}
+        host_state.write_text(json.dumps(host_value), encoding="utf-8")
+        second = bind("tb2", project_id=native)
+        before = app.progress_ledger._state.path.read_bytes()
+        dispatch_count = len(sent)
+        for changes in ({"acknowledge": False}, {"manifest_digest": "sha256:" + "0" * 64},
+                        {"task_id": "task"}, {"expected_ledger_revision": -1}, {"completed": True}):
+            self.assertTrue(wire({**second, **changes})["isError"])
+            self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+        read_record = app._brief_ticket_record
+
+        def change_binding(*args):
+            result = read_record(*args)
+            host_state.write_text("{}", encoding="utf-8")
+            return result
+
+        with mock.patch.object(app, "_brief_ticket_record", side_effect=change_binding):
+            refused_by_race = wire(second)
+        self.assertTrue(refused_by_race["isError"])
+        self.assertEqual(refused_by_race["structuredContent"]["state"], "CONFLICT")
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+        host_state.write_text(json.dumps(host_value), encoding="utf-8")
+        appended = wire(second)
+        self.assertFalse(appended["isError"])
+        self.assertEqual((appended["structuredContent"]["status"], appended["structuredContent"]["project_id"]),
+                         ("APPENDED", "project:alpha"))
+        retained = app.progress_ledger._state.path.read_bytes()
+        replay = wire({**second, "expected_ledger_revision": 0}, console.App(self.codex_home, self.config))
+        self.assertEqual(replay["structuredContent"]["status"], "REPLAY")
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), retained)
+        conflict = wire({**second, "membership": "SUPPLEMENTAL"})
+        self.assertTrue(conflict["isError"])
+        self.assertEqual(conflict["structuredContent"]["state"], "CONFLICT")
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), retained)
+        self.assertEqual(len(sent), dispatch_count)  # Binding never dispatches host work.
+        self.assertEqual(set(app.progress_ledger.replay()["ticket_identities"]), {"project:alpha"})
         self.assertEqual(complete("tb")["status"], "ACCEPTED")
         partial = post("/api/project-tickets/execution", read)._json.call_args.args[1]
         self.assertEqual((partial["display_id"], partial["execution"]["accepted_required_count"], partial["execution"]["completed"]),
@@ -1475,6 +1708,9 @@ class SwarmConsoleTests(unittest.TestCase):
         restarted = console.App(self.codex_home, self.config)
         done = restarted.project_ticket_execution_command(read)["execution"]
         self.assertEqual((done["accepted_required_count"], done["completed"]), (2, True))
+        through_native = wire({**read, "project_id": native}, restarted)
+        self.assertFalse(through_native["isError"])
+        self.assertEqual(through_native["structuredContent"]["execution"], done)
         self.assertEqual((root / "SWARM.md").read_bytes(), brief_bytes)  # Completion is never copied into editable brief state.
         identity = restarted.progress_ledger.replay()["ticket_identities"]["project:alpha"]
         self.assertEqual((identity["assignments"]["host-new"], identity["assignments"]["brief:ticket-goal"]), (1, 2))
@@ -1518,6 +1754,11 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(moved_root), "project:alpha"))
             connection.commit()
         moved_app = console.App(self.codex_home, self.config)
+        for requested in (native, "project:alpha"):
+            with self.assertRaisesRegex(console.ConsoleError, "native and saved project roots differ"):
+                moved_app.project_ticket_execution_command({**read, "project_id": requested})
+        self.assertEqual(moved_app.progress_ledger._state.path.read_bytes(), retained_ledger)
+        host_state.unlink()  # Preserve the original SQLite-only moved-root contrast below.
         moved_read = post("/api/project-tickets", {"operation": "read", "project_id": "project:alpha"}, active=moved_app)
         moved_read._error.assert_not_called()
         moved_tickets = moved_read._json.call_args.args[1]
@@ -4796,12 +5037,27 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_overview_cache_rebuilds_when_the_observer_reports_a_host_change(self) -> None:
         app = console.App(self.codex_home, self.config)
-        first = app.overview()
-        self.assertIs(first, app.overview())
+        with mock.patch.object(app, "_decorate_overview", wraps=app._decorate_overview) as decorate:
+            first = app.overview()
+            cached = app._view
+            second = app.overview()
+            self.assertIs(cached, app._view)
+            decorate.assert_called_once()
+            self.assertEqual(first, second)
+            self.assertIsNot(first, second)  # Ticket joins return detached caller-owned projections.
+            second["caller_marker"] = True
+            self.assertNotIn("caller_marker", app.overview())
+            decorate.assert_called_once()
         self.config.write_text(self.config.read_text(encoding="utf-8") + "\n# updated\n", encoding="utf-8")
-        with mock.patch.object(app.auto_bridge, "read_account_limits", return_value={"status": "UNKNOWN", "windows": []}):
+        revision = app._overview_revision
+        with mock.patch.object(app.auto_bridge, "read_account_limits", return_value={"status": "UNKNOWN", "windows": []}), \
+                mock.patch.object(app, "_decorate_overview", wraps=app._decorate_overview) as decorate:
             app.observe_once("state_change")
-        self.assertIsNot(first, app.overview())
+            refreshed = app.overview()
+            decorate.assert_called_once()
+        self.assertGreater(app._overview_revision, revision)
+        self.assertIsNot(cached, app._view)
+        self.assertIsNot(first, refreshed)
 
     def test_overview_refresh_and_reader_do_not_invert_locks(self) -> None:
         app = console.App(self.codex_home, self.config)
@@ -8550,13 +8806,25 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_health_source_mirror_parity_requires_two_identities(self) -> None:
         app = console.App(self.codex_home, self.config)
-        source_server, mirror_server = console._server_identity_paths()
-        self.assertNotEqual(source_server, mirror_server)
-        self.assertTrue(source_server.is_file())
-        self.assertTrue(mirror_server.is_file())
-        checks = {check["id"]: check for check in app.health_contract()["checks"]}
-        self.assertEqual(checks["process.source_mirror_parity"]["status"], "PASS")
-        self.assertTrue(checks["process.source_mirror_parity"]["details"]["independent_identities"])
+        # Exercise discovery with a temporary checkout marker, independently of how this test was packaged.
+        source_root = self.root / "source-checkout"
+        (source_root / ".git").mkdir(parents=True)
+        source_server = source_root / "console" / "server.py"
+        mirror_server = source_root / "plugins" / "swarm" / "console" / "server.py"
+        for path in (source_server, mirror_server):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(Path(console.__file__).read_bytes())
+        with mock.patch.object(console, "__file__", str(source_server)):
+            self.assertEqual(console._server_identity_paths(), (source_server, mirror_server))
+            self.assertNotEqual(source_server, mirror_server)
+            self.assertTrue(source_server.is_file())
+            self.assertTrue(mirror_server.is_file())
+            checks = {check["id"]: check for check in app.health_contract()["checks"]}
+            self.assertEqual(checks["process.source_mirror_parity"]["status"], "PASS")
+            self.assertTrue(checks["process.source_mirror_parity"]["details"]["independent_identities"])
+            mirror_server.write_bytes(b"different mirror\n")
+            mismatched = {check["id"]: check for check in app.health_contract()["checks"]}
+            self.assertEqual(mismatched["process.source_mirror_parity"]["status"], "FAIL")
 
         installed_server = self.root / "installed-package" / "console" / "server.py"
         installed_server.parent.mkdir(parents=True)
@@ -9088,7 +9356,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(calls[0][0], ["codex-test", "app-server", "--listen", "stdio://"])
         self.assertFalse(calls[0][1]["shell"])
         self.assertEqual(calls[0][1]["stderr"], console.subprocess.PIPE)
-        self.assertEqual(written[-1]["params"]["input"], [{"type": "text", "text": "one bounded action"}])
+        self.assertEqual(written[-1]["params"]["input"], [{"type": "text", "text": "one bounded action", "text_elements": []}])
 
         Process.stdout = io.StringIO("".join(json.dumps(item) + "\n" for item in (
             {"id": 0, "result": {}},
@@ -9304,6 +9572,7 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_auto_waiting_project_does_not_hide_later_project(self) -> None:
         app = object.__new__(console.App)
+        app.write_lock = threading.Lock()
         states = [{"ctrl_id": name, "project_id": name, "enabled": True, "in_flight": False, "stop_after_turn": False} for name in ("waiting", "next")]
         app.store = SimpleNamespace(enabled_auto_states=lambda: states, retain_auto_control=mock.Mock(return_value=True), auto_status=lambda *_: {})
         app.progress_ledger = SimpleNamespace(replay=lambda: {})
@@ -9323,10 +9592,12 @@ class SwarmConsoleTests(unittest.TestCase):
         app._auto_candidate = lambda state, *_: (visited.append(state["ctrl_id"]) or (replay if state["ctrl_id"] == "waiting" else None))
         app._auto_project_root = lambda _: self.root
         app._auto_generation = lambda: None
+        app._auto_scoped_generations = mock.Mock(return_value=[])
         app.store.claim_auto_dispatch = mock.Mock(return_value={"claimed": False, "reason": "REPLAY"})
         self.assertEqual(app.evaluate_auto_once({"current": True})["reason"], "REPLAY")
         self.assertEqual(visited, ["waiting", "next"])
         app.store.claim_auto_dispatch.assert_called_once()
+        app._auto_scoped_generations.assert_called_once_with("waiting", "bound")
 
     def test_auto_due_event_dispatches_once_and_host_completion_is_zero_progress(self) -> None:
         self._confirm_root_ctrl()
@@ -9423,7 +9694,9 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertFalse(released["in_flight"])
         other = self._auto_decision("ctrl-2")
         restarted.store.set_auto("ctrl-2", "project:alpha", enabled=True, request_id="enable-two", now_ms=20)
-        self.assertTrue(restarted.store.claim_auto_dispatch(other, self._auto_generation(), now_ms=21)["claimed"])
+        with self.assertRaises(console.ConsoleConflict):
+            restarted.store.claim_auto_dispatch(other, self._auto_generation(), now_ms=21)
+        self.assertTrue(restarted.store.claim_auto_dispatch(other, restarted._auto_generation(), now_ms=21)["claimed"])
 
     def test_auto_restart_terminal_read_releases_lease_without_second_turn_start(self) -> None:
         self._confirm_root_ctrl()

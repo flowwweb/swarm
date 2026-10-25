@@ -58,10 +58,24 @@ PROJECTS_PUBLIC_IMAGES = {
 
 TOOLS: tuple[dict[str, Any], ...] = (
     {
-        "name": "swarm_project_tickets", "title": "Project tickets",
-        "description": "Read or explicitly create/edit project planning tickets. No host dispatch or completion authority.",
+        "name": "swarm_project_ticket_execution", "title": "Ticket execution bindings",
+        "description": "Read or explicitly bind an existing host-created block attempt to a reserved project ticket. Never dispatch or complete work.",
         "inputSchema": {"type": "object", "properties": {
-            "operation": {"type": "string", "enum": ["read", "create", "update"]},
+            "operation": {"type": "string", "enum": ["read", "bind"]},
+            "project_id": {"type": "string"}, "record_id": {"type": "string"},
+            "reference_id": {"type": "string"}, "task_id": {"type": "string"},
+            "block_id": {"type": "string"}, "manifest_digest": {"type": "string"},
+            "attempt": {"type": "integer"}, "membership": {"type": "string", "enum": ["REQUIRED", "SUPPLEMENTAL"]},
+            "expected_ledger_revision": {"type": "integer"}, "acknowledge": {"type": "boolean", "enum": [True]}},
+            "required": ["operation", "project_id", "record_id"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["model", "app"]}},
+    },
+    {
+        "name": "swarm_project_tickets", "title": "Project tickets",
+        "description": "Read or explicitly create/edit project planning tickets, or explicitly migrate legacy string milestones into typed records. No host dispatch or completion authority.",
+        "inputSchema": {"type": "object", "properties": {
+            "operation": {"type": "string", "enum": ["read", "create", "update", "migrate_legacy"]},
             "project_id": {"type": "string"}, "expected_digest": {"type": "string"},
             "acknowledge": {"type": "boolean", "enum": [True]},
             "collection": {"type": "string", "enum": ["goals", "milestones", "tasks", "blocks"]},
@@ -291,6 +305,18 @@ class SwarmProjection:
             raise MCPError("unknown tool")
         _validate_arguments(spec, arguments)
         app = self._load_app()
+        if name == "swarm_project_ticket_execution":
+            from console.server import ConsoleError, ConsoleConflict
+            try:
+                with app.write_lock:
+                    return app.project_ticket_execution_command(arguments)
+            except ConsoleConflict:
+                return {"ok": False, "state": "CONFLICT", "project_id": arguments["project_id"],
+                        "message": "The binding changed. Read its retained identity before retrying."}
+            except ConsoleError:
+                return {"ok": False, "state": "REJECTED", "project_id": arguments["project_id"],
+                        "message": "No valid ticket binding. Check the retained task, block and project."}
+
         if name == "swarm_project_tickets":
             from console.server import ConsoleError, ConsoleConflict
             try:
@@ -661,7 +687,7 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
                     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                     if len(encoded.encode("utf-8")) > 262144:
                         raise MCPError("projection exceeds 262144 bytes; narrow the requested scope")
-                    rejected = name in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign", "swarm_project_tickets"} and value.get("ok") is False
+                    rejected = name in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign", "swarm_project_tickets", "swarm_project_ticket_execution"} and value.get("ok") is False
                     _telemetry(telemetry_path, tool=name, started=started, ok=not rejected,
                                result_bytes=len(encoded.encode("utf-8")), error="projection_rejected" if rejected else "")
                     result = {"content": [{"type": "text", "text": encoded}], "structuredContent": value, "isError": rejected}

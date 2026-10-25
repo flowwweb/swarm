@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import concurrent.futures
+import hashlib
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -730,9 +732,15 @@ class ProjectTicketTests(unittest.TestCase):
         )), encoding="utf-8")
 
     def call(self, payload, project="swarm"):
+        def binding(project_id, purpose="Project view"):
+            return {"project_id": project_id, "root": self.root, "identities": frozenset({project_id}),
+                    "identity_error": None, "native_id": None}
         app = SimpleNamespace(_canonical_project_root=lambda *args: self.root,
                               _canonical_project_identities=lambda project_id: frozenset({project_id}),
-                              progress_ledger=self.ticket_ledger)
+                              _saved_project_binding=binding, progress_ledger=self.ticket_ledger,
+                              _bound_blocks_accepted=server.App._bound_blocks_accepted)
+        # Real retained-execution projection against the real ledger; only root/identity observation is a fixture.
+        app._retained_execution_tickets = lambda *args: server.App._retained_execution_tickets(app, *args)
         return server.App.project_ticket_command(app, {"project_id": project, **payload})
 
     def write(self, digest, operation, collection, record_id, changes):
@@ -855,6 +863,122 @@ class ProjectTicketTests(unittest.TestCase):
         with self.assertRaises(server.ConsoleError):
             self.call(base, project="foreign")
         self.assertEqual(self.path.read_bytes(), before)
+
+    def test_migrate_legacy_types_strings_once_with_exact_history_and_cas(self):
+        document = self.document()
+        long_text = "Second line\nkept verbatim " + "x" * 170
+        document["milestones"] = ["Ship the legacy milestone", long_text, *document["milestones"]]
+        document["objective"]["ranked_outcomes"].append("Legacy outcome text")
+        self.path.write_text(markdown_fixture(document), encoding="utf-8")
+        original = self.path.read_bytes()
+        _, digest = views.parse_project_brief_markdown(original.decode("utf-8"))
+        with self.assertRaises(server.ConsoleError):
+            self.call({"operation": "read"})  # Legacy strings are not typed tickets; reads never migrate.
+        base = {"operation": "migrate_legacy", "expected_digest": digest, "acknowledge": True}
+        for payload in ({**base, "acknowledge": False}, {**base, "collection": "milestones"}, {**base, "expected_digest": "latest"},
+                        {key: value for key, value in base.items() if key != "expected_digest"}):
+            with self.subTest(payload=payload), self.assertRaises(server.ConsoleError):
+                self.call(payload)
+        with self.assertRaises(server.ConsoleConflict):
+            self.call({**base, "expected_digest": "sha256:" + "0" * 64})
+        with self.assertRaises(server.ConsoleError):
+            self.call(base, project="foreign")
+        with self.assertRaises(views.ProjectModelError):
+            views.migrate_legacy_project_tickets(self.path, expected_digest=None, updated_at="2026-10-25T00:00:00Z", project_ids={"swarm"})
+        with self.assertRaisesRegex(views.ProjectModelError, "timestamp"):
+            views.migrate_legacy_project_tickets(self.path, expected_digest=digest, updated_at="  ", project_ids={"swarm"})
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertFalse((self.root / "history").exists())
+        result = self.call(base)
+        self.assertEqual(result["migration"]["counts"], {"milestones": 2, "ranked_outcomes": 1})
+        self.assertEqual((result["previous_digest"], result["replayed"]), (digest, False))
+        history = result["migration"]["history"]
+        self.assertEqual((history["rel"], history["sha256"], history["bytes"], history["canonical_digest"], history["project_id"]),
+                         ("brief_content", hashlib.sha256(original).hexdigest(), len(original), digest, "swarm"))
+        self.assertEqual(views.read_brief_content(self.root, history), original)
+        migrated = self.document()
+        first, second = migrated["milestones"][:2]
+        self.assertEqual(first, {"id": first["id"], "label": "Ship the legacy milestone"})
+        self.assertEqual(second, {"id": second["id"], "description": long_text})
+        goal = migrated["objective"]["ranked_outcomes"][-1]
+        self.assertEqual(goal, {"id": goal["id"], "label": "Legacy outcome text"})
+        self.assertEqual(result["migration"]["converted_ids"], sorted([first["id"], second["id"], goal["id"]]))
+        self.assertEqual(first["id"], views._legacy_ticket_record("milestone", "Ship the legacy milestone")["id"])
+        self.assertEqual(migrated["milestones"][2:], document["milestones"][2:])
+        self.assertEqual(migrated["objective"]["ranked_outcomes"][:-1], document["objective"]["ranked_outcomes"][:-1])
+        self.assertEqual({key: value for key, value in migrated.items() if key not in {"milestones", "objective", "updated_at"}},
+                         {key: value for key, value in document.items() if key not in {"milestones", "objective", "updated_at"}})
+        records = self.by_id(result)
+        self.assertEqual((records[first["id"]]["kind"], records[first["id"]]["label"], records[goal["id"]]["kind"]),
+                         ("milestone", "Ship the legacy milestone", "goal"))
+        self.assertEqual((records[second["id"]]["label"], records[second["id"]]["description"]), (second["id"], long_text))
+        self.assertTrue(all(records[item]["declared_state"] is None and records[item]["display_id"] is None
+                            for item in result["migration"]["converted_ids"]))
+        self.assertEqual(records["t-accepted"]["declared_state"], "accepted")  # Typed records keep their exact state.
+        saved = self.path.read_bytes()
+        with self.assertRaises(server.ConsoleConflict):
+            self.call(base)  # A stale digest after migration is a CAS conflict, never a second write.
+        again = self.call({**base, "expected_digest": result["source_digest"]})
+        self.assertEqual((again["source_digest"], again["migration"]["counts"], again["migration"]["history"]),
+                         (result["source_digest"], {"milestones": 0, "ranked_outcomes": 0}, None))
+        self.assertEqual(self.path.read_bytes(), saved)
+        self.assertEqual([item.name for item in (self.root / "history").iterdir()], [Path(history["path"]).name])
+        restarted = load_module("restarted_migration_views", CONSOLE_ROOT / "project_model_views.py")
+        observed, observed_digest = restarted.parse_project_brief_markdown(saved.decode("utf-8"))
+        self.assertEqual((observed, observed_digest), (migrated, result["source_digest"]))
+        read = self.call({"operation": "read"})
+        self.assertEqual((read["source_digest"], read["records"]), (result["source_digest"], result["records"]))
+        self.assertFalse(self.ticket_ledger._state.path.exists())
+
+    def test_migrate_legacy_rejects_collisions_malformed_entries_and_hostile_history_without_writing(self):
+        collide = views._legacy_ticket_record("milestone", "Collides")["id"]
+        cases = (
+            {"milestones": ["Same text", "Same text"]},
+            {"milestones": ["Fine", 7]},
+            {"milestones": ["   "]},
+            {"milestones": ["bad\x00text"]},
+            {"milestones": ["x" * 4097]},
+            {"objective": {"current": "Advance swarm", "ranked_outcomes": ["Dup", "Dup"]}},
+            {"objective": {"current": "Advance swarm", "ranked_outcomes": [None]}},
+            {"milestones": ["Collides"], "tasks": [{"id": collide, "state": "planned"}]},
+            {"milestones": ["Collides"], "artifacts": [{"id": collide.upper(), "revision": "abc", "proof_class": "SOURCE_STATIC"}]},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes):
+                self.path.write_text(markdown_fixture({**self.document(), **changes}), encoding="utf-8")
+                before = self.path.read_bytes()
+                _, digest = views.parse_project_brief_markdown(before.decode("utf-8"))
+                with self.assertRaises(server.ConsoleError):
+                    self.call({"operation": "migrate_legacy", "expected_digest": digest, "acknowledge": True})
+                self.assertEqual(self.path.read_bytes(), before)
+                self.assertFalse((self.root / "history").exists())
+        document = self.document()
+        document["milestones"] = ["Retained verbatim", *document["milestones"]]
+        self.path.write_text(markdown_fixture(document), encoding="utf-8")
+        before = self.path.read_bytes()
+        _, digest = views.parse_project_brief_markdown(before.decode("utf-8"))
+        request = {"operation": "migrate_legacy", "expected_digest": digest, "acknowledge": True}
+        archive = self.root / "history" / f"swarm-brief-{hashlib.sha256(before).hexdigest()}.md"
+        archive.parent.mkdir()
+        decoy = self.root / "decoy.md"
+        decoy.write_bytes(before)  # Same bytes behind a link must still be refused as retained history.
+        try:
+            os.symlink(decoy, archive)
+            linked = True
+        except (OSError, NotImplementedError):
+            linked = False
+        if linked:
+            with self.subTest(hostile="symlink"), self.assertRaises(server.ConsoleError):
+                self.call(request)
+            self.assertEqual(self.path.read_bytes(), before)
+            self.assertTrue(archive.is_symlink())
+            archive.unlink()
+        archive.write_bytes(b"pre-existing conflicting archive")
+        with self.subTest(hostile="conflict"), self.assertRaises(server.ConsoleError):
+            self.call(request)
+        self.assertEqual((self.path.read_bytes(), archive.read_bytes(), decoy.read_bytes()),
+                         (before, b"pre-existing conflicting archive", before))
+        self.assertFalse(self.ticket_ledger._state.path.exists())
 
     def test_conflicting_duplicate_absent_and_empty_briefs_fail_closed(self):
         document = self.document()

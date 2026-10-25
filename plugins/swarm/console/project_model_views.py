@@ -868,6 +868,63 @@ def mutate_project_tickets(
     return {**result, "source_digest": digest, "replayed": False}
 
 
+def _legacy_ticket_record(kind: str, value: Any) -> dict[str, Any]:
+    """Type one schema-1 legacy string; the exact text is kept and nothing else is invented."""
+    if not isinstance(value, str) or not value.strip() or not _flow_text(value) or len(value.encode("utf-8")) > 4096:
+        raise ProjectModelError(f"legacy {kind} entry is not bounded text")
+    identity = f"legacy-{kind}-{_digest({'kind': kind, 'text': value})[:16]}"
+    field = "label" if len(value) <= 160 and "\n" not in value and "\t" not in value else "description"
+    return {"id": identity, field: value}
+
+
+def migrate_legacy_project_tickets(path: Path, *, expected_digest: str, updated_at: str, project_ids: Any) -> dict[str, Any]:
+    """Explicitly convert legacy string milestones/outcomes into typed records with one CAS-guarded write.
+
+    Typed records, IDs, states, assignments and the project identity are untouched; the original
+    bytes are retained through the existing immutable history helper before the brief is replaced.
+    """
+    with _brief_update_lock(path):
+        text, document, current_digest = _read_brief_for_edit(path, "", compare=False)
+        _require_ticket_project(document, project_ids)
+        if not isinstance(expected_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest) is None:
+            raise ProjectModelError("project brief digest conflict")
+        targets = (("milestones", "milestone", document.get("milestones")),
+                   ("ranked_outcomes", "goal", document["objective"].get("ranked_outcomes")))
+        for field, _, records in targets:
+            if records is not None and (not isinstance(records, list) or any(not isinstance(item, (str, dict)) for item in records)):
+                raise ProjectModelError(f"project brief field {field} is invalid")
+        counts = {field: sum(isinstance(item, str) for item in records or []) for field, _, records in targets}
+        if current_digest != expected_digest:
+            raise ProjectModelError("project brief digest conflict")
+        if not any(counts.values()):
+            return {**_ticket_result(document, current_digest), "source_digest": current_digest, "previous_digest": current_digest,
+                    "migration": {"counts": counts, "converted_ids": [], "history": None}, "replayed": False}
+        converted: list[str] = []
+        for _, kind, records in targets:
+            for index, item in enumerate(records or []):
+                if isinstance(item, str):
+                    record = _legacy_ticket_record(kind, item)
+                    if record["id"] in converted:
+                        raise ProjectModelError(f"duplicate stable id: {record['id']}")
+                    converted.append(record["id"])
+                    records[index] = record
+        result = _ticket_result(document, current_digest)  # Collisions with typed records fail before any write.
+        if not isinstance(updated_at, str) or not updated_at.strip():
+            raise ProjectModelError("project brief timestamp is invalid")
+        original = text.encode("utf-8")
+        history = None
+        if "brief_content" not in json.loads(next(_BRIEF_FENCE.finditer(text)).group("payload")):
+            sha = hashlib.sha256(original).hexdigest()
+            history = {"rel": "brief_content", "path": f"history/swarm-brief-{sha}.md", "sha256": sha, "bytes": len(original),
+                       "canonical_digest": current_digest, "project_id": document["project"]["id"]}
+            _publish_brief_archive(path.parent / history["path"], original)
+            if read_brief_content(path.parent, history) != original:
+                raise ProjectModelError("immutable full brief conflicts")
+        digest = _write_project_brief(path, text, document, updated_at)
+    return {**result, "source_digest": digest, "previous_digest": current_digest,
+            "migration": {"counts": counts, "converted_ids": sorted(converted), "history": history}, "replayed": False}
+
+
 def _write_project_brief(path: Path, text: str, document: dict[str, Any], updated_at: str) -> str:
     if not isinstance(updated_at, str) or not updated_at.strip():
         raise ProjectModelError("project brief timestamp is invalid")
