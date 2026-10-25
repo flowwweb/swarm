@@ -1320,6 +1320,227 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertEqual(state[key], ledger_state[key], key)
         self.assertEqual((records["g-plan"]["display_id"], records["b-plan"]["display_id"]), ("SWRM-1", "SWRM-2"))
 
+    def test_ticket_execution_binding_completes_only_through_bound_block_acceptance(self) -> None:
+        from contextlib import contextmanager
+        app = console.App(self.codex_home, self.config)
+        root = app._canonical_project_root("project:alpha")
+        role = next(item for item in app.builtin_role_manifests if item["id"] == "developer")
+        draft = build_task_manifest(manifest_id="task:ticketed", task_id="draft-only", task_name="Ticketed task",
+            project_id="project:alpha", ctrl_id="ctrl-a",
+            milestones=[{"milestone_id": "m", "order": 0, "title": "M", "verification_policy": "source", "supersedes_milestone_id": None}],
+            blocks=[{"block_id": block_id, "milestone_id": "m", "order": order, "title": block_id, "verification_policy": "source", "estimate_minutes": 1, "weight": None, "supersedes_block_id": None} for order, block_id in enumerate(("tb", "tb2"))])
+        contract = {"role_manifest": role, "task_manifest_draft": {k: v for k, v in draft.items() if k not in {"task_id", "manifest_digest"}},
+                    "parent_task_id": None, "topology_manifest_receipt_id": "topology-receipt", "task_receipt_id": "task-receipt",
+                    "milestone_receipts": [{"id": "m", "receipt_id": "m-receipt"}], "block_receipts": [{"id": block_id, "receipt_id": block_id + "-receipt"} for block_id in ("tb", "tb2")],
+                    "explicit_empty_work_receipt_id": None, "independent_host_task": False, "project_code": "SWRM"}
+        now = int(time.time() * 1000)
+        instruction = "Create the explicitly authorized ticketed task."
+        root_digest = console._auto_digest({"project_id": "project:alpha", "canonical_root": console._normalized_project_path(str(root))})
+        creation = {"acknowledge": True, "instruction": instruction, "envelope": {
+            "command_id": "create-ticketed", "idempotency_key": "create-ticketed-key", "action": "MANUAL_AGENT",
+            "project_id": "project:alpha", "root_digest": root_digest, "ctrl_id": "ctrl-a", "target_intent": "NEW_THREAD",
+            "target_thread_id": "", "payload_digest": hashlib.sha256(instruction.encode()).hexdigest(), "expected_ledger_revision": 0,
+            "submitted_at_ms": now, "expires_at_ms": now + 60000, "task_creation": contract}}
+        sent, reviews = [], {}
+        responses = [{"thread": {"id": "host-new", "cwd": str(root)}}, {"turn": {"id": "turn-new"}}]
+
+        @contextmanager
+        def session(cwd, *, retain_turn=False, approval_project_id=""):
+            def send(message):
+                sent.append(message)
+            def receive(predicate):
+                message = sent[-1]
+                if message["method"] == "thread/read":
+                    thread = reviews.get(message["params"]["threadId"])
+                    return {"id": message["id"], "result": {"thread": copy.deepcopy(thread)}} if thread else {"id": message["id"], "error": {"message": "unknown thread"}}
+                return {"id": message["id"], "result": responses.pop(0)}
+            yield send, receive
+
+        def post(path, body, active=None, token=None):
+            handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=token or (active or app).token)
+            handler.server.app = active or app
+            handler.path = path
+            handler._payload = mock.Mock(return_value=body)
+            handler._json = mock.Mock()
+            handler._error = mock.Mock()
+            handler.do_POST()
+            return handler
+
+        app.auto_bridge.command_session = session
+        self.assertEqual(post("/api/tasks/create", creation)._json.call_args.args[1]["thread_id"], "host-new")
+        reviewer_cwd = self.root / "ticket-reviewer"
+        with closing(sqlite3.connect(self.database)) as connection:
+            for thread_id, cwd in (("host-new", root), ("ctrl-a", root), ("reviewer-host", reviewer_cwd)):
+                connection.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+                    thread_id, "untrusted label", str(cwd), 2_000_000_000, 2_000_000_000, 2_000_000_000_000,
+                    2_000_000_000_001, "gpt-5.6-terra", "high", 0, 0, "", "main", "", "", "", 0))
+            connection.commit()
+        with closing(sqlite3.connect(console.goals_database(self.codex_home))) as connection:
+            connection.execute("CREATE TABLE thread_goals (thread_id TEXT PRIMARY KEY, goal_id TEXT, objective TEXT, status TEXT, token_budget INTEGER, tokens_used INTEGER, time_used_seconds INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER)")
+            connection.execute("INSERT INTO thread_goals VALUES (?,?,?,?,?,?,?,?,?)", ("ctrl-a", "goal-host-1", "private", "active", 0, 0, 0, now, now))
+            connection.commit()
+        model_id = sorted(app._canonical_project_identities("project:alpha"))[0]
+        brief = {"schema_version": 1, "updated_at": "2026-10-25T00:00:00Z", "project": {"id": model_id},
+                 "users_outcomes": [], "objective": {"current": "Ship ticketed work", "ranked_outcomes": []}, "repo": {},
+                 "authority": {}, "milestones": [], "decisions": [], "ownership": {}, "proof_acceptance": {},
+                 "risks_blockers": [], "links": []}
+        (root / "SWARM.md").write_text("<!-- swarm-project-brief:schema=1 -->\n```json\n" + json.dumps(brief) + "\n```\n", encoding="utf-8")
+        digest = app.project_ticket_command({"operation": "read", "project_id": "project:alpha"})["source_digest"]
+        created = app.project_ticket_command({"operation": "create", "project_id": "project:alpha", "expected_digest": digest,
+            "acknowledge": True, "collection": "goals", "record_id": "ticket-goal", "changes": {"label": "Ticket goal"}})
+        self.assertEqual(next(r for r in created["records"] if r["id"] == "ticket-goal")["display_id"], "SWRM-2")
+        original_open = next(r for r in created["records"] if r["id"] == "host-new")
+        self.assertEqual(original_open["durable_lifecycle"]["state"], "OPEN")
+        self.assertEqual(original_open["durable_lifecycle"]["accepted_blocks"], 0)
+        body_bytes = b"# Acceptance report\nTicketed checks passed.\n"
+        (root / "deliverable.md").write_bytes(body_bytes)
+        artifact_sha = hashlib.sha256(body_bytes).hexdigest()
+        projection = app.progress_ledger.replay()
+        state = projection["task_manifests"]["host-new"]
+        manifest_digest = state["versions"][state["active_version"]]["manifest_digest"]
+        role_ref = next(iter(projection["task_creation_bindings"].values()))["role_manifest_ref"]
+        check = ("import hashlib, pathlib, sys; data = pathlib.Path('deliverable.md').read_bytes(); "
+                 f"sys.exit(0 if hashlib.sha256(data).hexdigest() == {artifact_sha!r} else 4)")
+        gates = [["report-integrity", [sys.executable, "-c", check]]]
+
+        def complete(block_id):
+            turn = f"review-{block_id}"
+            body = {"project_id": "project:alpha", "task_id": "host-new", "block_id": block_id, "manifest_digest": manifest_digest,
+                    "expected_ledger_revision": app.progress_ledger.replay()["cursor"]["event_seq"],
+                    "artifact_path": "deliverable.md", "artifact_sha256": artifact_sha, "gates": gates,
+                    "review_strategy": "light", "acknowledge": True,
+                    "host_review": {"reviewer_thread_id": "reviewer-host", "reviewer_turn_id": turn}}
+            binding = console.bound_task_acceptance_binding(
+                project_id="project:alpha", task_id="host-new", block_id=block_id, manifest_digest=manifest_digest,
+                goal_id="goal-host-1", artifact_path="deliverable.md", artifact_sha256=artifact_sha, gates=gates,
+                review_strategy="light", ctrl_id="ctrl-a", root_digest=root_digest, role_manifest_ref=role_ref)
+            verdict = json.dumps({"schema": console.BOUND_TASK_REVIEW_SCHEMA, "verdict": "ACCEPT", "binding": binding})
+            reviews["reviewer-host"] = {"id": "reviewer-host", "cwd": str(reviewer_cwd), "turns": [{"id": turn, "status": "completed",
+                "items": [{"type": "agentMessage", "id": "agent-1", "text": verdict}]}]}
+            handler = post("/api/tasks/complete", body)
+            handler._error.assert_not_called()
+            return handler._json.call_args.args[1]
+
+        def bind(block_id, **changes):
+            return {"operation": "bind", "project_id": "project:alpha", "record_id": "ticket-goal",
+                    "reference_id": f"goal-ref-{block_id}", "task_id": "host-new", "block_id": block_id,
+                    "manifest_digest": manifest_digest, "attempt": 1, "membership": "REQUIRED",
+                    "expected_ledger_revision": app.progress_ledger.replay()["cursor"]["event_seq"], "acknowledge": True, **changes}
+
+        def refused(body, pattern, token=None):
+            before = app.progress_ledger._state.path.read_bytes()
+            handler = post("/api/project-tickets/execution", body, token=token)
+            handler._json.assert_not_called()
+            handler._error.assert_called_once()
+            if pattern:
+                self.assertRegex(handler._error.call_args.args[1], pattern)
+            self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+
+        read = {"operation": "read", "project_id": "project:alpha", "record_id": "ticket-goal"}
+        refused(bind("tb"), None, token="wrong")
+        refused({**bind("tb"), "completed": True}, "exact fields")
+        refused({**bind("tb"), "acknowledge": False}, "exact fields")
+        refused(bind("tb", task_id="task"), "host-created task")  # Host thread without a retained creation binding.
+        refused(bind("tb", task_id="unsafe"), "membership")  # Host thread outside the registered root.
+        refused(bind("tb", record_id="missing-ticket"), "one exact brief record")
+        refused(bind("new-block"), "BLOCK_NOT_IN_ORIGINAL_MANIFEST")
+        refused(bind("tb", attempt=2), "REWORK_ATTEMPT_UNSUPPORTED")
+        refused(bind("tb", manifest_digest="sha256:" + "0" * 64), "manifest changed")
+        stale = bind("tb")
+        stale["expected_ledger_revision"] -= 1
+        refused(stale, "ledger changed")
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET archived=1 WHERE id='ctrl-a'")
+            connection.commit()
+        refused(bind("tb"), "membership")  # Archived owning CTRL fails the existing host membership check.
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET archived=0 WHERE id='ctrl-a'")
+            connection.commit()
+        bound = post("/api/project-tickets/execution", bind("tb"))
+        bound._error.assert_not_called()
+        result = bound._json.call_args.args[1]
+        self.assertEqual((result["status"], result["execution"]["required_count"], result["execution"]["completed"]), ("APPENDED", 1, False))
+        retained = app.progress_ledger._state.path.read_bytes()
+        self.assertEqual(post("/api/project-tickets/execution", {**bind("tb"), "expected_ledger_revision": 0})._json.call_args.args[1]["status"], "REPLAY")
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), retained)
+        refused(bind("tb", membership="SUPPLEMENTAL"), "TICKET_REFERENCE_CONFLICT")
+        refused(bind("tb", reference_id="reuse"), "PROOF_BLOCK_ALREADY_BOUND")
+        post("/api/project-tickets/execution", bind("tb2"))._error.assert_not_called()
+        self.assertEqual(complete("tb")["status"], "ACCEPTED")
+        partial = post("/api/project-tickets/execution", read)._json.call_args.args[1]
+        self.assertEqual((partial["display_id"], partial["execution"]["accepted_required_count"], partial["execution"]["completed"]),
+                         ("SWRM-2", 1, False))
+        brief_bytes = (root / "SWARM.md").read_bytes()
+        self.assertTrue(complete("tb2")["work_completed"])
+        restarted = console.App(self.codex_home, self.config)
+        done = restarted.project_ticket_execution_command(read)["execution"]
+        self.assertEqual((done["accepted_required_count"], done["completed"]), (2, True))
+        self.assertEqual((root / "SWARM.md").read_bytes(), brief_bytes)  # Completion is never copied into editable brief state.
+        identity = restarted.progress_ledger.replay()["ticket_identities"]["project:alpha"]
+        self.assertEqual((identity["assignments"]["host-new"], identity["assignments"]["brief:ticket-goal"]), (1, 2))
+        retained_ledger = restarted.progress_ledger._state.path.read_bytes()
+        tickets = restarted.project_ticket_command({"operation": "read", "project_id": "project:alpha"})
+        original = next(row for row in tickets["records"] if row["id"] == "host-new")
+        self.assertEqual(original["display_id"], "SWRM-1")
+        self.assertTrue(original["read_only"])
+        self.assertEqual((original["parent"], original["parent_status"]), (None, "ROOT"))
+        self.assertIsNone(original["declared_state"])
+        self.assertEqual(original["durable_lifecycle"]["state"], "COMPLETED")
+        self.assertEqual(original["durable_lifecycle"]["manifest_digest"], manifest_digest)
+        self.assertEqual((original["durable_lifecycle"]["accepted_blocks"], original["durable_lifecycle"]["total_blocks"]), (2, 2))
+        goal = next(row for row in tickets["records"] if row["id"] == "ticket-goal")
+        self.assertTrue(goal["execution"]["completed"])
+        self.assertEqual(goal["display_id"], "SWRM-2")
+        self.assertEqual(console.App(self.codex_home, self.config).project_ticket_command(
+            {"operation": "read", "project_id": "project:alpha"}), tickets)
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained_ledger)
+        self.assertEqual((root / "SWARM.md").read_bytes(), brief_bytes)
+        projected = restarted.progress_ledger.replay()
+        for foreign_project, foreign_root in (("other", root_digest), ("project:alpha", "0" * 64)):
+            self.assertEqual(restarted._retained_execution_tickets(projected, foreign_project, foreign_root, []), [])
+        unbound = copy.deepcopy(projected)
+        unbound["task_creation_operations_by_task"].pop("host-new")
+        self.assertEqual(restarted._retained_execution_tickets(unbound, "project:alpha", root_digest, []), [])
+        for operation in ("create", "update"):
+            with self.assertRaisesRegex(console.ConsoleError, "read-only"):
+                restarted.project_ticket_command({"operation": operation, "project_id": "project:alpha",
+                    "expected_digest": tickets["source_digest"], "acknowledge": True, "collection": "tasks",
+                    "record_id": "host-new", "changes": {"label": "Replace historical identity"}})
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained_ledger)
+        self.assertEqual((root / "SWARM.md").read_bytes(), brief_bytes)
+        self.assertEqual([item["method"] for item in sent if item["method"] != "thread/read"], ["thread/start", "turn/start"])
+
+        # A copied brief at a different saved root must not inherit the old execution authority.
+        moved_root = self.root / "moved-ticket-root"
+        moved_root.mkdir()
+        (moved_root / "SWARM.md").write_bytes(brief_bytes)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(moved_root), "project:alpha"))
+            connection.commit()
+        moved_app = console.App(self.codex_home, self.config)
+        moved_read = post("/api/project-tickets", {"operation": "read", "project_id": "project:alpha"}, active=moved_app)
+        moved_read._error.assert_not_called()
+        moved_tickets = moved_read._json.call_args.args[1]
+        moved_goal = next(row for row in moved_tickets["records"] if row["id"] == "ticket-goal")
+        self.assertIsNone(moved_goal["display_id"])
+        self.assertIsNone(moved_goal["execution"])
+        self.assertNotIn("host-new", {row["id"] for row in moved_tickets["records"]})
+        refused_read = post("/api/project-tickets/execution", read, active=moved_app)
+        refused_read._json.assert_not_called()
+        self.assertRegex(refused_read._error.call_args.args[1], "TICKET_UNRESERVED")
+        self.assertEqual(console.App(self.codex_home, self.config).project_ticket_command(
+            {"operation": "read", "project_id": "project:alpha"}), moved_tickets)
+        self.assertNotEqual(moved_tickets["projection_digest"], tickets["projection_digest"])
+        self.assertEqual(moved_app.progress_ledger._state.path.read_bytes(), retained_ledger)
+        self.assertEqual((moved_root / "SWARM.md").read_bytes(), brief_bytes)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(root), "project:alpha"))
+            connection.commit()
+        restored = console.App(self.codex_home, self.config)
+        self.assertEqual(restored.project_ticket_command({"operation": "read", "project_id": "project:alpha"}), tickets)
+        self.assertEqual(restored.progress_ledger._state.path.read_bytes(), retained_ledger)
+        self.assertEqual((root / "SWARM.md").read_bytes(), brief_bytes)
+
     def test_work_unit_creation_persists_native_coordinators_and_pending_goals(self) -> None:
         from contextlib import contextmanager
         with closing(sqlite3.connect(self.database)) as connection:
@@ -5274,6 +5495,64 @@ class SwarmConsoleTests(unittest.TestCase):
             empty = app.usage_history(hours=168)
             self.assertEqual(empty["task_usage"], [])
             self.assertEqual(empty["task_usage_status"], "no_data")
+
+    def test_usage_account_snapshots_bound_transport_without_changing_token_deltas(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        now, minute = 2_000_000_000_000, 60_000
+        diagnostics, expected = [], {}
+        for index in range(300):
+            # Two observed clusters separated by a real two-hour gap.
+            stamp = now - (600 - index * 2 + (120 if index < 150 else 0)) * minute
+            account = console._normalize_account_limits({"accountId": "test-account",
+                "rateLimits": {"limitId": "codex", "primary": {"usedPercent": index % 80,
+                    "windowDurationMins": 300, "resetsAt": (now + 300 * minute) // 1000},
+                    "secondary": {"usedPercent": 20, "windowDurationMins": 10080,
+                                  "resetsAt": (now + 10080 * minute) // 1000}}})
+            sample = {"sampled_at_ms": stamp, "payload": {"account_limits": account}}
+            projected = console._account_limits_projection([sample], stamp)
+            expected[stamp] = {"sampled_at_ms": stamp, "account_key": projected["account_key"],
+                               "status": projected["status"], "windows": projected["windows"]}
+            diagnostics.append((stamp, "HEALTHY", "[]", json.dumps(sample["payload"])))
+        token_rows = [(now - hours * 3_600_000, "a", "project:a", tokens)
+                      for hours, tokens in [(720, 7), (168, 11), (24, 13), (2, 17), (1, 0)]]
+        token_rows.append((now - minute, "b", "project:b", 99))
+        with closing(app.store._connect()) as db:
+            db.executemany("INSERT INTO diagnostic_samples VALUES (?,?,?,?)", diagnostics)
+            values = [(stamp, stamp, project, task, 999999, tokens, "sqlite")
+                      for stamp, task, project, tokens in token_rows]
+            db.executemany("INSERT OR IGNORE INTO token_samples VALUES (?,?,?,?,?,?,?)", values)
+            db.executemany("INSERT OR IGNORE INTO token_samples VALUES (?,?,?,?,?,?,?)", values)
+            db.commit()
+        nodes = [{"id": "a", "title": "Alpha", "project_id": "project:a"},
+                 {"id": "b", "title": "Beta", "project_id": "project:b"}]
+        with mock.patch.object(console.time, "time", return_value=now / 1000), \
+             mock.patch.object(app, "observe_once", side_effect=AssertionError("read-only")):
+            for hours, project_total in [(24, 30), (168, 41), (720, 48)]:
+                for project in (True, False):
+                    selected = nodes[:1] if project else nodes
+                    scope = {"type": "project", "project_id": "project:a"} if project else {"type": "all-projects"}
+                    with mock.patch.object(app, "_observed_scope", return_value=(
+                            {}, selected, {row["id"] for row in selected}, scope)):
+                        result = app.usage_history(hours=hours, include_verified_yield=False)
+                    self.assertEqual(result["total_tokens"], project_total + (0 if project else 99))
+                    self.assertEqual(sum(row["delta_tokens"] for row in result["items"]), result["total_tokens"])
+                    self.assertEqual(sum(row["tokens"] for row in result["task_usage"]), result["total_tokens"])
+                    self.assertEqual(result["coverage"], {"observed_threads": len(selected), "expected_threads": len(selected)})
+                    history = result["account_history"]
+                    self.assertEqual(history["sampling"]["input_count"], 300)
+                    self.assertLessEqual(len(history["items"]), 120)
+                    self.assertTrue(history["truncated"])
+                    self.assertEqual(history["sampling"]["omitted_count"], 300 - len(history["items"]))
+                    self.assertEqual([row["sampled_at_ms"] for row in history["items"]],
+                                     sorted({row["sampled_at_ms"] for row in history["items"]}))
+                    self.assertEqual(history["items"][-1], expected[max(expected)])
+                    self.assertTrue(all(row == expected[row["sampled_at_ms"]] for row in history["items"]))
+                    self.assertLess(len(json.dumps(history["items"], separators=(",", ":")).encode()), 64_002)
+                    self.assertLess(len(json.dumps(result, separators=(",", ":")).encode()), 262_144)
+                    restarted = console.App(self.codex_home, self.config)
+                    with mock.patch.object(restarted, "_observed_scope", return_value=(
+                            {}, selected, {row["id"] for row in selected}, scope)):
+                        self.assertEqual(restarted.usage_history(hours=hours, include_verified_yield=False), result)
 
     def test_usage_history_explicit_range_month_and_task_rate_provenance(self) -> None:
         app = console.App(self.codex_home, self.config)

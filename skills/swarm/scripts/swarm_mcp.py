@@ -29,12 +29,13 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "011aba526f458001b6b46a8e6c251b641244d3e9b311728c15f501d6b708c3de"
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "2d697967f0dbd58f240c32f7366e7fbaed4d59aaab5b19e6b62cc8e2f88081ea", "skills/swarm/assets/ui/swarm-hq-host.css": "8c7a65e6d6fbb28599a8b4eebdf9e96b01dc819460a342133d494cc5c7940034", "skills/swarm/assets/swarm-wordmark.png": "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
+HQ_SDK_SHA256 = "f091161404a774c649552646c317d8afaf995f653fa7359b02f58e2582797146"
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "90755ec9e46e46b8f3153820c77b3a4464fb24b63df0b49a4542c014a338632d", "skills/swarm/assets/ui/swarm-hq-host.css": "73b7a50cbb24f6ac765abeb2606c11d05a7613f08b54ec2811a433c0abb72a9b", "skills/swarm/assets/swarm-wordmark.png": "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
 
 
 PROJECTS_SUPPORT_IMAGES = {
     "__FLOWWWEB_LOGO__": ("skills/swarm/assets/ui/brand/flowwweb-lockup-v2-light.svg", "image/svg+xml", "57253bfef4d4f26c399dbb1d5fb2f258d663b52d31dd1414ab7c9cfef808d7b3"),
+    "__FLOWWWEB_LOGO_DARK__": ("skills/swarm/assets/ui/brand/flowwweb-lockup-v2-dark.svg", "image/svg+xml", "cbc1bb458ab73cf7ac89972e7f087ae93a9a65902b1a4926b05484eaa90e9a11"),
 }
 # Public delivery is separate from inline assets. These exact local bytes retain
 # provenance; an img URL does not provide runtime integrity for future responses.
@@ -67,7 +68,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
             "record_id": {"type": "string"}, "changes": {"type": "object"}, "project_code": {"type": "string"}},
             "required": ["operation", "project_id"], "additionalProperties": False},
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
-        "_meta": {"ui": {"visibility": ["app"]}},
+        "_meta": {"ui": {"visibility": ["model", "app"]}},
     },
     {
         "name": "swarm_library_read", "title": "Read Units or Roles",
@@ -199,7 +200,7 @@ class HQApp:
                 "description": ("Open the Projects shell and scoped Settings. Project observations are read-only; Settings saves require separate acknowledged revision-bound commands. No task authority or native placement is inferred." if self.projects else "Open the configured read-only compact HQ snapshot. No live status, task actions, approval or Space placement is inferred."),
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
                 "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-                "_meta": {"ui": {"resourceUri": self.uri}, "openai/ui": {"entrypoints": [{"type": "global"}]}}}
+                "_meta": {"ui": {"resourceUri": self.uri}, "openai/ui": {"entrypoints": [{"type": "global"}, {"type": "thread"}]}}}
 
     def render(self) -> str:
         value = self.read()

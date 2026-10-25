@@ -2567,9 +2567,48 @@ def _bound_block_payload(
 BRIEF_TICKET_PREFIX = "brief:"
 BRIEF_TICKET_KINDS = frozenset({"goal", "milestone", "task", "block"})
 _BRIEF_TICKET_BINDING = frozenset({"kind", "record_id", "root_digest", "source_digest", "request_digest", "record_digest"})
+TICKET_EXECUTION_MEMBERSHIPS = frozenset({"REQUIRED", "SUPPLEMENTAL"})
+_TICKET_EXECUTION_FIELDS = frozenset({
+    "reference_id", "record_id", "kind", "root_digest", "record_digest", "operation_id", "creation_event_digest",
+    "task_id", "ctrl_id", "manifest_digest", "block_id", "attempt", "membership", "admitted_revision",
+})
+TICKET_EXECUTION_CLAIM_LIMIT = (
+    "Ticket completion derives only from retained bound acceptance of every REQUIRED referenced block attempt; "
+    "binding, participation and supplemental blocks earn no progress or completion. Reopen and new-attempt rework "
+    "are not supported by this seam."
+)
+
+
+def _ticket_execution_reference(payload: dict[str, Any]) -> dict[str, Any]:
+    """Schema 3: one explicit, non-allocating reference from a reserved brief ticket to a host-created block attempt."""
+    _exact_fields(payload, frozenset({"schema_version", "record_type", "project_id", "project_code", "execution_reference"}),
+                  "ticket execution reference")
+    reference = payload.get("execution_reference")
+    if (payload.get("record_type") != "TICKET_IDENTITY" or not isinstance(reference, dict)
+            or set(reference) != _TICKET_EXECUTION_FIELDS):
+        raise ProgressEventError("ticket execution reference schema is invalid")
+    if not isinstance(payload.get("project_id"), str) or _safe_id(payload["project_id"], "ticket project") != payload["project_id"]:
+        raise ProgressEventError("ticket project id must be canonical text")
+    if not isinstance(payload.get("project_code"), str) or re.fullmatch(r"[A-Z]{1,4}", payload["project_code"]) is None:
+        raise ProgressEventError("ticket project code requires 1-4 ASCII letters")
+    for field in ("reference_id", "record_id", "operation_id", "task_id", "ctrl_id", "block_id"):
+        value = reference[field]
+        if not isinstance(value, str) or _safe_id(value, f"execution {field}", maximum=128 if field == "record_id" else 256) != value:
+            raise ProgressEventError(f"ticket execution {field} must be canonical text")
+    if reference["kind"] not in BRIEF_TICKET_KINDS or reference["membership"] not in TICKET_EXECUTION_MEMBERSHIPS:
+        raise ProgressEventError("ticket execution kind or membership is invalid")
+    if any(not isinstance(reference[field], str) or re.fullmatch(r"[0-9a-f]{64}", reference[field]) is None
+           for field in ("root_digest", "record_digest", "creation_event_digest")):
+        raise ProgressEventError("ticket execution digests must be lowercase SHA-256")
+    _manifest_digest(reference["manifest_digest"], "ticket execution manifest digest")
+    _positive_int(reference["attempt"], "ticket execution attempt")
+    _positive_int(reference["admitted_revision"], "ticket execution admitted revision", allow_zero=True)
+    return payload
 
 
 def _ticket_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(payload, dict) and type(payload.get("schema_version")) is int and payload["schema_version"] == 3:
+        return _ticket_execution_reference(payload)
     # Schema 1 numbers retained Ledger tasks. Schema 2 numbers canonical project-brief records
     # from the same per-project counter and carries each record's exact retained binding.
     brief = isinstance(payload, dict) and type(payload.get("schema_version")) is int and payload["schema_version"] == 2
@@ -2808,6 +2847,9 @@ class Ledger:
 
     @staticmethod
     def _apply_ticket_identity(projection: dict[str, Any], event: dict[str, Any], event_seq: int, event_digest: str) -> None:
+        if event["schema_version"] == 3:
+            Ledger._apply_ticket_execution(projection, event, event_seq, event_digest)
+            return
         identities = projection["ticket_identities"]
         project, code = event["project_id"], event["project_code"]
         if any(key != project and row["project_code"] == code for key, row in identities.items()):
@@ -2949,6 +2991,128 @@ class Ledger:
                                        "display_id": f"{identity['project_code']}-{identity['assignments'][key]}"}
                 for key, binding in identity.get("brief_records", {}).items() if binding["root_digest"] == root_digest})
         return result
+
+    @staticmethod
+    def _ticket_execution_context(
+        projection: Mapping[str, Any], project_id: str, reference: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+        """Resolve the reserved ticket and the exact original host-created block; never infer either."""
+        identity = projection["ticket_identities"].get(project_id)
+        ticket = None if identity is None else identity.get("brief_records", {}).get(BRIEF_TICKET_PREFIX + reference["record_id"])
+        if ticket is None or ticket["kind"] != reference["kind"] or ticket["root_digest"] != reference["root_digest"]:
+            raise ProgressEventError("TICKET_UNRESERVED: the exact brief ticket is not reserved at this project root")
+        if reference["attempt"] != 1:
+            raise ProgressEventError(
+                "REWORK_ATTEMPT_UNSUPPORTED: bound acceptance events are keyed by task and block without an attempt "
+                "component, so a reopened attempt needs an attempt-scoped lifecycle seam first")
+        try:
+            operation_id, manifest, _, _, retained = Ledger._bound_block_context(
+                projection, project_id, reference["task_id"], reference["block_id"], reference["manifest_digest"])
+        except ProgressEventError as exc:
+            if "not part of the host-confirmed task" in str(exc) or "original host-created manifest" in str(exc):
+                raise ProgressEventError(
+                    "BLOCK_NOT_IN_ORIGINAL_MANIFEST: new blocks need a host-confirmed manifest revision seam; "
+                    "metadata binding cannot create host work") from exc
+            raise
+        binding = projection["task_creation_bindings"][operation_id]
+        if (binding["root_digest"] != reference["root_digest"] or manifest["ctrl_id"] != reference["ctrl_id"]
+                or operation_id != reference["operation_id"] or binding["event_digest"] != reference["creation_event_digest"]):
+            raise ProgressEventError("execution reference requires the exact retained host task creation at this root")
+        return identity, manifest, retained
+
+    @staticmethod
+    def _apply_ticket_execution(projection: dict[str, Any], event: dict[str, Any], event_seq: int, event_digest: str) -> None:
+        reference = event["execution_reference"]
+        identity, _, retained = Ledger._ticket_execution_context(projection, event["project_id"], reference)
+        if identity["project_code"] != event["project_code"]:
+            raise ProgressEventError("retained ticket project code cannot be renamed")
+        if reference["admitted_revision"] != projection["cursor"]["event_seq"]:
+            raise ProgressEventError("progress ledger changed; reload before binding ticket execution")
+        references = identity.setdefault("execution_references", {})
+        if reference["reference_id"] in references:
+            raise ProgressEventError("TICKET_REFERENCE_CONFLICT: execution reference identity is already retained")
+        if any(item["block_id"] == reference["block_id"] for item in references.values()):
+            raise ProgressEventError("PROOF_BLOCK_ALREADY_BOUND: one block attempt can serve only one ticket reference")
+        if retained is not None:
+            raise ProgressEventError(
+                "HISTORICAL_ADOPTION_UNSUPPORTED: bind before block evidence exists; retained lifecycle is never adopted")
+        references[reference["reference_id"]] = {**json.loads(json.dumps(reference)), "event_seq": event_seq, "event_digest": event_digest}
+        projection["cursor"] = {"event_seq": event_seq, "event_id": "ticket-identity-" + event_digest, "event_digest": event_digest}
+
+    def bind_ticket_execution(
+        self, *, project_id: str, reference_id: str, record_id: str, kind: str, record_digest: str, root_digest: str,
+        task_id: str, block_id: str, manifest_digest: str, attempt: int, membership: str, expected_event_seq: int,
+    ) -> dict[str, Any]:
+        """Retain one explicit ticket execution reference; it never dispatches, credits progress or completes work."""
+        project_id = _safe_id(project_id, "ticket project")
+        self._require_bound_revision(manifest_digest, expected_event_seq)
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            operation_id = projection["task_creation_operations_by_task"].get(task_id)
+            binding = projection["task_creation_bindings"].get(operation_id) if isinstance(operation_id, str) else None
+            state = projection["task_manifests"].get(task_id, {})
+            manifest = state.get("versions", {}).get(state.get("active_version"), {})
+            identity = projection["ticket_identities"].get(project_id)
+            if binding is None or identity is None:
+                raise ProgressEventError("execution reference requires a reserved ticket and an exact host-created task")
+            reference = {
+                "reference_id": reference_id, "record_id": record_id, "kind": kind, "root_digest": root_digest,
+                "record_digest": record_digest, "operation_id": operation_id, "creation_event_digest": binding["event_digest"],
+                "task_id": task_id, "ctrl_id": manifest.get("ctrl_id"), "manifest_digest": manifest_digest,
+                "block_id": block_id, "attempt": attempt, "membership": membership, "admitted_revision": expected_event_seq,
+            }
+            event = _ticket_identity({"schema_version": 3, "record_type": "TICKET_IDENTITY", "project_id": project_id,
+                                      "project_code": identity["project_code"], "execution_reference": reference})
+            existing = identity.get("execution_references", {}).get(reference_id)
+            if existing is not None:
+                stable = lambda item: {key: value for key, value in item.items() if key not in {"admitted_revision", "event_seq", "event_digest"}}
+                if stable(existing) != stable(reference):
+                    raise ProgressEventError("TICKET_REFERENCE_CONFLICT: execution reference identity is bound to different work")
+                status = "REPLAY"
+            else:
+                if projection["cursor"]["event_seq"] != expected_event_seq:
+                    raise ProgressEventError("progress ledger changed; reload before binding ticket execution")
+                digest = hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                seq = len(records) + 1
+                trial = json.loads(json.dumps(projection, sort_keys=True))
+                self._apply_ticket_identity(trial, event, seq, digest)  # Every invariant before any byte is written.
+                encoded = json.dumps({"event_seq": seq, "event_digest": digest, "event": event}, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+                self._state.path.parent.mkdir(parents=True, exist_ok=True)
+                self._state.replace_bytes_unlocked(self._state.read_bytes_unlocked() + encoded)
+                self._write_projection_unlocked(trial)
+                projection, status = trial, "APPENDED"
+            result = {"status": status, "reference_id": reference_id, "cursor": projection["cursor"],
+                      "execution": self.ticket_execution_status(projection, project_id, record_id)}
+        if status == "APPENDED":
+            with self._condition:
+                self._condition.notify_all()
+        return result
+
+    @staticmethod
+    def ticket_execution_status(projection: Mapping[str, Any], project_id: str, record_id: str) -> dict[str, Any]:
+        """Read-only derived completion: every REQUIRED reference has its exact retained bound acceptance."""
+        identity = projection.get("ticket_identities", {}).get(project_id, {})
+        references = sorted((item for item in identity.get("execution_references", {}).values() if item["record_id"] == record_id),
+                            key=lambda item: (item["event_seq"], item["reference_id"]))
+        rows = []
+        for item in references:
+            state = projection["task_manifests"].get(item["task_id"], {})
+            manifest = state.get("versions", {}).get(state.get("active_version"), {})
+            current = manifest.get("manifest_digest") == item["manifest_digest"] and manifest.get("supersedes_digest") is None
+            block = next((value for value in projection["blocks"].values()
+                          if value["project_id"] == project_id and value["task_id"] == item["task_id"]
+                          and value["block_id"] == item["block_id"]), None)
+            accepted = (current and block is not None and block["lifecycle_state"] == "ACCEPTED"
+                        and block["latest_event_id"] == f"bound-accepted:{item['task_id']}:{item['block_id']}")
+            rows.append({"reference_id": item["reference_id"], "membership": item["membership"], "task_id": item["task_id"],
+                         "block_id": item["block_id"], "attempt": item["attempt"], "manifest_current": current,
+                         "accepted": accepted})
+        required = [row for row in rows if row["membership"] == "REQUIRED"]
+        return {"record_id": record_id, "references": rows, "required_count": len(required),
+                "accepted_required_count": sum(row["accepted"] for row in required),
+                "supplemental_count": len(rows) - len(required),
+                "completed": bool(required) and all(row["accepted"] for row in required),
+                "claim_limit": TICKET_EXECUTION_CLAIM_LIMIT}
 
     @staticmethod
     def _apply_connector_receipt(projection: dict[str, Any], event: dict[str, Any], event_seq: int, event_digest: str) -> None:

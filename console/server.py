@@ -10340,16 +10340,27 @@ class App:
             if operation == "read":
                 result = read_project_tickets(path, project_ids=identities)
             else:
+                retained = self.progress_ledger.replay()["ticket_identities"].get(project_id, {})
+                if payload["record_id"] in retained.get("assignments", {}):
+                    raise ProgressEventError("host-created ticket identity is read-only in planning")
                 result = mutate_project_tickets(
                     path, expected_digest=payload["expected_digest"], operation=operation,
                     collection=payload["collection"], record_id=payload["record_id"], changes=payload["changes"],
                     updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), project_ids=identities,
                     registry=self.progress_ledger, project_id=project_id, root_digest=root_digest,
                     project_code=payload.get("project_code"))
-            displays = self.progress_ledger.brief_ticket_display_ids(self.progress_ledger.replay(), project_id, root_digest)
+            ledger = self.progress_ledger.replay()
+            displays = self.progress_ledger.brief_ticket_display_ids(ledger, project_id, root_digest)
             for row in result["records"]:
                 binding = displays.get(row["id"], {})
                 row["display_id"] = binding.get("display_id") if binding.get("kind") == row["kind"] else None
+                # Match the dedicated execution read: only an exact current-root reservation carries authority.
+                row["execution"] = (self.progress_ledger.ticket_execution_status(ledger, project_id, row["id"])
+                                    if binding.get("kind") == row["kind"] and "request_digest" in binding else None)
+            result["records"].extend(self._retained_execution_tickets(ledger, project_id, root_digest, result["records"]))
+            result["ledger_cursor"] = copy.deepcopy(ledger["cursor"])
+            result["projection_digest"] = _auto_digest({"source_digest": result["source_digest"],
+                "ledger_cursor": result["ledger_cursor"], "records": result["records"]})
         except (ProjectModelError, ProgressEventError) as exc:
             if str(exc) == "project brief update failed":
                 raise ConsoleError("SOURCE_WRITE_UNCERTAIN: reload and reconcile the same request") from exc
@@ -10359,6 +10370,122 @@ class App:
         except OSError as exc:
             raise ConsoleError("SOURCE_WRITE_UNCERTAIN: reload and reconcile the same request") from exc
         return {"ok": True, "project_id": project_id, "operation": operation, **result}
+
+    def _retained_execution_tickets(self, ledger: dict[str, Any], project_id: str, root_digest: str,
+                                    planning: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Read original host-created tickets without allocating IDs or copying completion to the brief."""
+        identity = ledger["ticket_identities"].get(project_id, {})
+        code = identity.get("project_code")
+        if not isinstance(code, str) or re.fullmatch(r"[A-Z]{1,4}", code) is None:
+            return []
+        occupied = {row["id"] for row in planning}
+        displays = {row.get("display_id") for row in planning}
+        rows = []
+        for task_id, number in sorted(identity.get("assignments", {}).items(), key=lambda item: item[1]):
+            if task_id.startswith("brief:") or type(number) is not int or number < 1:
+                continue
+            binding = ledger["task_creation_bindings"].get(ledger["task_creation_operations_by_task"].get(task_id))
+            state = ledger["task_manifests"].get(task_id, {})
+            manifest = state.get("versions", {}).get(state.get("active_version"), {})
+            if (binding is None or binding["project_id"] != project_id or binding["root_digest"] != root_digest
+                    or manifest.get("project_id") != project_id or manifest.get("task_id") != task_id
+                    or not manifest.get("blocks") or not manifest.get("task_name")):
+                continue
+            try:
+                for block in manifest["blocks"]:
+                    type(self.progress_ledger)._bound_block_context(ledger, project_id, task_id,
+                                                                  block["block_id"], manifest["manifest_digest"])
+            except ProgressEventError:
+                continue
+            display_id = f"{code}-{number}"
+            if task_id in occupied or display_id in displays:
+                raise ProgressEventError("retained execution ticket conflicts with planning identity")
+            completed, accepted, total = self._bound_blocks_accepted(ledger, project_id, task_id, manifest)
+            rows.append({"id": task_id, "kind": "task", "display_id": display_id, "label": manifest["task_name"],
+                "description": None, "rank": None, "priority": None, "parent": None, "parent_status": "ROOT",
+                "assignment": None, "declared_state": None, "order": number, "read_only": True,
+                "source": "ledger:task-creation-binding", "binding_event_digest": binding["event_digest"],
+                "durable_lifecycle": {"state": "COMPLETED" if completed else "OPEN", "accepted_blocks": accepted,
+                    "total_blocks": total, "manifest_digest": manifest["manifest_digest"],
+                    "ledger_cursor": copy.deepcopy(ledger["cursor"]), "source": "ledger:bound-task-acceptance"}})
+        return rows
+
+    def _brief_ticket_record(self, path: Path, project_id: str, record_id: str) -> tuple[str, dict[str, Any]]:
+        """Read one exact canonical brief record for provenance; its labels never confer authority."""
+        if path.name != "SWARM.md" or path.is_symlink() or not path.is_file():
+            raise ConsoleError("ticket execution requires the canonical project brief")
+        try:
+            document, _ = parse_project_brief_markdown(path.read_bytes().decode("utf-8"), root=path.parent)
+        except (OSError, UnicodeError, ProjectModelError) as exc:
+            raise ConsoleError("ticket execution requires a readable canonical project brief") from exc
+        identities = {item.strip().casefold() for item in self._canonical_project_identities(project_id)}
+        if str(document["project"]["id"]).strip().casefold() not in identities:
+            raise ConsoleError("project brief belongs to another saved project")
+        collections = (("goal", document["objective"].get("ranked_outcomes")), ("milestone", document.get("milestones")),
+                       ("task", document.get("tasks")), ("block", document.get("blocks")))
+        matches = [(kind, item) for kind, items in collections if isinstance(items, list)
+                   for item in items if isinstance(item, dict) and item.get("id") == record_id]
+        if len(matches) != 1:
+            raise ConsoleError("ticket execution requires one exact brief record")
+        return matches[0]
+
+    def project_ticket_execution_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Bind an existing host-created block attempt to a reserved brief ticket, or read derived completion.
+
+        Ledger, brief and observed host values are resolved here; caller labels never confer authority.
+        Binding never dispatches, credits progress or completes work; acceptance stays /api/tasks/complete.
+        """
+        operation = payload.get("operation") if isinstance(payload, dict) else None
+        bind_fields = {"operation", "project_id", "record_id", "reference_id", "task_id", "block_id", "manifest_digest",
+                       "attempt", "membership", "expected_ledger_revision", "acknowledge"}
+        if operation == "read":
+            if set(payload) != {"operation", "project_id", "record_id"}:
+                raise ConsoleError("ticket execution read requires exact operation, project_id and record_id")
+        elif operation == "bind":
+            if set(payload) != bind_fields or payload["acknowledge"] is not True:
+                raise ConsoleError("ticket execution binding requires the exact fields and explicit acknowledgement")
+            if (type(payload["attempt"]) is not int or type(payload["expected_ledger_revision"]) is not int
+                    or payload["membership"] not in {"REQUIRED", "SUPPLEMENTAL"} or not isinstance(payload["manifest_digest"], str)):
+                raise ConsoleError("ticket execution binding fields are invalid")
+        else:
+            raise ConsoleError("ticket execution operation must be read or bind")
+        project_id = _auto_id(payload["project_id"], "project_id")
+        record_id = _auto_id(payload["record_id"], "record_id")
+        canonical = Path(self._canonical_project_root(project_id))
+        root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(canonical))})
+        ledger = self.progress_ledger
+        try:
+            if operation == "read":
+                projection = ledger.replay()
+                ticket = ledger.brief_ticket_display_ids(projection, project_id, root_digest).get(record_id)
+                if ticket is None or "request_digest" not in ticket:
+                    raise ConsoleError("TICKET_UNRESERVED: the brief ticket is not reserved at this project root")
+                return {"ok": True, "project_id": project_id, "operation": operation, "display_id": ticket["display_id"],
+                        "execution": ledger.ticket_execution_status(projection, project_id, record_id)}
+            task_id = _auto_id(payload["task_id"], "task_id")
+            block_id = _auto_id(payload["block_id"], "block_id")
+            reference_id = _auto_id(payload["reference_id"], "reference_id")
+            root = self._observed_task_root(project_id, task_id)  # Exact unarchived host thread in this project.
+            if _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))}) != root_digest:
+                raise ConsoleError("ticket and task project roots differ")
+            kind, record = self._brief_ticket_record(canonical / "SWARM.md", project_id, record_id)
+            state = ledger.replay()["task_manifests"].get(task_id, {})
+            ctrl_id = state.get("versions", {}).get(state.get("active_version"), {}).get("ctrl_id")
+            if not isinstance(ctrl_id, str):
+                raise ConsoleError("ticket execution requires an exact host-created task")
+            if self._observed_task_root(project_id, ctrl_id) != root:
+                raise ConsoleError("ticket execution requires the owning CTRL in this project root")
+            result = ledger.bind_ticket_execution(
+                project_id=project_id, reference_id=reference_id, record_id=record_id, kind=kind,
+                record_digest=_auto_digest(record), root_digest=root_digest, task_id=task_id, block_id=block_id,
+                manifest_digest=payload["manifest_digest"], attempt=payload["attempt"], membership=payload["membership"],
+                expected_event_seq=payload["expected_ledger_revision"])
+        except ProgressEventError as exc:
+            if str(exc).startswith(("progress ledger changed", "TICKET_REFERENCE_CONFLICT")):
+                raise ConsoleConflict(str(exc)) from exc
+            raise ConsoleError(str(exc)) from exc
+        return {"ok": True, "project_id": project_id, "operation": operation, "status": result["status"],
+                "reference_id": reference_id, "cursor": result["cursor"], "execution": result["execution"]}
 
     def _observe_bound_review(self, root: Path, thread_id: str, turn_id: str, expected: dict[str, Any]) -> str:
         """Read one explicitly named reviewer turn through the root-bound host transport.
@@ -11845,6 +11972,21 @@ class App:
                 account_history.append({"sampled_at_ms": sample["sampled_at_ms"],
                                         "account_key": account.get("account_key"),
                                         "status": account["status"], "windows": account["windows"]})
+        # Account percentages are snapshots, not additive token deltas. Keep actual observations
+        # across the full window, with no interpolation or zero-filled gaps. Bound this auxiliary
+        # chart independently so repeated account diagnostics cannot crowd out measured usage.
+        account_input_count = len(account_history)
+        largest_snapshot = max((len(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+                                for row in account_history), default=0)
+        account_point_limit = min(120, 64_000 // (largest_snapshot + 1))
+        account_bucket_ms = None
+        if account_input_count > account_point_limit:
+            account_bucket_ms = math.ceil((before_ms - after_ms) / account_point_limit) if account_point_limit else None
+            selected = {}
+            for row in account_history if account_point_limit else ():
+                bucket = min(account_point_limit - 1, (row["sampled_at_ms"] - after_ms) // account_bucket_ms)
+                selected[bucket] = row  # Latest actual observation in each occupied time bucket.
+            account_history = list(selected.values())
         return {
             "ok": True,
             "status": status,
@@ -11862,8 +12004,14 @@ class App:
                 "claim_limit": "Tokens are retained deltas bucketed by observation, not inferred consumption time. Rates use only adjacent intervals wholly inside the selected range and bucket; rate_tokens/rate_sample_count identify that subset. Gaps are omitted. Historical model identity was not stored. Not billing or savings.",
             },
             "rate_history": rate_history,
-            "account_history": {"items": account_history, "truncated": len(account_samples) == 1000,
-                                "status": "partial" if account_history else "no_data", "scope": "account"},
+            "account_history": {"items": account_history,
+                                "truncated": len(account_samples) == 1000 or len(account_history) < account_input_count,
+                                "status": "partial" if account_input_count else "no_data", "scope": "account",
+                                "sampling": {"method": "latest_observed_per_time_bucket",
+                                             "input_count": account_input_count, "output_count": len(account_history),
+                                             "bucket_width_ms": account_bucket_ms,
+                                             "omitted_count": account_input_count - len(account_history)},
+                                "claim_limit": "Sampled account snapshots, not task tokens. Original timestamps and values only; gaps are not observations. Omitted snapshots are explicit; usage totals are unchanged."},
             "task_usage_status": ("no_data" if not task_usage else
                                   "partial" if task_observed < len(nodes) else "ok"),
             "task_usage_coverage": {"observed_threads": task_observed, "expected_threads": len(nodes)},
@@ -17747,6 +17895,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.FORBIDDEN, "ticket editing requires strict loopback authorization")
                     return
                 self._json(HTTPStatus.OK, self.server.app.project_ticket_command(self._payload()))
+                return
+            if path == "/api/project-tickets/execution":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "ticket execution binding requires strict loopback authorization")
+                    return
+                with self.server.app.write_lock:
+                    result = self.server.app.project_ticket_execution_command(self._payload())
+                self._json(HTTPStatus.OK, result)
                 return
             if path in {"/api/tasks/create", "/api/tasks/message"}:
                 if not self._authorized_auto():

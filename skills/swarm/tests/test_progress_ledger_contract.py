@@ -87,6 +87,121 @@ class ProgressLedgerContractTests(unittest.TestCase):
             self.assertEqual(self.ledger._state.path.read_bytes(), retained)
         self.assertEqual(self.ledger.brief_ticket_display_ids(self.ledger.replay(), "project-alpha", "d" * 64), {})
 
+    def _ticket_execution_setup(self) -> tuple[dict, dict]:
+        one = self._bound_task("create-one", "task-one", block_count=2)
+        two = self._bound_task("create-two", "task-two", block_count=2)
+        self.ledger.assign_ticket_ids("project-alpha", "SWRM", ("task-one",))  # Original host ticket SWRM-1.
+        for index, record in enumerate(("ticket-a", "ticket-b")):
+            self.ledger.reserve_brief_ticket_id(project_id="project-alpha", kind="task", record_id=record, root_digest="b" * 64,
+                source_digest="sha256:" + "c" * 64, request_digest=str(index + 1) * 64, record_digest="e" * 64)
+        return one, two
+
+    def _bind(self, manifest: dict, selected_block_id: str, record_id: str = "ticket-a", **changes):
+        args = dict(project_id="project-alpha", reference_id=f"ref:{record_id}:{selected_block_id}", record_id=record_id, kind="task",
+                    record_digest="e" * 64, root_digest="b" * 64, task_id=manifest["task_id"], block_id=selected_block_id,
+                    manifest_digest=manifest["manifest_digest"], attempt=1, membership="REQUIRED",
+                    expected_event_seq=self.ledger.replay()["cursor"]["event_seq"])
+        return self.ledger.bind_ticket_execution(**{**args, **changes})
+
+    def _accept_bound_block(self, manifest: dict, block_id: str, name: str) -> dict:
+        request = {"project_id": "project-alpha", "task_id": manifest["task_id"], "block_id": block_id,
+                   "manifest_digest": manifest["manifest_digest"]}
+        path, digest = self._work_file(name, f"{block_id} accepted\n".encode())
+        self.ledger.append_bound_block_evidence(**request, expected_event_seq=self.ledger.replay()["cursor"]["event_seq"],
+                                                evidence_path=path, expected_sha256=digest, observed_at_ms=10)
+        swarm = self._accepted_lane(manifest["task_id"], name)
+        return self.ledger.append_runtime_block_acceptance(
+            swarm=swarm, **request, expected_event_seq=self.ledger.replay()["cursor"]["event_seq"], observed_at_ms=20)
+
+    def test_ticket_execution_references_are_explicit_unique_replayable_and_non_material(self) -> None:
+        one, two = self._ticket_execution_setup()
+        a1, b1 = (block["block_id"] for block in one["blocks"])
+        a2, s2 = (block["block_id"] for block in two["blocks"])
+        before = self.ledger.replay()
+        first = self._bind(one, a1)
+        self.assertEqual((first["status"], first["execution"]["required_count"], first["execution"]["completed"]), ("APPENDED", 1, False))
+        self._bind(one, b1, record_id="ticket-b")  # Same owner chat, distinct ticket-specific block.
+        self._bind(two, a2)  # A second participating chat on the same ticket.
+        self._bind(two, s2, membership="SUPPLEMENTAL")
+        path = self.root / PROGRESS_LEDGER_PATH
+        retained = path.read_bytes()
+        self.assertEqual(self._bind(one, a1, expected_event_seq=0)["status"], "REPLAY")
+        self.assertEqual(path.read_bytes(), retained)
+        hostile = (
+            ({"membership": "SUPPLEMENTAL"}, "TICKET_REFERENCE_CONFLICT"),
+            ({"reference_id": "reuse", "record_id": "ticket-b"}, "PROOF_BLOCK_ALREADY_BOUND"),
+            ({"reference_id": "same-ticket-reuse"}, "PROOF_BLOCK_ALREADY_BOUND"),
+            ({"reference_id": "stale", "expected_event_seq": 0}, "ledger changed"),
+            ({"reference_id": "root", "root_digest": "d" * 64}, "TICKET_UNRESERVED"),
+            ({"reference_id": "kind", "kind": "goal"}, "TICKET_UNRESERVED"),
+            ({"reference_id": "unreserved", "record_id": "ticket-z"}, "TICKET_UNRESERVED"),
+            ({"reference_id": "project", "project_id": "project-other"}, "reserved ticket"),
+            ({"reference_id": "manifest", "manifest_digest": "sha256:" + "0" * 64}, "manifest changed"),
+            ({"reference_id": "wrong-task", "task_id": "task-two", "manifest_digest": two["manifest_digest"]}, "BLOCK_NOT_IN_ORIGINAL_MANIFEST"),
+            ({"reference_id": "new-block", "block_id": "invented-block"}, "BLOCK_NOT_IN_ORIGINAL_MANIFEST"),
+            ({"reference_id": "unknown-task", "task_id": "task-missing"}, "host-created task"),
+            ({"reference_id": "rework", "attempt": 2}, "REWORK_ATTEMPT_UNSUPPORTED"),
+            ({"reference_id": "member", "membership": "OPTIONAL"}, "membership"),
+            ({"reference_id": "digest", "record_digest": "not-a-digest"}, "digests"),
+        )
+        for changes, pattern in hostile:
+            with self.subTest(changes=changes), self.assertRaisesRegex(ProgressEventError, pattern):
+                self._bind(one, a1, **changes)
+            self.assertEqual(path.read_bytes(), retained)
+        restarted = self.host_ledger(self.root)
+        after = restarted.replay()
+        for key in before.keys() - {"cursor", "ticket_identities"}:
+            self.assertEqual(after[key], before[key], key)  # Binding is never progress, lifecycle or manifest state.
+        identity = after["ticket_identities"]["project-alpha"]
+        self.assertEqual(identity["assignments"], {"task-one": 1, "brief:ticket-a": 2, "brief:ticket-b": 3})
+        self.assertEqual(restarted.ticket_execution_status(after, "project-alpha", "ticket-a"),
+                         self.ledger.ticket_execution_status(self.ledger.replay(), "project-alpha", "ticket-a"))
+        forged = {key: value for key, value in identity["execution_references"][f"ref:ticket-a:{a1}"].items()
+                  if key not in {"event_seq", "event_digest"}}
+        forged.update(reference_id="forged", admitted_revision=after["cursor"]["event_seq"])
+        event = {"schema_version": 3, "record_type": "TICKET_IDENTITY", "project_id": "project-alpha",
+                 "project_code": "SWRM", "execution_reference": forged}
+        digest = hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        line = json.dumps({"event_seq": len(retained.splitlines()) + 1, "event_digest": digest, "event": event}).encode() + b"\n"
+        path.write_bytes(retained + line)
+        with self.assertRaisesRegex(ProgressEventError, "PROOF_BLOCK_ALREADY_BOUND"):
+            self.host_ledger(self.root).replay()  # A hand-written Ledger line cannot reuse proof either.
+        path.write_bytes(retained)
+
+    def test_ticket_execution_completion_requires_every_required_accepted_block(self) -> None:
+        one, two = self._ticket_execution_setup()
+        a1, b1 = (block["block_id"] for block in one["blocks"])
+        a2, s2 = (block["block_id"] for block in two["blocks"])
+        self.assertFalse(self.ledger.ticket_execution_status(self.ledger.replay(), "project-alpha", "ticket-a")["completed"])
+        self._bind(one, a1)
+        self._bind(one, b1, record_id="ticket-b")
+        self._bind(two, a2)
+        self._bind(two, s2, membership="SUPPLEMENTAL")
+
+        def status(record_id: str) -> dict:
+            ledger = self.host_ledger(self.root)
+            return ledger.ticket_execution_status(ledger.replay(), "project-alpha", record_id)
+
+        self.assertEqual((status("ticket-a")["required_count"], status("ticket-a")["supplemental_count"]), (2, 1))
+        self._accept_bound_block(one, a1, "one-a.md")
+        partial = status("ticket-a")
+        self.assertEqual((partial["accepted_required_count"], partial["completed"]), (1, False))
+        self.assertFalse(status("ticket-b")["completed"])  # The shared owner chat's accepted block is not ticket-b proof.
+        self._accept_bound_block(two, a2, "two-a.md")
+        done = status("ticket-a")
+        self.assertEqual((done["accepted_required_count"], done["completed"]), (2, True))
+        self.assertFalse(next(row for row in done["references"] if row["membership"] == "SUPPLEMENTAL")["accepted"])
+        self.assertEqual((status("ticket-b")["accepted_required_count"], status("ticket-b")["completed"]), (0, False))
+        three = self._bound_task("create-three", "task-three")
+        path, digest = self._work_file("three.md", b"historical evidence\n")
+        self.ledger.append_bound_block_evidence(**self._evidence_request(three, path, digest), observed_at_ms=10)
+        retained = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        with self.assertRaisesRegex(ProgressEventError, "HISTORICAL_ADOPTION_UNSUPPORTED"):
+            self._bind(three, three["blocks"][0]["block_id"], record_id="ticket-b", reference_id="historical")
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), retained)
+        self.assertEqual(status("ticket-a"), done)
+        self.assertEqual(self.host_ledger(self.root).replay()["ticket_identities"]["project-alpha"]["assignments"]["task-one"], 1)
+
     def _runtime(self):
         import importlib
         return importlib.import_module(type(self.ledger).__module__.rpartition(".")[0])

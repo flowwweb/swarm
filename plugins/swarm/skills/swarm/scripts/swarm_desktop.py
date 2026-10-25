@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / 'skills/swarm/scripts/swarm_mcp.py'
-if hashlib.sha256(SCRIPT.read_bytes()).hexdigest() != '118eb794b7aa849e9907857c0ed5cce7747fd7bbb7567416531805e99268275f':
+if hashlib.sha256(SCRIPT.read_bytes()).hexdigest() != '827780b6f5b2eac20f41b30bf1a66c6baf65f35eb12ef3e8bbf55b5e4e8ab115':
     raise RuntimeError('Packaged MCP identity mismatch')
 spec = importlib.util.spec_from_file_location('accepted_swarm_mcp', SCRIPT)
 mcp = importlib.util.module_from_spec(spec)

@@ -30,6 +30,91 @@ def call(process: subprocess.Popen[str], request: dict) -> dict:
 
 
 class SwarmMCPTests(unittest.TestCase):
+    def test_model_ticket_discovery_and_wire_commands_keep_existing_authority(self):
+        sys.path.insert(0, str(mcp.REPO_ROOT))
+        from console.server import App
+        from console.tests.test_console import SwarmConsoleTests
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        fixture = SwarmConsoleTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        brief = fixture.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        transport = Mock()
+        app = App(fixture.codex_home, fixture.config, auto_bridge=transport)
+
+        def wire(method, params):
+            request = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+            with patch.object(mcp.SwarmProjection, "_load_app", return_value=app), \
+                 patch.object(sys, "stdin", io.StringIO(json.dumps(request))), \
+                 patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(mcp.serve(telemetry_path=fixture.root / "ticket-wire.jsonl"), 0)
+            return json.loads(output.getvalue())["result"]
+
+        def ticket(arguments):
+            return wire("tools/call", {"name": "swarm_project_tickets", "arguments": arguments})
+
+        tools = wire("tools/list", {})["tools"]
+        spec = next(t for t in tools if t["name"] == "swarm_project_tickets")
+        self.assertEqual(spec["_meta"]["ui"]["visibility"], ["model", "app"])
+        self.assertEqual(sum(t["name"] == spec["name"] for t in tools), 1)
+        self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "create", "update"])
+        for tool in tools:
+            if tool["name"] in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign",
+                                "swarm_settings_read", "swarm_settings_save"}:
+                self.assertEqual(tool["_meta"]["ui"]["visibility"], ["app"])
+        read = {"operation": "read", "project_id": "project:alpha"}
+        initial = ticket(read)
+        self.assertFalse(initial["isError"])
+        create = {**read, "operation": "create", "expected_digest": initial["structuredContent"]["source_digest"],
+                  "acknowledge": True, "collection": "goals", "record_id": "model-ticket",
+                  "changes": {"label": "Wire goal"}, "project_code": "TEST"}
+        before = brief.read_bytes()
+        for change in ({"acknowledge": False}, {"acknowledge": 1}, {"path": "elsewhere"},
+                       {"project_id": "foreign-project"}, {"operation": "execute"}):
+            self.assertTrue(ticket({**create, **change})["isError"], change)
+            self.assertEqual(brief.read_bytes(), before)
+            self.assertFalse(app.progress_ledger._state.path.exists())
+        saved = ticket(create)
+        self.assertFalse(saved["isError"])
+        record = next(r for r in saved["structuredContent"]["records"] if r["id"] == "model-ticket")
+        self.assertEqual(record["display_id"], "TEST-1")
+        source_bytes, ledger_bytes = brief.read_bytes(), app.progress_ledger._state.path.read_bytes()
+        app = App(fixture.codex_home, fixture.config, auto_bridge=transport)
+        self.assertTrue(ticket(create)["structuredContent"]["replayed"])
+        self.assertEqual(brief.read_bytes(), source_bytes)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_bytes)
+        # The existing command admits project_code only on create. An update carrying it fails the
+        # exact-field check before any digest comparison: REJECTED, not CONFLICT, and no write.
+        update = {key: value for key, value in create.items() if key != "project_code"}
+        update.update(operation="update", changes={"label": "Updated wire goal"})
+        malformed = ticket({**update, "project_code": "TEST"})
+        self.assertTrue(malformed["isError"])
+        self.assertEqual(malformed["structuredContent"]["state"], "REJECTED")
+        self.assertEqual(brief.read_bytes(), source_bytes)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_bytes)
+        # A well-formed update whose expected_digest predates the create is a stale CAS: CONFLICT, no write.
+        rejected = ticket(update)
+        self.assertTrue(rejected["isError"])
+        self.assertEqual(rejected["structuredContent"]["state"], "CONFLICT")
+        self.assertEqual(rejected["structuredContent"]["code"], "SOURCE_CONFLICT")
+        self.assertEqual(brief.read_bytes(), source_bytes)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_bytes)
+        update["expected_digest"] = saved["structuredContent"]["source_digest"]
+        edited = ticket(update)
+        self.assertFalse(edited["isError"])
+        app = App(fixture.codex_home, fixture.config, auto_bridge=transport)
+        row = next(r for r in ticket(read)["structuredContent"]["records"] if r["id"] == "model-ticket")
+        self.assertEqual((row["label"], row["display_id"]), ("Updated wire goal", "TEST-1"))
+        # A saved host root does not authorize a brief naming another project.
+        brief.write_text(markdown_fixture(project_fixture("foreign")), encoding="utf-8")
+        foreign = brief.read_bytes()
+        self.assertTrue(ticket(read)["isError"])
+        self.assertTrue(ticket({**update, "expected_digest": edited["structuredContent"]["source_digest"]})["isError"])
+        self.assertEqual(brief.read_bytes(), foreign)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_bytes)
+        self.assertEqual(transport.mock_calls, [])
+
     def test_ticket_write_uncertainty_is_typed_and_reserved_identity_survives_restart(self):
         sys.path.insert(0, str(mcp.REPO_ROOT))
         from console import server
@@ -216,6 +301,11 @@ class SwarmMCPTests(unittest.TestCase):
 
     def test_support_exact_images_admitted_without_snapshot_write(self):
         import base64
+        self.assertEqual(mcp.PROJECTS_SUPPORT_IMAGES["__FLOWWWEB_LOGO_DARK__"],
+                         ("skills/swarm/assets/ui/brand/flowwweb-lockup-v2-dark.svg", "image/svg+xml",
+                          "cbc1bb458ab73cf7ac89972e7f087ae93a9a65902b1a4926b05484eaa90e9a11"))
+        self.assertEqual(mcp.PROJECTS_SUPPORT_IMAGES["__FLOWWWEB_LOGO__"][2],
+                         "57253bfef4d4f26c399dbb1d5fb2f258d663b52d31dd1414ab7c9cfef808d7b3")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             body = ''.join('<img src="' + token + '">' for token in mcp.PROJECTS_SUPPORT_IMAGES)
@@ -451,7 +541,7 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertEqual(len(rows[1]["result"]["tools"]), 10)
             tool = rows[1]["result"]["tools"][-1]
             self.assertEqual(tool["name"], "swarm_hq_view")
-            self.assertEqual(tool["_meta"], {"ui": {"resourceUri": app.uri}, "openai/ui": {"entrypoints": [{"type": "global"}]}})
+            self.assertEqual(tool["_meta"], {"ui": {"resourceUri": app.uri}, "openai/ui": {"entrypoints": [{"type": "global"}, {"type": "thread"}]}})
             self.assertEqual(rows[2]["result"]["resources"][0]["uri"], app.uri)
             resource = rows[3]["result"]["contents"][0]
             self.assertTrue(resource["text"].startswith(value["html"]))
