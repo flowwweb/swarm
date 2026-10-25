@@ -38,10 +38,19 @@ def build(sdk_root: Path, output: Path) -> dict:
     with tempfile.TemporaryDirectory(prefix='swarm-hq-build-') as directory:
         editor_path = Path(directory) / 'config-editor.mjs'
         editor_path.write_text(editor, encoding='utf-8')
-        payload = subprocess.check_output([str(compiler), str(entry), '--bundle', '--format=esm',
+        metadata_path = Path(directory) / 'inputs.json'
+        bundle_path = Path(directory) / 'bundle.js'
+        subprocess.check_output([str(compiler), str(entry), '--bundle', '--format=esm',
             '--platform=browser', '--target=es2022', '--minify', '--legal-comments=inline',
             '--loader:.css=text', f'--alias:@swarm/sdk={sdk}',
-            f'--alias:@swarm/config-editor={editor_path}'], cwd=ROOT)
+            f'--alias:@swarm/config-editor={editor_path}', f'--metafile={metadata_path}', f'--outfile={bundle_path}'], cwd=ROOT)
+        payload = bundle_path.read_bytes()
+        inputs = {'console/static/app.js': hashlib.sha256((ROOT / 'console/static/app.js').read_bytes()).hexdigest()}
+        for name in json.loads(metadata_path.read_text(encoding='utf-8'))['inputs']:
+            path = (ROOT / name).resolve()
+            if path.is_relative_to(ROOT.resolve()):
+                inputs[path.relative_to(ROOT.resolve()).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        payload = b'// swarm-hq-inputs:' + json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode() + b'\n' + payload
     # esbuild retains blank indentation in SDK-generated code templates.
     payload = re.sub(rb'(?m)^[ \t]+(?=\r?$)', b'', payload)
     if len(payload) > 524288 or b'</script' in payload.lower():
@@ -50,7 +59,7 @@ def build(sdk_root: Path, output: Path) -> dict:
     return {'sdk': '@modelcontextprotocol/ext-apps@2.0.3', 'sdk_sha256': SDK_SHA, 'compiler_sha256': ESBUILD_SHA,
             'editor_sha256': hashlib.sha256(editor.encode()).hexdigest(),
             'entry_sha256': hashlib.sha256(entry.read_bytes()).hexdigest(),
-            'bundle_sha256': hashlib.sha256(payload).hexdigest(), 'bytes': len(payload)}
+            'bundle_sha256': hashlib.sha256(payload).hexdigest(), 'bytes': len(payload), 'inputs': inputs}
 
 
 if __name__ == '__main__':

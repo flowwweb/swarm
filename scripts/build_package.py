@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -293,14 +294,31 @@ def validate_plugin_manifest(root: Path, files: dict[str, str] | None = None) ->
                         if not (isinstance(sdk, ast.BinOp) and isinstance(sdk.op, ast.Div)
                                 and isinstance(sdk.left, ast.Name) and sdk.left.id == "SWARM_SKILL_ROOT"):
                             raise ValueError("unsupported SDK path")
-                        declared["skills/swarm/" + ast.literal_eval(sdk.right)] = ast.literal_eval(values["HQ_SDK_SHA256"])
+                        bundle_relative = "skills/swarm/" + ast.literal_eval(sdk.right)
+                        declared[bundle_relative] = ast.literal_eval(values["HQ_SDK_SHA256"])
+                        if bundle_relative == "skills/swarm/assets/ui/swarm-hq-mcp-app.js":
+                            raw = (root / bundle_relative).read_bytes()
+                            header = raw.split(b"\n", 1)[0]
+                            prefix = b"// swarm-hq-inputs:"
+                            if not header.startswith(prefix) or len(header) > 65536:
+                                raise ValueError("compiled HQ source identity is missing")
+                            inputs = json.loads(header[len(prefix):])
+                            if (not isinstance(inputs, dict) or not 2 <= len(inputs) <= 64
+                                    or not {"console/static/app.js", "skills/swarm/assets/ui/swarm-hq-bootstrap.mjs"} <= inputs.keys()
+                                    or any(not isinstance(key, str) or not isinstance(value, str)
+                                           or re.fullmatch(r"[a-f0-9]{64}", value) is None for key, value in inputs.items())):
+                                raise ValueError("compiled HQ source identity is invalid")
+                            for key, value in inputs.items():
+                                if key in declared and declared[key] != value:
+                                    raise ValueError("compiled HQ source identity conflicts")
+                                declared[key] = value
                     for relative, digest in declared.items():
                         if not isinstance(relative, str) or not isinstance(digest, str):
                             raise ValueError("invalid asset pin types")
                         if relative in pins and pins[relative] != digest:
                             raise ValueError("conflicting asset pins")
                         pins[relative] = digest
-                except (KeyError, TypeError, ValueError, SyntaxError) as error:
+                except (KeyError, TypeError, ValueError, SyntaxError, OSError) as error:
                     raise ValueError("invalid desktop dependency pins") from error
             for relative, digest in pins.items():
                 relative = normalise_relative_path(relative)

@@ -123,6 +123,45 @@ class ReleasePackageTests(unittest.TestCase):
                     builder.build(root, root / 'out.js')
                 execute.assert_not_called()
 
+    def test_desktop_bundle_rejects_missing_or_stale_compiled_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.make_plugin(Path(directory))
+            manifest_path = root / '.codex-plugin/plugin.json'
+            manifest = json.loads(manifest_path.read_bytes())
+            manifest['mcpServers'] = './.mcp.json'
+            manifest_path.write_text(json.dumps(manifest))
+            inputs = {'console/static/app.js': b'config editor',
+                      'skills/swarm/assets/ui/swarm-hq-bootstrap.mjs': b'entry',
+                      'skills/swarm/assets/ui/swarm-projects.mjs': b'durable lifecycle'}
+            pins = {key: hashlib.sha256(value).hexdigest() for key, value in inputs.items()}
+            for key, value in inputs.items():
+                path = root / key
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(value)
+            scripts = root / 'skills/swarm/scripts'
+            scripts.mkdir(parents=True, exist_ok=True)
+            (scripts / 'swarm_desktop.py').write_text('ASSETS = ' + repr({'console/static/app.js': pins['console/static/app.js']}))
+            (root / 'skills/swarm/assets/ui/swarm-hq-snapshot.json').write_text('{}')
+            (root / '.mcp.json').write_text(json.dumps({'mcpServers': {'swarm': {
+                'type': 'stdio', 'command': sys.executable, 'args': ['-B', 'skills/swarm/scripts/swarm_desktop.py'], 'cwd': '.'}}}))
+            bundle = root / 'skills/swarm/assets/ui/swarm-hq-mcp-app.js'
+            def write_bundle(header):
+                bundle.write_bytes(header + b'\ncompiled code')
+                (scripts / 'swarm_mcp.py').write_text('PROJECTS_ASSETS = ' + repr({'console/static/app.js': pins['console/static/app.js']}) +
+                    '\nHQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"\nHQ_SDK_SHA256 = ' + repr(hashlib.sha256(bundle.read_bytes()).hexdigest()))
+            write_bundle(b'old bundle without source identity')
+            with self.assertRaisesRegex(ValueError, 'desktop dependency pins'):
+                package_builder.validate_plugin_manifest(root)
+            write_bundle(b'// swarm-hq-inputs:' + json.dumps(pins).encode())
+            package_builder.validate_plugin_manifest(root)
+            source = root / 'skills/swarm/assets/ui/swarm-projects.mjs'
+            source.write_bytes(b'changed durable lifecycle')
+            with self.assertRaisesRegex(ValueError, 'desktop dependency'):
+                package_builder.validate_plugin_manifest(root)
+            source.unlink()
+            with self.assertRaisesRegex(ValueError, 'desktop dependency'):
+                package_builder.validate_plugin_manifest(root)
+
     def test_release_icons_reuse_exact_canonical_mascot(self):
         manifest = json.loads((REPOSITORY_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
         expected = {
