@@ -29,7 +29,7 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "13975ccee16da487ca1be1a3e420c0717ff5c669e287df13e949f9c67d38c8c3"
+HQ_SDK_SHA256 = "cb5ff3de2a3b4df609cd9529089516fe7b2f918213fa022567bad43b0816a1e4"
 PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "90755ec9e46e46b8f3153820c77b3a4464fb24b63df0b49a4542c014a338632d", "skills/swarm/assets/ui/swarm-hq-host.css": "3cdb043e87cb1031732a5a15ba0d0b513ba2d2bcd431320a86ca84c323c01eb6", "skills/swarm/assets/swarm-wordmark.png": "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
 
 
