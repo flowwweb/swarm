@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "1.0.29+codex.20261026.roster-read",
+  "version": "1.0.30+codex.20261026.config-safe",
   "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",
