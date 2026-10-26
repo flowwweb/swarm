@@ -531,7 +531,14 @@ def _compact_roster(roster: dict[str, Any]) -> dict[str, Any]:
         "available": roster.get("available"),
         "schema_version": roster.get("schema_version"),
         "cursor": roster.get("cursor"),
-        "projects": [_pick(project, ("id", "name", "goal_label", "active_ctrl_id", "active_now_count", "recently_active_count", "activity_status", "status", "task_count", "nodes", "tokens", "updated_at")) for project in roster.get("projects", [])[:128] if isinstance(project, dict)],
+        "observation_cursor": roster.get("observation_cursor"),
+        "projects": [{
+            **_pick(project, ("id", "name", "goal_label", "active_ctrl_id", "active_now_count", "recently_active_count", "activity_status", "status", "task_count", "nodes", "tokens", "updated_at")),
+            "root_binding": _pick(project.get("root_binding") or {}, ("status", "availability", "source")),
+            "provenance": _pick(project.get("provenance") or {}, ("source", "machine_ownership", "archive_state")),
+            # No admitted icon locator exists in the current canonical manifest.
+            "logo": {"status": "UNKNOWN", "artifact": None},
+        } for project in roster.get("projects", [])[:128] if isinstance(project, dict)],
         "current_work": {
             **_pick(current, ("state", "available", "source", "claim_limit")),
             "project_ids": current.get("project_ids", [])[:128],

@@ -1,6 +1,32 @@
 // Current compact task contract: stable IDs are not ticket display identities.
 import assert from 'node:assert/strict';
-import {projectDetail} from '../assets/ui/swarm-projects.mjs';
+import {projectDetail,rosterView} from '../assets/ui/swarm-projects.mjs';
+const rosterInput={ok:true,available:true,state:'KNOWN',cursor:{digest:'catalog'},observation_cursor:{type:'project_roster_observation_v1',digest:'a'.repeat(64)},projects:[{id:'saved',name:'Saved',activity_status:'active',root_binding:{status:'KNOWN',availability:'MISSING',source:'codex.project_roots',value:'PRIVATE_PATH'},provenance:{source:'codex.projects+codex.project_roots',machine_ownership:'Bahamut',archive_state:'ARCHIVED'},logo:{status:'KNOWN',artifact:'https://unknown.invalid/icon'}}]};
+const observed=rosterView(rosterInput);
+assert.equal(observed.projects[0].root_binding.availability,'MISSING');
+assert.equal(observed.projects[0].status,'active','filesystem absence does not rewrite observed activity');
+assert.equal(observed.projects[0].provenance.machine_ownership,'UNKNOWN');
+assert.equal(observed.projects[0].provenance.archive_state,'UNKNOWN');
+assert.deepEqual(observed.projects[0].logo,{status:'UNKNOWN',artifact:null});
+assert.doesNotMatch(JSON.stringify(observed),/PRIVATE_PATH|https:|Bahamut/);
+assert.equal(rosterView({...rosterInput,observation_cursor:null}).projects[0].root_binding.availability,'UNKNOWN');
+assert.equal(rosterView({...rosterInput,projects:[{id:'saved',name:'Saved'}]}).projects[0].root_binding.availability,'UNKNOWN');
+assert.equal(observed.projects.length,1,'projection retains all saved rows for All/current selection');
+for(const digest of [['a'.repeat(64)],null,{},42]){
+ const result=rosterView({...rosterInput,observation_cursor:{...rosterInput.observation_cursor,digest}});
+ assert.equal(result.observationCursor,null);
+ assert.equal(result.projects[0].root_binding.availability,'UNKNOWN');
+}
+for(const status of ['INVALID','AMBIGUOUS','UNKNOWN',null,42]){
+ const row={...rosterInput.projects[0],root_binding:{status,availability:'AVAILABLE',source:'codex.project_roots'}};
+ const result=rosterView({...rosterInput,projects:[row]}).projects[0];
+ assert.equal(result.root_binding.availability,'UNKNOWN');
+ assert.equal(result.status,'active');
+}
+for(const availability of ['AVAILABLE','MISSING']){
+ const row={...rosterInput.projects[0],root_binding:{status:'KNOWN',availability,source:'codex.project_roots'}};
+ assert.equal(rosterView({...rosterInput,projects:[row]}).projects[0].root_binding.availability,availability);
+}
 const task={id:'retained-task',project_id:'alpha',state:'PENDING'};
 const view=tasks=>({projects:[{id:'alpha'}],nodes:[{id:'host-agent',project_id:'alpha',title:'Designer',node_kind:'AGENT'}],progress:{projects:{alpha:{scope:{project_id:'alpha'},tasks}}},overview_metrics:{accepted_scope_id:'alpha',accepted_cursor:{scope_id:'alpha',digest:'scope-cursor'}}});
 const read=tasks=>projectDetail(view(tasks),'alpha');

@@ -2,12 +2,17 @@
 export function rosterView(raw) {
   if (raw?.ok !== true || raw.available !== true || raw.state !== 'KNOWN' || !raw.cursor?.digest || !Array.isArray(raw.projects)) throw Error('Project inventory unavailable');
   const seen = new Set();
+  const observationCursor=raw.observation_cursor?.type==='project_roster_observation_v1'&&typeof raw.observation_cursor.digest==='string'&&/^[a-f0-9]{64}$/.test(raw.observation_cursor.digest)?raw.observation_cursor:null;
   const projects = raw.projects.map(p => {
     if (typeof p.id !== 'string' || !p.id || seen.has(p.id) || typeof p.name !== 'string' || !p.name) throw Error('Invalid project identity');
     seen.add(p.id);
-    return {id:p.id,name:p.name,status:['active','inactive','recently_active'].includes(p.activity_status)?p.activity_status:'unknown',tasks:Number.isSafeInteger(p.task_count)&&p.task_count>=0?p.task_count:null};
+    const binding=observationCursor&&p.root_binding?.source==='codex.project_roots'?p.root_binding:{};
+    return {id:p.id,name:p.name,status:['active','inactive','recently_active'].includes(p.activity_status)?p.activity_status:'unknown',tasks:Number.isSafeInteger(p.task_count)&&p.task_count>=0?p.task_count:null,
+      root_binding:{status:['KNOWN','UNKNOWN','INVALID','AMBIGUOUS'].includes(binding.status)?binding.status:'UNKNOWN',availability:binding.status==='KNOWN'&&['AVAILABLE','MISSING','INVALID','UNKNOWN'].includes(binding.availability)?binding.availability:'UNKNOWN',source:binding.source||null},
+      provenance:{source:p.provenance?.source==='codex.projects+codex.project_roots'?p.provenance.source:null,machine_ownership:'UNKNOWN',archive_state:'UNKNOWN'},
+      logo:{status:'UNKNOWN',artifact:null}};
   });
-  return {projects,cursor:raw.cursor,truncated:raw.truncated===true};
+  return {projects,cursor:raw.cursor,observationCursor,truncated:raw.truncated===true};
 }
 export function projectDetail(raw,id) {
   const p=raw?.projects?.find(p=>p.id===id);

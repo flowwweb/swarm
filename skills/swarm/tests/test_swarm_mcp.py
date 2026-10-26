@@ -694,6 +694,22 @@ class SwarmMCPTests(unittest.TestCase):
             with self.subTest(name=name, arguments=arguments), self.assertRaises(mcp.MCPError):
                 projection.call(name, arguments)
 
+    def test_compact_roster_preserves_observation_without_paths_or_icon_authority(self):
+        row = {"id": "p", "name": "Saved project", "activity_status": "unknown",
+            "root_binding": {"status": "KNOWN", "availability": "MISSING",
+                "source": "codex.project_roots", "value": "PRIVATE_PATH"},
+            "provenance": {"source": "codex.projects+codex.project_roots",
+                "machine_ownership": "UNKNOWN", "archive_state": "UNKNOWN"},
+            "logo": {"status": "KNOWN", "artifact": "https://untrusted.invalid/icon.png"}}
+        result = mcp._compact_roster({"projects": [row], "cursor": {"digest": "retained"}})
+        projected = result["projects"][0]
+        self.assertEqual(projected["root_binding"]["availability"], "MISSING")
+        self.assertEqual(projected["provenance"], row["provenance"])
+        self.assertEqual(projected["logo"], {"status": "UNKNOWN", "artifact": None})
+        self.assertNotIn("PRIVATE_PATH", json.dumps(result))
+        self.assertNotIn("https://", json.dumps(result))
+        self.assertEqual(result["cursor"], {"digest": "retained"})
+
     def test_stdio_invalid_requests_recover_and_errors_are_redacted(self) -> None:
         requests = ['{', '[]', 'null', '1', '{"jsonrpc":"2.0","id":[],"method":"tools/list"}']
         requests += [json.dumps({"jsonrpc": "2.0", "id": i, "method": method, "params": params}) for i, method, params in [

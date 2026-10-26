@@ -525,6 +525,51 @@ class SwarmConsoleTests(unittest.TestCase):
             "v1_source": saved["source_digest"], "restarted_source": reloaded["source_digest"],
             "v2_source": updated["source_digest"], "after_stale_preview_sha256": hashlib.sha256(current_bytes).hexdigest()}, sort_keys=True))
 
+    def test_host_stderr_diagnostic_is_not_an_rpc_failure(self) -> None:
+        from contextlib import redirect_stderr
+        for diagnostic, rpc_error in [
+            ('{"level":"ERROR","fields":{"message":"Ignoring model_supports_reasoning_summaries at private-path"}}', False),
+            ('private-path requires a newer version of Codex', False),
+            ('', True),
+        ]:
+            with self.subTest(diagnostic=diagnostic, rpc_error=rpc_error):
+                read_done = threading.Event()
+                class Diagnostics(io.StringIO):
+                    def readline(self, *args):
+                        line = super().readline(*args)
+                        if not line:
+                            read_done.set()
+                        return line
+                reply = ({"error": {"code": -32601, "message": "private-path"}} if rpc_error else
+                         {"result": {"rateLimitsByLimitId": {"codex": {"primary": {"usedPercent": 20,
+                            "windowDurationMins": 300, "resetsAt": 1900000000}}}}})
+                process = mock.Mock()
+                process.stdin = io.StringIO()
+                process.stdout = io.StringIO(json.dumps({"id": 0, "result": {}}) + "\n" +
+                                             json.dumps({"id": 1, **reply}) + "\n")
+                process.stderr = Diagnostics(diagnostic + "\n" if diagnostic else "")
+                process.poll.return_value = None
+                logs = io.StringIO()
+                bridge = console.CodexStdioBridge(lambda *a, **kw: process,
+                    executable_resolver=lambda: ("codex-test", "0.164.0"))
+                with redirect_stderr(logs):
+                    result = bridge.read_account_limits(self.codex_home)
+                    self.assertTrue(read_done.wait(2))
+                events = [json.loads(line) for line in logs.getvalue().splitlines()]
+                failures = [event for event in events if event["event"] == "codex_host_failure"]
+                self.assertNotIn("private-path", logs.getvalue())
+                if rpc_error:
+                    self.assertEqual(result["status"], "UNKNOWN")
+                    self.assertEqual(result["error_code"], -32601)
+                    self.assertEqual([event["code"] for event in failures], ["CODEX_HOST_ERROR"])
+                else:
+                    self.assertEqual(result["status"], "PARTIAL")
+                    expected = ["CODEX_MODEL_REQUIRES_NEWER_CLI"] if "newer version" in diagnostic else []
+                    self.assertEqual([event["code"] for event in failures], expected)
+                    if not expected:
+                        self.assertEqual([event["code"] for event in events
+                            if event["event"] == "codex_host_diagnostic"], ["CODEX_STDERR"])
+
     def test_account_limits_native_read_observation_and_usage_handler(self) -> None:
         from contextlib import contextmanager
         now = int(time.time() * 1000)
@@ -1531,6 +1576,35 @@ class SwarmConsoleTests(unittest.TestCase):
         for key in ledger_state.keys() - {"ticket_identities", "cursor"}:
             self.assertEqual(state[key], ledger_state[key], key)
         self.assertEqual((records["g-plan"]["display_id"], records["b-plan"]["display_id"]), ("SWRM-1", "SWRM-2"))
+
+    def test_native_project_map_reuses_only_exact_validated_bytes(self) -> None:
+        path = self.codex_home / console.HOST_STATE_FILENAME
+        key = "local:" + str(self.codex_home.resolve())
+        def encoded(project):
+            return json.dumps({console.HOST_STATE_PROJECTS_KEY: {
+                "native": {"id": "native", "rootPaths": [str(self.alpha_root)]}},
+                console.HOST_STATE_PROJECT_MAP_KEY: {key: {"native": project}}}).encode()
+        path.write_bytes(encoded("project:alpha"))
+        app = console.App(self.codex_home, self.config)
+        with mock.patch.object(console.json, "loads", wraps=json.loads) as decode:
+            first = app._native_project_map()
+            first["native"]["valid"] = False
+            self.assertTrue(app._native_project_map()["native"]["valid"])
+            self.assertEqual(decode.call_count, 1)
+            before = path.stat()
+            path.write_bytes(encoded("project:bravo"))  # Same size and mtime must not hide a change.
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+            self.assertEqual(app._native_project_map()["native"]["project_id"], "project:bravo")
+            self.assertEqual(decode.call_count, 2)
+            path.write_bytes(b"{")
+            with self.assertRaises(console.ConsoleError):
+                app._native_project_map()
+            path.unlink()
+            self.assertEqual(app._native_project_map(), {})
+        path.write_bytes(encoded("project:alpha"))
+        with mock.patch.object(console, "_is_reparse_point", return_value=True):
+            with self.assertRaises(console.ConsoleError):
+                app._native_project_map()
 
     def test_native_saved_project_binding_is_read_only_alias_for_tickets_and_brief_identity(self) -> None:
         from console.tests.test_project_model_views import project_fixture, markdown_fixture, views
@@ -7759,6 +7833,28 @@ class SwarmConsoleTests(unittest.TestCase):
             roster = app.project_roster()
         self.assertEqual(roster["state"], "KNOWN")
         overview.assert_called_once_with()
+
+    def test_project_roster_reports_root_availability_without_machine_ownership(self) -> None:
+        missing = self.root / "missing-project"
+        self._add_host_project("project:missing", "missing", str(missing))
+        app = console.App(self.codex_home, self.config)
+        with mock.patch.object(app, "_host_overview", return_value={}):
+            before = app.project_roster()
+            rows = {row["id"]: row for row in before["projects"]}
+            self.assertEqual(rows["project:alpha"]["root_binding"], {
+                "status": "KNOWN", "availability": "AVAILABLE", "source": "codex.project_roots"})
+            self.assertEqual(rows["project:missing"]["root_binding"]["availability"], "MISSING")
+            for row in rows.values():
+                self.assertEqual(row["provenance"], {"source": "codex.projects+codex.project_roots",
+                    "machine_ownership": "UNKNOWN", "archive_state": "UNKNOWN"})
+                self.assertEqual(row["logo"]["status"], "UNKNOWN")
+            missing.mkdir()
+            after = app.project_roster()
+            current = {row["id"]: row for row in after["projects"]}
+            self.assertEqual(before["cursor"], after["cursor"])
+            self.assertNotEqual(before["observation_cursor"], after["observation_cursor"])
+            self.assertEqual(current["project:missing"]["root_binding"]["availability"], "AVAILABLE")
+            self.assertEqual(current["project:missing"]["status"], "unknown")
 
     def test_daily_report_reuses_the_published_host_snapshot(self) -> None:
         app = console.App(self.codex_home, self.config, self.root / "console" / "daily-report.sqlite3")

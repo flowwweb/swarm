@@ -566,7 +566,8 @@ class CodexStdioBridge:
                         code = _codex_failure_code(chunk)
                         if code not in emitted:
                             emitted.add(code)  # At most the two fixed diagnostic codes per session.
-                            print(json.dumps({"event": "codex_host_failure", "code": code,
+                            print(json.dumps({"event": "codex_host_failure" if code == "CODEX_MODEL_REQUIRES_NEWER_CLI" else "codex_host_diagnostic",
+                                "code": code if code == "CODEX_MODEL_REQUIRES_NEWER_CLI" else "CODEX_STDERR",
                                 "thread_id": thread_id, "turn_id": turn_id}), file=sys.stderr)
                 except (OSError, ValueError):
                     pass  # Closed diagnostics cannot change command or process custody.
@@ -8319,6 +8320,10 @@ class App:
                 raw = stream.read(HOST_STATE_MAX_BYTES + 1)
             if len(raw) > HOST_STATE_MAX_BYTES:
                 raise ConsoleError("host saved-state file exceeds the read bound")
+            identity = (str(path.resolve()), hashlib.sha256(raw).digest())
+            retained = getattr(self, "_native_project_map_snapshot", None)
+            if retained is not None and retained[0] == identity:
+                return copy.deepcopy(retained[1])
             state = json.loads(raw.decode("utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise ConsoleError("host saved-state file is unreadable") from exc
@@ -8345,7 +8350,10 @@ class App:
             binding = {"native_id": native_id, "project_id": sqlite_id, "native_root": root if valid else None, "valid": valid}
             bindings[native_id] = binding
             bindings[sqlite_id] = binding
-        return bindings
+        # Reuse decoding only, after reading and hashing the current bounded bytes.
+        # No timestamp/TTL assumption, persisted cache, or stale-input fallback.
+        self._native_project_map_snapshot = (identity, bindings)
+        return copy.deepcopy(bindings)
 
     def _saved_project_binding(self, project_id: str, purpose: str = "Project view") -> dict[str, Any]:
         """One snapshot of planning root identity: SQLite authority plus a proven native alias.
@@ -14366,6 +14374,15 @@ class App:
                 "ordering": dict(record.get("ordering") or {}),
                 "root": identity.get("root"),
                 "root_status": (identity.get("root_binding") or {}).get("status", "UNKNOWN"),
+                "root_binding": {
+                    key: (identity.get("root_binding") or {}).get(key, "UNKNOWN")
+                    for key in ("status", "availability", "source")
+                },
+                "provenance": {
+                    "source": "codex.projects+codex.project_roots",
+                    "machine_ownership": "UNKNOWN",
+                    "archive_state": "UNKNOWN",
+                },
                 "manifest": copy.deepcopy(identity.get("manifest")),
                 "project_view": copy.deepcopy(identity.get("project_view")),
                 "logo": copy.deepcopy(identity.get("logo")),
@@ -14413,6 +14430,13 @@ class App:
             "state": inventory_state,
             "available": inventory_state == "KNOWN",
             "cursor": copy.deepcopy(cursor),
+            "observation_cursor": {
+                "type": "project_roster_observation_v1",
+                "digest": _auto_digest({"catalog_cursor": cursor, "projects": [
+                    {key: project[key] for key in ("id", "root_binding", "provenance")}
+                    for project in projects
+                ]}),
+            },
             "projects": projects,
             "current_work": current_work,
             "source": "codex_host_projects_and_project_roots",
