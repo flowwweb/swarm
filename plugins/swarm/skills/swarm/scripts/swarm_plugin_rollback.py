@@ -5,8 +5,9 @@ This deliberately is not a general plugin installer.  It exists because the
 Codex plugin CLI selects the current marketplace version but cannot select an
 exact prior package.  The helper snapshots only the Flowwweb marketplace and
 enablement sections, materializes an exact verified release package, and
-restores those bounded sections after checking that all unrelated config bytes
-are unchanged.
+restores those bounded sections through an injected native config transport.
+Direct CLI restore has no config-write authority. The host owns serialization
+and revision checks; SWARM validates exact scope and readback.
 """
 from __future__ import annotations
 
@@ -19,7 +20,9 @@ import re
 import shutil
 import sys
 import time
+import tomllib
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 
 
@@ -69,6 +72,7 @@ def _section_bytes(config: bytes) -> tuple[str, dict[str, bytes]]:
         text = config.decode("utf-8")
     except UnicodeDecodeError as error:
         raise RollbackError("config.toml must be UTF-8") from error
+    _parse_config(text)
     ranges = _section_ranges(text)
     missing = [name for name in TARGET_SECTIONS if name not in ranges]
     if missing:
@@ -92,22 +96,29 @@ def _guard_digest(text: str) -> str:
     return _sha256(guarded.encode("utf-8"))
 
 
-def _replace_sections(text: str, replacements: dict[str, bytes]) -> bytes:
-    ranges = _section_ranges(text)
-    for name in TARGET_SECTIONS:
-        if name not in ranges or name not in replacements:
-            raise RollbackError(f"cannot replace missing selection section: {name}")
-    updated = text
-    for name in sorted(TARGET_SECTIONS, key=lambda item: ranges[item][0], reverse=True):
-        start, end = ranges[name]
-        try:
-            replacement = replacements[name].decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise RollbackError("snapshot selection section is not UTF-8") from error
-        if not replacement.endswith(("\n", "\r")):
-            replacement += "\n"
-        updated = updated[:start] + replacement + updated[end:]
-    return updated.encode("utf-8")
+def _parse_config(text: str) -> dict[str, object]:
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        # Do not echo config lines: they may contain credentials.
+        raise RollbackError("config TOML is invalid; no restore attempted") from error
+
+
+def _native_user_layer(config_request, config: Path) -> dict[str, object]:
+    response = config_request("config/read", {"includeLayers": True})
+    if not isinstance(response, dict) or not isinstance(response.get("layers"), list):
+        raise RollbackError("native config layers unavailable")
+    layers = [layer for layer in response["layers"] if isinstance(layer, dict)
+              and isinstance(layer.get("name"), dict)
+              and layer["name"].get("type") == "user"
+              and layer["name"].get("profile") is None
+              and isinstance(layer["name"].get("file"), str)
+              and Path(layer["name"]["file"]).resolve() == config]
+    if (len(layers) != 1 or layers[0].get("disabledReason")
+            or not isinstance(layers[0].get("version"), str) or not layers[0]["version"]
+            or not isinstance(layers[0].get("config"), dict)):
+        raise RollbackError("exact native user config revision unavailable")
+    return layers[0]
 
 
 def _toml_string(value: str) -> str:
@@ -318,7 +329,7 @@ def _copy_cache_atomic(source: Path, target: Path, expected: dict[str, str]) -> 
             shutil.rmtree(staging)
 
 
-def restore_snapshot(snapshot: Path, codex_home: Path) -> dict[str, object]:
+def restore_snapshot(snapshot: Path, codex_home: Path, *, config_request=None) -> dict[str, object]:
     snapshot = snapshot.resolve()
     manifest = _verify_snapshot(snapshot)
     selection = manifest.get("selection")
@@ -337,14 +348,35 @@ def restore_snapshot(snapshot: Path, codex_home: Path) -> dict[str, object]:
     version = manifest.get("version")
     if not isinstance(version, str) or not version:
         raise RollbackError("rollback version is invalid")
+    if config_request is None:
+        raise RollbackError("restore requires an injected native revision-checked config transport; direct config writes are disabled")
+    before = _parse_config(text)
+    layer = _native_user_layer(config_request, config)
+    if layer["config"] != before or config.read_bytes() != config_before:
+        raise RollbackError("config changed before native revision admission")
+    replacements = _decode_sections(selection.get("rollback_sections"))
+    selected = _parse_config(replacements[PLUGIN_SECTION].decode("utf-8"))
+    if (set(selected) != {"plugins"} or not isinstance(selected["plugins"], dict)
+            or set(selected["plugins"]) != {"swarm@flowwweb"}
+            or not isinstance(selected["plugins"]["swarm@flowwweb"], dict)):
+        raise RollbackError("rollback selection exceeds the Flowwweb plugin scope")
+    target = deepcopy(before)
+    target["marketplaces"][MARKETPLACE] = {"source_type": "local", "source": str(snapshot / "marketplace")}
+    target["plugins"]["swarm@flowwweb"] = selected["plugins"]["swarm@flowwweb"]
     cache_target = codex_home.resolve() / "plugins" / "cache" / MARKETPLACE / PLUGIN / version
     cache_action = _copy_cache_atomic(snapshot / "marketplace" / "plugins" / PLUGIN, cache_target, expected)
-    replacements = _decode_sections(selection.get("rollback_sections"))
-    # The staging directory name is intentionally replaced after publication.
-    marketplace = snapshot / "marketplace"
-    replacements[MARKETPLACE_SECTION] = _rollback_marketplace_section(marketplace)
-    config_after = _replace_sections(text, replacements)
-    _atomic_write(config, config_after)
+    result = config_request("config/batchWrite", {
+        "filePath": str(config), "expectedVersion": layer["version"], "reloadUserConfig": False,
+        "edits": [
+            {"keyPath": MARKETPLACE_SECTION, "value": target["marketplaces"][MARKETPLACE], "mergeStrategy": "replace"},
+            {"keyPath": PLUGIN_SECTION, "value": target["plugins"]["swarm@flowwweb"], "mergeStrategy": "replace"},
+        ],
+    })
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        raise RollbackError("native config write not confirmed; reconcile before retry")
+    if (_parse_config(config.read_text(encoding="utf-8")) != target
+            or _native_user_layer(config_request, config)["config"] != target):
+        raise RollbackError("native config readback differs; no automatic overwrite or retry")
     receipt = {
         "schema": SCHEMA,
         "operation": "restore",
@@ -352,8 +384,8 @@ def restore_snapshot(snapshot: Path, codex_home: Path) -> dict[str, object]:
         "plugin": PLUGIN,
         "version": version,
         "config_path": str(config),
-        "config_before_sha256": _sha256(config_before),
-        "config_after_sha256": _sha256(config_after),
+        "config_write_authority": "native config/batchWrite expectedVersion",
+        "unrelated_settings_preserved": True,
         "cache_path": str(cache_target),
         "cache_action": cache_action,
         "files_digest": manifest["files_digest"],

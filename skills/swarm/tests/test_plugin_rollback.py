@@ -8,6 +8,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -23,6 +24,43 @@ SPEC.loader.exec_module(rollback)
 
 
 class PluginRollbackTests(unittest.TestCase):
+    def native_config(self, config: Path, *, conflict=False, malformed=False, fail=False):
+        calls = []
+
+        def request(method, params):
+            calls.append((method, params))
+            current = config.read_bytes()
+            if method == "config/read":
+                return {"layers": [{"name": {"type": "user", "file": str(config)},
+                    "version": hashlib.sha256(current).hexdigest(),
+                    "config": tomllib.loads(current.decode("utf-8"))}]}
+            self.assertEqual(method, "config/batchWrite")
+            self.assertEqual(params["filePath"], str(config))
+            self.assertFalse(params["reloadUserConfig"])
+            self.assertEqual([e["keyPath"] for e in params["edits"]], list(rollback.TARGET_SECTIONS))
+            if conflict:
+                config.write_bytes(current.replace(b'model = "gpt-test"', b'model = "concurrent-choice"'))
+                raise rollback.RollbackError("native revision conflict")
+            if fail:
+                raise OSError("native transport unavailable")
+            self.assertEqual(params["expectedVersion"], hashlib.sha256(current).hexdigest())
+            if malformed:
+                return {"status": "ok"}  # A receipt alone cannot claim a write.
+            text = current.decode("utf-8")
+            ranges = rollback._section_ranges(text)
+            for edit in sorted(params["edits"], key=lambda e: ranges[e["keyPath"]][0], reverse=True):
+                self.assertEqual(edit["mergeStrategy"], "replace")
+                start, end = ranges[edit["keyPath"]]
+                table = '[' + edit["keyPath"] + ']\n'
+                table += ''.join(f'{key} = {json.dumps(value, ensure_ascii=False)}\n' for key, value in edit["value"].items()) + '\n'
+                text = text[:start] + table + text[end:]
+            tomllib.loads(text)
+            config.write_text(text, encoding="utf-8", newline="")  # Isolated fake host only.
+            return {"status": "ok"}
+
+        request.calls = calls
+        return request
+
     def make_plugin(self, parent: Path) -> Path:
         root = parent / "plugin"
         files = {
@@ -84,7 +122,7 @@ class PluginRollbackTests(unittest.TestCase):
             config, _package, snapshot, manifest = self.prepare(root)
             before = config.read_bytes()
 
-            receipt = rollback.restore_snapshot(snapshot, config.parent)
+            receipt = rollback.restore_snapshot(snapshot, config.parent, config_request=self.native_config(config))
 
             after = config.read_bytes()
             self.assertNotEqual(before, after)
@@ -98,7 +136,7 @@ class PluginRollbackTests(unittest.TestCase):
             self.assertEqual(receipt["launch_argv"][-1], "4791")
             self.assertEqual(len((snapshot / "rollback-log.jsonl").read_text(encoding="utf-8").splitlines()), 1)
 
-            replay = rollback.restore_snapshot(snapshot, config.parent)
+            replay = rollback.restore_snapshot(snapshot, config.parent, config_request=self.native_config(config))
             self.assertEqual(replay["cache_action"], "unchanged")
             self.assertEqual(len((snapshot / "rollback-log.jsonl").read_text(encoding="utf-8").splitlines()), 2)
 
@@ -109,7 +147,7 @@ class PluginRollbackTests(unittest.TestCase):
             contents = config.read_text(encoding="utf-8").replace('preserve = "exact"', 'preserve = "changed"')
             config.write_text(contents, encoding="utf-8")
             with self.assertRaisesRegex(rollback.RollbackError, "unrelated config bytes changed"):
-                rollback.restore_snapshot(snapshot, config.parent)
+                rollback.restore_snapshot(snapshot, config.parent, config_request=self.native_config(config))
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -120,7 +158,7 @@ class PluginRollbackTests(unittest.TestCase):
             )
             config.write_text(contents, encoding="utf-8")
             with self.assertRaisesRegex(rollback.RollbackError, "unrelated config bytes changed|personal"):
-                rollback.restore_snapshot(snapshot, config.parent)
+                rollback.restore_snapshot(snapshot, config.parent, config_request=self.native_config(config))
 
     def test_snapshot_content_change_and_conflicting_cache_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -139,7 +177,7 @@ class PluginRollbackTests(unittest.TestCase):
             (cache / "unexpected.txt").write_text("conflict\n", encoding="utf-8")
             config_digest = hashlib.sha256(config.read_bytes()).hexdigest()
             with self.assertRaisesRegex(rollback.RollbackError, "conflicts"):
-                rollback.restore_snapshot(snapshot, config.parent)
+                rollback.restore_snapshot(snapshot, config.parent, config_request=self.native_config(config))
             self.assertEqual(hashlib.sha256(config.read_bytes()).hexdigest(), config_digest)
 
     def test_missing_or_duplicate_authority_sections_are_rejected(self) -> None:
@@ -152,6 +190,55 @@ class PluginRollbackTests(unittest.TestCase):
             config.write_text('[plugins."swarm@flowwweb"]\nenabled = true\n', encoding="utf-8")
             with self.assertRaisesRegex(rollback.RollbackError, "missing Flowwweb"):
                 rollback.prepare_snapshot(config, package, root / "snapshot", ["python"])
+
+    def test_direct_restore_has_no_config_or_cache_write_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config, _package, snapshot, _manifest = self.prepare(Path(temporary))
+            before = config.read_bytes()
+            with self.assertRaisesRegex(rollback.RollbackError, "direct config writes are disabled"):
+                rollback.restore_snapshot(snapshot, config.parent)
+            self.assertEqual(config.read_bytes(), before)
+            self.assertFalse((config.parent / "plugins").exists())
+
+    def test_native_conflict_failure_and_false_success_never_rewrite_config(self) -> None:
+        for mode, error in [("conflict", rollback.RollbackError), ("fail", OSError), ("malformed", rollback.RollbackError)]:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                config, _package, snapshot, _manifest = self.prepare(Path(temporary))
+                before = config.read_bytes()
+                native = self.native_config(config, **{mode: True})
+                with patch.object(rollback, "_atomic_write", side_effect=AssertionError("SWARM must not write config")):
+                    with self.assertRaises(error):
+                        rollback.restore_snapshot(snapshot, config.parent, config_request=native)
+                expected = before.replace(b'model = "gpt-test"', b'model = "concurrent-choice"') if mode == "conflict" else before
+                self.assertEqual(config.read_bytes(), expected)
+                self.assertEqual(sum(m == "config/batchWrite" for m, _ in native.calls), 1)
+                self.assertFalse((snapshot / "rollback-log.jsonl").exists())
+
+    def test_invalid_config_is_rejected_without_echoing_its_contents(self) -> None:
+        for bad in [b'model = "fixture"\\ninvalid-secret-token', b'key without equals\n', b'[marketplaces.flowwweb]\nsource = "broken']:
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(rollback.RollbackError, '^config TOML is invalid; no restore attempted$'):
+                    rollback._section_bytes(bad)
+
+    def test_native_user_revision_must_match_exact_config_and_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config, _package, snapshot, _manifest = self.prepare(Path(temporary))
+            before = config.read_bytes()
+            for fault in ['file', 'version', 'config', 'duplicate']:
+                native = self.native_config(config)
+                def wrong(method, params):
+                    result = native(method, params)
+                    layer = result['layers'][0]
+                    if fault == 'file': layer['name']['file'] = str(config.parent / 'other.toml')
+                    elif fault == 'version': layer['version'] = ''
+                    elif fault == 'config': layer['config']['model'] = 'different'
+                    else: result['layers'].append(layer.copy())
+                    return result
+                with self.subTest(fault=fault), self.assertRaises(rollback.RollbackError):
+                    rollback.restore_snapshot(snapshot, config.parent, config_request=wrong)
+                self.assertEqual(config.read_bytes(), before)
+                self.assertFalse((config.parent / 'plugins').exists())
+                self.assertEqual([m for m, _ in native.calls], ['config/read'])
 
     def test_local_read_mirror_must_match_authoritative_package_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
