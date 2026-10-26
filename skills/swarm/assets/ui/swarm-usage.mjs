@@ -30,10 +30,24 @@ export function usageView(value, hours, projectId) {
   const points = value.items.map(row => {
     if (!Number.isSafeInteger(row.bucket_ms) || row.bucket_ms < value.window.after_ms || row.bucket_ms > value.window.before_ms ||
         !Number.isSafeInteger(row.delta_tokens) || row.delta_tokens < 0) throw Error('Invalid token observation');
-    return {at:row.bucket_ms,tokens:row.delta_tokens};
+    if (row.bucket_start_ms!==undefined && (!Number.isSafeInteger(row.bucket_start_ms) ||
+        row.bucket_start_ms<value.window.after_ms || row.bucket_start_ms>row.bucket_ms)) throw Error('Invalid observation interval');
+    return {at:row.bucket_ms,tokens:row.delta_tokens,...(row.bucket_start_ms!==undefined?{start:row.bucket_start_ms}:{})};
   });
-  if (points.some((p,i)=>i && p.at<=points[i-1].at)) throw Error('Conflicting token observations');
+  if (points.some((p,i)=>i && (p.at<=points[i-1].at || (p.start??p.at)<=points[i-1].at))) throw Error('Conflicting token observations');
   const total=points.reduce((sum,p)=>sum+p.tokens,0);
-  if (!Number.isSafeInteger(total) || points.length && total!==value.total_tokens || value.status==='no_data' && points.length) throw Error('Token total mismatch');
-  return {total:points.length?total:null,points,status:points.length?value.status:'no_data',coverage:value.coverage||{},window:value.window};
+  const aggregation=value.series_aggregation;
+  let omitted;
+  if (aggregation !== undefined) {
+    if (!aggregation || aggregation.method!=='contiguous_observed_sum' ||
+        ![aggregation.input_count,aggregation.output_count,aggregation.omitted_input_count,aggregation.omitted_tokens].every(Number.isSafeInteger) ||
+        aggregation.input_count<=256 || aggregation.output_count!==points.length || points.length!==256 ||
+        aggregation.omitted_input_count<0 || aggregation.input_count<points.length+aggregation.omitted_input_count ||
+        aggregation.omitted_tokens<0 || aggregation.omitted_input_count===0 && aggregation.omitted_tokens!==0)
+      throw Error('Invalid usage aggregation');
+    if (aggregation.omitted_input_count) omitted={observations:aggregation.omitted_input_count,tokens:aggregation.omitted_tokens};
+  }
+  const observedTotal=total+(omitted?.tokens||0);
+  if (!Number.isSafeInteger(observedTotal) || points.length && observedTotal!==value.total_tokens || value.status==='no_data' && points.length) throw Error('Token total mismatch');
+  return {total:points.length?observedTotal:null,points,status:points.length?value.status:'no_data',coverage:value.coverage||{},window:value.window,...(omitted?{omitted}:{})};
 }

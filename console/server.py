@@ -10329,7 +10329,7 @@ class App:
         except (ConsoleError, OSError, ValueError, sqlite3.Error):
             return {**result, "reason": "HOST_ROSTER_UNVERIFIED"}
 
-    def _observed_task_root(self, project_id: str, thread_id: str, *, allow_adopted: bool = False) -> Path:
+    def _observed_task_root(self, project_id: str, thread_id: str, *, allow_adopted: bool = False, projection=None) -> Path:
         root = self._canonical_project_root(project_id).resolve(strict=True)
         with closing(_readonly_connection(state_database(self.codex_home))) as connection:
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(threads)")}
@@ -10339,7 +10339,7 @@ class App:
             project, state = _canonical_project_binding(rows[0], projects, roots) if len(rows) == 1 else (None, "unbound")
         if project is None or project["id"] != project_id or state not in {"direct", "root"} or rows[0]["archived"]:
             if allow_adopted and len(rows) == 1 and not rows[0]["archived"] and project is None and state == "unbound":
-                projection = self.progress_ledger.replay()
+                projection = self.progress_ledger.replay() if projection is None else projection
                 binding = projection["task_creation_bindings"].get(projection["task_creation_operations_by_task"].get(thread_id), {})
                 observation = binding.get("existing_host", {}).get("subject", {})
                 if (binding.get("project_id") == project_id
@@ -10535,6 +10535,88 @@ class App:
         except (ValueError, TypeError, KeyError, AttributeError, OSError, ProgressEventError) as exc:
             raise ConsoleError(str(exc)) from exc
 
+    def _work_assignment_scope(self, project_id, manifest, projection, *, accepting=False, replaying=False):
+        """Fresh host/config checks for the current work owner, never its historical creator."""
+        assignment = manifest["work_assignment"]
+        ctrl, subject = assignment["accepting_ctrl_id"], manifest["task_id"]
+        root = self._canonical_project_root(project_id).resolve(strict=True)
+        for task in (ctrl, subject, assignment["reviewer_thread_id"]):
+            if self._observed_task_root(project_id, task, allow_adopted=True, projection=projection) != root:
+                raise ConsoleError("work assignment owner or reviewer root changed")
+        state = projection["task_manifests"].get(ctrl, {})
+        owner = state.get("versions", {}).get(state.get("active_version"), {})
+        operation = projection["task_creation_operations_by_task"].get(ctrl)
+        binding = projection["task_creation_bindings"].get(operation, {})
+        root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
+        if (owner.get("ctrl_id") != ctrl or owner.get("role_scope") != "CTRL_BOUNDED"
+                or owner.get("manifest_digest") != assignment["accepting_ctrl_manifest_digest"]
+                or binding.get("project_id") != project_id or binding.get("root_digest") != root_digest):
+            raise ConsoleError("work assignment lacks exact retained accepting CTRL authority")
+        role = projection["role_assignments"].get(subject, {})
+        role_ref = assignment["role_manifest_ref"]
+        if role.get("role_id") != role_ref["manifest_id"] or role.get("manifest_version") != role_ref["manifest_version"]:
+            raise ConsoleError("work assignment Role binding changed")
+        if accepting and projection["task_manifests"].get(subject, {}).get("active_digest") != manifest["manifest_digest"]:
+            raise ConsoleError("work assignment changed before execution or acceptance")
+        _, config, _ = load_config(self.config_path)
+        if not config["goals"]["use_goals"]:
+            if assignment["goal_id"] is not None or assignment["goal_status_at_assignment"] != "disabled":
+                raise ConsoleError("work assignment goal policy changed")
+            return root
+        with closing(_readonly_connection(goals_database(self.codex_home))) as connection:
+            rows = connection.execute("SELECT goal_id,status FROM thread_goals WHERE thread_id=?", (ctrl,)).fetchall()
+        allowed = {"active"} if accepting else {"active", "blocked"}
+        if (len(rows) != 1 or rows[0]["goal_id"] != assignment["goal_id"] or rows[0]["status"] not in allowed
+                or (not accepting and not replaying and rows[0]["status"] != assignment["goal_status_at_assignment"])):
+            raise ConsoleError("work assignment goal is stale, terminal, or not runnable")
+        return root
+
+    def assign_existing_work(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Reserve one new block on an existing actor. No host transport or progress."""
+        fields = {"operation_id", "project_id", "root_digest", "expected_manifest_digest", "task_manifest",
+                  "expected_ledger_revision", "acknowledge"}
+        if not isinstance(payload, dict) or set(payload) != fields or payload["acknowledge"] is not True:
+            raise ConsoleError("work assignment requires exact acknowledged scope")
+        try:
+            task = validate_task_manifest(payload["task_manifest"])
+            assignment = task["work_assignment"]
+            project = _auto_id(payload["project_id"], "project_id")
+            operation = _auto_id(payload["operation_id"], "operation_id")
+            revision = payload["expected_ledger_revision"]
+            if (task["project_id"] != project or assignment["operation_id"] != operation
+                    or task["supersedes_digest"] != payload["expected_manifest_digest"]
+                    or type(revision) is not int or revision < 0 or assignment["expected_ledger_revision"] != revision):
+                raise ValueError("work assignment project, operation, predecessor or revision conflicts")
+            projection = self.progress_ledger.replay()
+            command = projection["connector_receipts"].get(operation)
+            root = self._work_assignment_scope(project, task, projection, replaying=command is not None)
+            root_digest = _auto_digest({"project_id": project, "canonical_root": _normalized_project_path(str(root))})
+            if root_digest != payload["root_digest"]:
+                raise ValueError("work assignment root conflicts")
+            if command:
+                if command.get("payload_digest") != task["manifest_digest"].removeprefix("sha256:"):
+                    raise ValueError("work assignment operation already names different content")
+                receipts = command["receipts"]
+                receipts = [{key: value for key, value in item.items() if key not in {"event_seq", "event_digest"}} for item in receipts]
+            else:
+                now = int(time.time() * 1000)
+                envelope = HQCommandEnvelope(command_id=operation, idempotency_key=operation, action=HQCommandAction.LOCAL_HQ,
+                    project_id=project, root_digest=root_digest, ctrl_id=assignment["accepting_ctrl_id"], target_intent=HQTargetIntent.LOCAL,
+                    target_thread_id="", payload_digest=task["manifest_digest"].removeprefix("sha256:"), expected_ledger_revision=revision,
+                    submitted_at_ms=now, expires_at_ms=now + 60000)
+                receipts = [UniversalHQConnector._receipt(envelope, receipt_id=operation + ":" + status.lower(), index=index,
+                    status=status, observed_at_ms=now, observed_root_digest=None if index == 0 else root_digest)
+                    for index, status in enumerate(("COMMAND", "ACKNOWLEDGED", "RESULT"))]
+            result = self.progress_ledger.append_work_assignment(task, receipts, expected_revision=revision,
+                verify_current_scope=lambda: self._work_assignment_scope(project, task, projection))
+            return {"ok": True, "status": "REPLAY" if result["status"] == "unchanged" else "APPENDED",
+                    "cursor": result["cursor"], "manifest_digest": task["manifest_digest"], "assignment": assignment,
+                    "waiting": assignment["goal_status_at_assignment"] == "blocked", "runnable": False,
+                    "dispatched": False, "work_completed": False,
+                    "claim_limit": "Reserved work only; current goal and host dispatch authority must be revalidated before execution."}
+        except (ValueError, TypeError, KeyError, OSError, sqlite3.Error, ProgressEventError) as exc:
+            raise ConsoleError(str(exc)) from exc
+
     def project_ticket_command(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Read or edit planning tickets in the canonical project brief only.
 
@@ -10710,8 +10792,9 @@ class App:
             if _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))}) != root_digest:
                 raise ConsoleError("ticket and task project roots differ")
             kind, record = self._brief_ticket_record(canonical / "SWARM.md", project_id, record_id)
-            state = ledger.replay()["task_manifests"].get(task_id, {})
-            ctrl_id = state.get("versions", {}).get(state.get("active_version"), {}).get("ctrl_id")
+            projection = ledger.replay()
+            _, manifest, _, _, _ = ledger._bound_block_context(projection, project_id, task_id, block_id, payload["manifest_digest"])
+            ctrl_id = manifest.get("work_assignment", {}).get("accepting_ctrl_id", manifest["ctrl_id"])
             if not isinstance(ctrl_id, str):
                 raise ConsoleError("ticket execution requires an exact host-created task")
             if self._observed_task_root(project_id, ctrl_id, allow_adopted=True) != root:
@@ -10841,7 +10924,8 @@ class App:
         if manifest["role_scope"] != "DOER_SINGLE" or "work_unit" in manifest:
             raise ConsoleError("only an ordinary producer task block can be accepted here")
         creation = projection["task_creation_bindings"][operation_id]
-        ctrl_id = manifest["ctrl_id"]
+        assignment = manifest.get("work_assignment")
+        ctrl_id = assignment["accepting_ctrl_id"] if assignment else manifest["ctrl_id"]
         root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
         if creation["root_digest"] != root_digest or self._observed_task_root(project_id, ctrl_id, allow_adopted=True) != root:
             raise ConsoleError("bound task owning CTRL or root changed")
@@ -10849,12 +10933,20 @@ class App:
             raise ConsoleError("bound task requires an independent reviewer, not its producer or creator")
         _, config, _ = load_config(self.config_path)
         # Ordinary tasks inherit their retained owning CTRL goal; they need no duplicate native goal.
-        goal_id = host_thread_goal_id(self.codex_home, ctrl_id) if config["goals"]["use_goals"] else ""
+        if assignment:
+            self._work_assignment_scope(project_id, manifest, projection, accepting=True)
+            if (reviewer_id != assignment["reviewer_thread_id"] or artifact_path != assignment["artifact_path"]
+                    or gates != assignment["gates"] or strategy != assignment["review_strategy"]):
+                raise ConsoleError("completion differs from the retained work acceptance contract")
+            goal_id = assignment["goal_id"] or ""
+        else:
+            goal_id = host_thread_goal_id(self.codex_home, ctrl_id) if config["goals"]["use_goals"] else ""
         binding = bound_task_acceptance_binding(
             project_id=project_id, task_id=task_id, block_id=block_id, manifest_digest=manifest_digest,
             goal_id=goal_id, artifact_path=artifact_path, artifact_sha256=artifact_sha256,
             gates=[[gate_id, list(gate[1])] for gate_id, gate in zip(gate_ids, gates)], review_strategy=strategy,
-            ctrl_id=ctrl_id, root_digest=root_digest, role_manifest_ref=creation["role_manifest_ref"])
+            ctrl_id=ctrl_id, root_digest=root_digest,
+            role_manifest_ref=assignment["role_manifest_ref"] if assignment else creation["role_manifest_ref"])
         accepted_id = f"bound-accepted:{task_id}:{block_id}"
         retained = next((item for item in projection["blocks"].values()
                          if item["project_id"] == project_id and item["block_id"] == block_id and item["task_id"] == task_id), None)
@@ -10913,6 +11005,8 @@ class App:
                     or (config["goals"]["use_goals"] and host_thread_goal_id(self.codex_home, ctrl_id) != goal_id)
                     or self._observe_bound_review(root, reviewer_id, reviewer_turn, binding) != observed_review):
                 raise InvariantError("host task/root/goal/review binding changed during verification")
+            if assignment:
+                self._work_assignment_scope(project_id, manifest, self.progress_ledger.replay(), accepting=True)
             self.progress_ledger.append_bound_block_evidence(
                 project_id=project_id, task_id=task_id, block_id=block_id, manifest_digest=manifest_digest,
                 expected_event_seq=revision, evidence_path=root / relative, expected_sha256=artifact_sha256)
@@ -10932,7 +11026,10 @@ class App:
     def _bound_blocks_accepted(ledger: dict[str, Any], project_id: str, task_id: str, manifest: dict[str, Any]) -> tuple[bool, int, int]:
         """All declared blocks of the original manifest carry their exact retained acceptance event."""
         declared = [block["block_id"] for block in manifest.get("blocks", [])]
-        if manifest.get("supersedes_digest") is not None:
+        assignment = manifest.get("work_assignment")
+        if assignment is not None:
+            declared = [assignment["block_id"]]
+        elif manifest.get("supersedes_digest") is not None:
             return False, 0, len(declared)
         accepted = {block["block_id"] for block in ledger["blocks"].values()
                     if block["project_id"] == project_id and block["task_id"] == task_id
@@ -10987,6 +11084,20 @@ class App:
         except (ValueError, TypeError, KeyError, AttributeError, ProgressEventError) as exc:
             raise ConsoleError(str(exc)) from exc
 
+        assignment_manifest = None
+        projection = self.progress_ledger.replay()
+        if action is HQCommandAction.TASK and envelope.idempotency_key not in projection["connector_receipts"]:
+            state = projection["task_manifests"].get(envelope.target_thread_id, {})
+            current = state.get("versions", {}).get(state.get("active_version"), {})
+            if current.get("work_assignment"):
+                self._work_assignment_scope(envelope.project_id, current, projection, accepting=True)
+                assignment_manifest = current
+
+        def verify_assigned_work():
+            if assignment_manifest is not None:
+                self._work_assignment_scope(envelope.project_id, assignment_manifest,
+                                            self.progress_ledger.replay(), accepting=True)
+
         def observe(cwd):
             if not isinstance(cwd, str) or Path(cwd).resolve(strict=True) != root:
                 raise ValueError("host cwd conflicts with registered project root")
@@ -10995,6 +11106,7 @@ class App:
                 raise ValueError("registered project root changed")
             if action is HQCommandAction.TASK and self._observed_task_root(envelope.project_id, envelope.target_thread_id) != root:
                 raise ValueError("target task membership changed")
+            verify_assigned_work()
             return HQRootObservation("hq-root", str(root), root_digest)
 
         with ExitStack() as stack:
@@ -11010,6 +11122,8 @@ class App:
                         "reason": reason, "work_completed": False}
             def request(method, params):
                 nonlocal channel, request_id, busy_before_turn
+                if method == "turn/start":
+                    verify_assigned_work()
                 if channel is None:
                     channel = stack.enter_context(self.auto_bridge.command_session(root, retain_turn=True, approval_project_id=envelope.project_id))
                 send, receive = channel
@@ -18146,6 +18260,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.FORBIDDEN, "unit preparation requires strict loopback authorization")
                     return
                 self._json(HTTPStatus.OK, self.server.app.prepare_work_unit(self._payload()))
+                return
+            if path == "/api/tasks/assign-work":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "work assignment requires strict loopback authorization")
+                    return
+                self._json(HTTPStatus.OK, self.server.app.assign_existing_work(self._payload()))
                 return
             if path == "/api/project-flow":
                 if not self._authorized_auto():

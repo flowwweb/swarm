@@ -2,6 +2,8 @@
 // request helpers, plus static source checks. This is not browser or native host proof.
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {usageView,readProjectUsage,latestRequest,projectUsageRequest} from '../assets/ui/swarm-usage.mjs';
 
 const rows=[{bucket_ms:1100,delta_tokens:5},{bucket_ms:1200,delta_tokens:0},{bucket_ms:1900,delta_tokens:7}];
@@ -36,6 +38,51 @@ assert.equal(usageView(fixture(project('alpha'),{items:[{bucket_ms:1500,delta_to
 const altered=fixture(project('alpha'));altered.total_tokens=13;
 assert.throws(()=>usageView(altered,24,'alpha'),/Token total mismatch/);
 console.log('PASS: global and exact project usage scope, window, total, partial and no_data');
+
+// Bounded series: full-window tokens stay exact, never silently become the chart subset.
+const bounded={...fixture(everyone),window:{after_ms:0,before_ms:40000000},
+  items:Array.from({length:256},(_,i)=>({bucket_ms:(i+1)*120000,delta_tokens:1,bucket_start_ms:(i+1)*120000,connect_from_previous:false})),
+  total_tokens:263,series_aggregation:{method:'contiguous_observed_sum',input_count:257,output_count:256,omitted_input_count:1,omitted_tokens:7}};
+const boundedView=usageView(bounded,24);
+assert.equal(boundedView.total,263);assert.equal(boundedView.points.reduce((n,p)=>n+p.tokens,0),256);
+assert.deepEqual(boundedView.omitted,{observations:1,tokens:7});
+assert.equal(usageView({...bounded,scope:project('alpha')},24,'alpha').total,263);
+assert.throws(()=>usageView({...bounded,scope:project('beta')},24,'alpha'),/scope mismatch/);
+for(const [key,bad] of [['method','sum'],['input_count',256],['input_count',256.5],['output_count',255],['omitted_input_count',-1],['omitted_input_count',2],['omitted_input_count','1'],['omitted_tokens',-7],['omitted_tokens','7'],['omitted_tokens',8],['omitted_tokens',Number.MAX_SAFE_INTEGER]]){
+  assert.throws(()=>usageView({...bounded,series_aggregation:{...bounded.series_aggregation,[key]:bad}},24),/aggregation|total mismatch/);
+}
+for(const bad of [null,{},undefined])assert.throws(()=>usageView({...bounded,series_aggregation:bad},24),/aggregation|total mismatch/);
+assert.throws(()=>usageView({...bounded,series_aggregation:{...bounded.series_aggregation,omitted_input_count:0}},24),/aggregation/);
+const zeroOmitted=usageView({...bounded,total_tokens:256,series_aggregation:{...bounded.series_aggregation,omitted_tokens:0}},24);
+assert.deepEqual(zeroOmitted.omitted,{observations:1,tokens:0},'omitted observed zero is still disclosed');
+const grouped=usageView({...bounded,total_tokens:256,series_aggregation:{...bounded.series_aggregation,omitted_input_count:0,omitted_tokens:0}},24);
+assert.equal(grouped.total,256);assert.equal(grouped.omitted,undefined);
+const interval=fixture(everyone,{items:[{bucket_ms:1500,bucket_start_ms:1100,delta_tokens:7}]});
+assert.deepEqual(usageView(interval,24).points,[{at:1500,start:1100,tokens:7}]);
+for(const start of [999,1501,'1100',null,NaN])assert.throws(()=>usageView({...interval,items:[{...interval.items[0],bucket_start_ms:start}]},24),/interval/);
+assert.throws(()=>usageView(fixture(everyone,{items:[{bucket_ms:1200,delta_tokens:1},{bucket_ms:1500,bucket_start_ms:1200,delta_tokens:2}]}),24),/Conflicting/);
+console.log('PASS: exact omission conservation, typed metadata, zero omission and project scope');
+
+// Exercise the production compactor, not a reimplementation of its grouping algorithm.
+const inputs=[];
+for(const count of [1,256,257,513,4097])for(const run of [1,31,count]){
+  const items=Array.from({length:count},(_,i)=>({bucket_ms:60000*(i+Math.floor(i/run)+1),delta_tokens:i%7}));
+  inputs.push({...fixture(everyone,{items,status:'partial'}),window:{after_ms:0,before_ms:60000*(count*2+1)}});
+}
+const compact=JSON.parse(execFileSync('python',['-B','-c',
+  "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('usage_mcp','skills/swarm/scripts/swarm_mcp.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps([m._compact_usage(v) for v in json.load(sys.stdin)]))"],
+  {cwd:fileURLToPath(new URL('../../../',import.meta.url)),input:JSON.stringify(inputs),encoding:'utf8',maxBuffer:8*1024*1024}));
+for(let i=0;i<compact.length;i++){
+  const view=usageView(compact[i],24);
+  assert.equal(view.total,inputs[i].total_tokens);assert.ok(view.points.length<=256);
+  assert.equal(view.points.reduce((sum,p)=>sum+p.tokens,0)+(view.omitted?.tokens||0),inputs[i].total_tokens);
+  assert.deepEqual(view.window,inputs[i].window);
+  assert.equal(compact[i].items[0].connect_from_previous,false);
+  for(let j=1;j<compact[i].items.length;j++)assert.equal(compact[i].items[j].connect_from_previous,
+    compact[i].items[j].bucket_start_ms-compact[i].items[j-1].bucket_ms===60000);
+}
+assert.ok(compact.some(v=>v.series_aggregation?.omitted_input_count>0));
+console.log('PASS: 15 production compactor/reader contrasts, bounded disconnected runs and full-window conservation');
 
 // Request helpers used by the production project page.
 assert.deepEqual(projectUsageRequest('alpha',24),{project_id:'alpha',hours:24});

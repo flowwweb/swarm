@@ -129,6 +129,50 @@ class ReleasePackageTests(unittest.TestCase):
                     builder.build(root, root / 'out.js')
                 execute.assert_not_called()
 
+    def test_hq_builder_uses_utf8_without_relaxing_embedding_bounds(self):
+        spec = importlib.util.spec_from_file_location('hq_utf8_builder', REPOSITORY_ROOT / 'skills/swarm/scripts/build_hq_app.py')
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sdk = root / 'sdk/package'
+            (sdk / 'dist/src').mkdir(parents=True)
+            (sdk / 'dist/src/app-with-deps.js').write_bytes(b'fixture-sdk')
+            (sdk / 'package.json').write_text(json.dumps({'name': '@modelcontextprotocol/ext-apps', 'version': '2.0.3'}))
+            (sdk / 'esbuild.exe').write_bytes(b'fixture-compiler')
+            editor = root / 'console/static/app.js'
+            editor.parent.mkdir(parents=True)
+            editor.write_text('function configTomlLiteral(){} function configTextWithChanges(){} function configWriteRequest(){}')
+            entry = root / 'skills/swarm/assets/ui/swarm-hq-bootstrap.mjs'
+            entry.parent.mkdir(parents=True)
+            entry.write_text('const text="\\u96ea";')
+            payload = 'const text="\u96ea";'.encode('utf-8')
+            def compile(args, **kwargs):
+                if args[-1] == '--version':
+                    return '0.28.2\n'
+                self.assertIn('--charset=utf8', args)
+                self.assertIn('--target=es2022', args)
+                self.assertIn('--legal-comments=inline', args)
+                Path(next(a.split('=', 1)[1] for a in args if a.startswith('--outfile='))).write_bytes(payload)
+                Path(next(a.split('=', 1)[1] for a in args if a.startswith('--metafile='))).write_text(json.dumps({'inputs': {str(entry): {}}}))
+                return b''
+            with mock.patch.object(builder, 'ROOT', root), \
+                    mock.patch.object(builder, 'SDK_SHA', hashlib.sha256(b'fixture-sdk').hexdigest()), \
+                    mock.patch.object(builder, 'ESBUILD_SHA', hashlib.sha256(b'fixture-compiler').hexdigest()), \
+                    mock.patch.object(builder.subprocess, 'check_output', side_effect=compile):
+                output = root / 'out.js'
+                receipt = builder.build(root / 'sdk', output)
+                self.assertTrue(output.read_bytes().endswith(payload))
+                self.assertEqual(receipt['bundle_sha256'], hashlib.sha256(output.read_bytes()).hexdigest())
+                self.assertEqual(receipt['bytes'], len(output.read_bytes()))
+                first = output.read_bytes()
+                builder.build(root / 'sdk', output)
+                self.assertEqual(first, output.read_bytes())
+                for payload in (b'x' * 524289, b'</script>'):
+                    with self.assertRaisesRegex(ValueError, 'embedding contract'):
+                        builder.build(root / 'sdk', root / 'rejected.js')
+                    self.assertFalse((root / 'rejected.js').exists())
+
     def test_desktop_bundle_rejects_missing_or_stale_compiled_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.make_plugin(Path(directory))

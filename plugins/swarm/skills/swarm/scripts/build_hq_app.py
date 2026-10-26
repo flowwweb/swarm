@@ -41,7 +41,7 @@ def build(sdk_root: Path, output: Path) -> dict:
         metadata_path = Path(directory) / 'inputs.json'
         bundle_path = Path(directory) / 'bundle.js'
         subprocess.check_output([str(compiler), str(entry), '--bundle', '--format=esm',
-            '--platform=browser', '--target=es2022', '--minify', '--legal-comments=inline',
+            '--platform=browser', '--target=es2022', '--minify', '--charset=utf8', '--legal-comments=inline',
             '--loader:.css=text', f'--alias:@swarm/sdk={sdk}',
             f'--alias:@swarm/config-editor={editor_path}', f'--metafile={metadata_path}', f'--outfile={bundle_path}'], cwd=ROOT)
         payload = bundle_path.read_bytes()

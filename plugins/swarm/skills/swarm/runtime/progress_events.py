@@ -142,7 +142,7 @@ BLOCK_DEFINITION_FIELDS = frozenset({
     "estimate_minutes", "weight", "supersedes_block_id",
 })
 TASK_MANIFEST_FIELDS = MANIFEST_ENVELOPE_FIELDS | frozenset({
-    "task_id", "task_name", "role_scope", "policy", "milestones", "blocks", "work_unit",
+    "task_id", "task_name", "role_scope", "policy", "milestones", "blocks", "work_unit", "work_assignment",
 })
 MANIFEST_FORBIDDEN_FIELDS = frozenset({
     "status", "state", "progress", "percent", "health", "royal_line",
@@ -1661,6 +1661,44 @@ def _validate_blocks(payload: Any, milestones: list[dict[str, Any]], weighted: b
     return result
 
 
+def _validate_work_assignment(value: Any) -> dict[str, Any]:
+    fields = {"operation_id", "accepting_ctrl_id", "accepting_ctrl_manifest_digest", "goal_id",
+              "goal_status_at_assignment", "role_manifest_ref", "block_id", "attempt", "artifact_path",
+              "gates", "review_strategy", "reviewer_thread_id", "expected_ledger_revision"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ProgressEventError("work assignment requires its exact acceptance contract")
+    result = dict(value)
+    for name in ("operation_id", "accepting_ctrl_id", "block_id", "reviewer_thread_id"):
+        result[name] = _safe_id(value[name], name)
+    result["accepting_ctrl_manifest_digest"] = _manifest_digest(value["accepting_ctrl_manifest_digest"], "accepting CTRL manifest")
+    if value["goal_status_at_assignment"] not in {"active", "blocked", "disabled"}:
+        raise ProgressEventError("work assignment goal must be nonterminal or explicitly disabled")
+    if value["goal_status_at_assignment"] == "disabled":
+        if value["goal_id"] is not None:
+            raise ProgressEventError("disabled goal binding must be null")
+    else:
+        result["goal_id"] = _safe_id(value["goal_id"], "assignment goal")
+    result["role_manifest_ref"] = _validate_role_manifest_ref(value["role_manifest_ref"])
+    path = value["artifact_path"]
+    if (not isinstance(path, str) or not path or len(path) > 512 or "\\" in path or ":" in path
+            or any(part in {"", ".", ".."} for part in path.split("/"))):
+        raise ProgressEventError("work artifact must be an exact project-relative file")
+    gates = value["gates"]
+    if (not isinstance(gates, list) or not 1 <= len(gates) <= 8
+            or any(not isinstance(gate, list) or len(gate) != 2 or not isinstance(gate[1], list)
+                   or not 1 <= len(gate[1]) <= 64
+                   or any(not isinstance(arg, str) or not arg or len(arg) > 4096 for arg in gate[1]) for gate in gates)):
+        raise ProgressEventError("work assignment requires bounded exact proof gates")
+    ids = [_safe_id(gate[0], "gate id") for gate in gates]
+    if len(ids) != len(set(ids)) or value["review_strategy"] not in {"light", "standard", "adversarial", "specialist"}:
+        raise ProgressEventError("work assignment proof or review policy is invalid")
+    if type(value["attempt"]) is not int or value["attempt"] != 1:
+        raise ProgressEventError("new work requires a new block at attempt 1")
+    if type(value["expected_ledger_revision"]) is not int or value["expected_ledger_revision"] < 0:
+        raise ProgressEventError("work assignment requires an exact Ledger revision")
+    return result
+
+
 def validate_task_manifest(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("task manifest must be an object")
@@ -1685,6 +1723,10 @@ def validate_task_manifest(payload: Any) -> dict[str, Any]:
         except InvariantError as error: raise ProgressEventError(str(error)) from error
         if normalized["role_scope"]=="DOER_SINGLE": raise ProgressEventError("work units require a coordinating CTRL or LEAD, not a producer DOER")
         if normalized["work_unit"]["parent_unit_task_id"]==normalized["task_id"]: raise ProgressEventError("work unit cannot parent itself")
+    if "work_assignment" in payload:
+        normalized["work_assignment"] = _validate_work_assignment(payload["work_assignment"])
+        if normalized["role_scope"] != "DOER_SINGLE" or "work_unit" in normalized:
+            raise ProgressEventError("bounded work assignment requires an existing ordinary producer")
     expected = _canonical_manifest_digest(normalized)
     if payload.get("manifest_digest") != expected:
         raise ProgressEventError("task manifest digest does not match canonical content")
@@ -2582,7 +2624,7 @@ def _bound_block_payload(
     measured = type(weight) is int and weight > 0
     return {
         "schema_version": 1, "event_id": event_id, "dedupe_key": event_id, "portfolio_id": "swarm",
-        "project_id": project_id, "ctrl_id": manifest["ctrl_id"], "milestone_id": block["milestone_id"],
+        "project_id": project_id, "ctrl_id": manifest.get("work_assignment", {}).get("accepting_ctrl_id", manifest["ctrl_id"]), "milestone_id": block["milestone_id"],
         "block_id": block["block_id"], "task_id": task_id, "owner_id": task_id,
         "scope_version": scope_version, "parent_block_id": None, "dependency_ids": [],
         "lineage": {"predecessor_block_ids": [], "split_from": None, "merged_from": []},
@@ -3135,7 +3177,11 @@ class Ledger:
         for item in references:
             state = projection["task_manifests"].get(item["task_id"], {})
             manifest = state.get("versions", {}).get(state.get("active_version"), {})
-            current = manifest.get("manifest_digest") == item["manifest_digest"] and manifest.get("supersedes_digest") is None
+            try:
+                Ledger._bound_block_context(projection, project_id, item["task_id"], item["block_id"], item["manifest_digest"])
+                current = True
+            except ProgressEventError:
+                current = False
             block = next((value for value in projection["blocks"].values()
                           if value["project_id"] == project_id and value["task_id"] == item["task_id"]
                           and value["block_id"] == item["block_id"]), None)
@@ -3342,6 +3388,10 @@ class Ledger:
             _validate_agent_manifest_revision(collection, state, manifest)
         else:
             _validate_task_manifest_revision(previous, manifest)
+            if manifest.get("work_assignment") is not None:
+                Ledger._validate_work_assignment_receipt(projection, previous, manifest, event.custody_receipt_id)
+            elif previous is not None and previous.get("work_assignment") is not None:
+                raise ProgressEventError("assigned work cannot be replaced by identity-only metadata")
         if state is None:
             if version != "1" or manifest["supersedes_digest"] is not None:
                 raise ProgressEventError("manifest version 1 must be the first revision with no predecessor")
@@ -3356,6 +3406,44 @@ class Ledger:
         state["active_version"] = version
         state["active_digest"] = digest
         state["events"].append({"event_id": event.event_id, "event_seq": event_seq})
+
+    @staticmethod
+    def _validate_work_assignment_receipt(projection, previous, manifest, receipt_id):
+        assignment = manifest["work_assignment"]
+        if previous is None or any(manifest[key] != previous[key] for key in (
+                "schema", "manifest_id", "task_id", "project_id", "ctrl_id", "role_scope", "policy", "task_name")):
+            raise ProgressEventError("new work must preserve the existing task identity and policy")
+        if (manifest["milestones"][:len(previous["milestones"])] != previous["milestones"]
+                or manifest["blocks"][:len(previous["blocks"])] != previous["blocks"]
+                or len(manifest["blocks"]) != len(previous["blocks"]) + 1
+                or manifest["blocks"][-1]["block_id"] != assignment["block_id"]
+                or manifest["blocks"][-1]["supersedes_block_id"] is not None):
+            raise ProgressEventError("assignment must add one new block without rewriting historical work")
+        task = manifest["task_id"]
+        binding = projection["task_creation_bindings"].get(projection["task_creation_operations_by_task"].get(task))
+        ctrl = assignment["accepting_ctrl_id"]
+        ctrl_binding = projection["task_creation_bindings"].get(projection["task_creation_operations_by_task"].get(ctrl))
+        state = projection["task_manifests"].get(ctrl, {})
+        ctrl_manifest = state.get("versions", {}).get(state.get("active_version"), {})
+        if (not binding or not ctrl_binding or ctrl_binding["project_id"] != manifest["project_id"]
+                or ctrl_binding["root_digest"] != binding["root_digest"]
+                or ctrl_manifest.get("role_scope") != "CTRL_BOUNDED" or ctrl_manifest.get("ctrl_id") != ctrl
+                or ctrl_manifest.get("manifest_digest") != assignment["accepting_ctrl_manifest_digest"]):
+            raise ProgressEventError("assignment requires an exact retained accepting CTRL at this root")
+        role = projection["role_assignments"].get(task, {})
+        ref = assignment["role_manifest_ref"]
+        if (role.get("role_id") != ref["manifest_id"] or role.get("manifest_version") != ref["manifest_version"]
+                or ref["manifest_digest"] != "sha256:" + ref["manifest_version"].split(":", 1)[-1]
+                or assignment["reviewer_thread_id"] in {task, ctrl}):
+            raise ProgressEventError("assignment Role or independent accepting reviewer conflicts")
+        command = projection["connector_receipts"].get(assignment["operation_id"], {})
+        receipts = command.get("receipts", [])
+        if (not command.get("terminal") or not receipts or receipts[-1]["status"] != "RESULT"
+                or receipts[-1]["receipt_id"] != receipt_id or receipts[-1]["action"] != "LOCAL_HQ"
+                or receipts[-1]["project_id"] != manifest["project_id"]
+                or receipts[-1]["root_digest"] != binding["root_digest"]
+                or command.get("payload_digest") != manifest["manifest_digest"].removeprefix("sha256:")):
+            raise ProgressEventError("work revision requires its exact local assignment receipt")
 
     @staticmethod
     def _apply_task_creation_binding(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
@@ -4081,6 +4169,49 @@ class Ledger:
             self._condition.notify_all()
         return {"status": "appended", "cursor": trial["cursor"], "event_digest": creation.digest, "bytes": len(encoded)}
 
+    def append_work_assignment(self, manifest_payload, receipts, *, expected_revision, verify_current_scope):
+        """Atomic local command plus additive work revision; never dispatch or credit progress."""
+        manifest = validate_task_manifest(dict(manifest_payload))
+        assignment = manifest.get("work_assignment")
+        if (assignment is None or type(expected_revision) is not int or expected_revision < 0
+                or assignment["expected_ledger_revision"] != expected_revision):
+            raise ProgressEventError("assignment requires exact manifest and Ledger revision")
+        prefix = [_validate_connector_receipt(dict(item)) for item in receipts]
+        if (len(prefix) != 3 or [item["status"] for item in prefix] != ["COMMAND", "ACKNOWLEDGED", "RESULT"]
+                or any(item["action"] != "LOCAL_HQ" or item["idempotency_key"] != assignment["operation_id"] for item in prefix)):
+            raise ProgressEventError("work assignment requires one complete local command")
+        event = identity_manifest_event(manifest, event_id=assignment["operation_id"] + ":work",
+            dedupe_key=assignment["operation_id"] + ":work", observed_at_ms=prefix[-1]["observed_at_ms"],
+            provenance="acknowledged-existing-task-work")
+        event["custody"]["receipt_id"] = prefix[-1]["receipt_id"]
+        event = validate_progress_material_event(event)
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            existing = projection["events"].get(event.event_id)
+            if existing is not None:
+                if existing != event.digest or any(projection["connector_receipt_ids"].get(item["receipt_id"]) != _connector_receipt_digest(item) for item in prefix):
+                    raise ProgressEventError("assignment replay conflicts with retained content")
+                return {"status": "unchanged", "cursor": projection["cursor"], "event_digest": event.digest}
+            if projection["cursor"]["event_seq"] != expected_revision:
+                raise ProgressEventError("progress ledger changed before work assignment")
+            trial = json.loads(json.dumps(projection))
+            lines = []
+            for item in prefix:
+                seq, digest = len(records) + len(lines) + 1, _connector_receipt_digest(item)
+                self._apply_connector_receipt(trial, item, seq, digest)
+                lines.append(json.dumps({"event_seq": seq, "event_digest": digest, "event": item},
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+            self._apply(trial, event, len(records) + len(lines) + 1)
+            lines.append(json.dumps(self._record(event, len(records) + len(lines) + 1),
+                ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+            verify_current_scope()  # Host/config authority is re-observed after trial validation, before any append.
+            with self._state.path.open("ab") as handle:
+                handle.write(b"".join(lines)); handle.flush(); os.fsync(handle.fileno())
+            self._write_projection_unlocked(trial)
+        with self._condition:
+            self._condition.notify_all()
+        return {"status": "appended", "cursor": trial["cursor"], "event_digest": event.digest}
+
     def append_connector_result_with_task_handoff(
         self, result_payload: Mapping[str, Any], handoff_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
@@ -4374,22 +4505,36 @@ class Ledger:
     def _bound_block_context(
         projection: Mapping[str, Any], project_id: str, task_id: str, block_id: str, manifest_digest: str,
     ) -> tuple[str, dict[str, Any], dict[str, Any], str, dict[str, Any] | None]:
-        """Resolve one block only through retained host-confirmed creation and its active manifest."""
+        """Resolve a block through its immutable creation or admitted additive assignment."""
         state = projection["task_manifests"].get(task_id)
         operation_id = projection["task_creation_operations_by_task"].get(task_id)
         binding = None if operation_id is None else projection["task_creation_bindings"].get(operation_id)
-        manifest = None if state is None else state["versions"].get(state["active_version"])
-        if (binding is None or manifest is None or binding["task_id"] != task_id
-                or binding["project_id"] != project_id or manifest["project_id"] != project_id
-                or manifest["task_id"] != task_id):
+        manifest = None if state is None else next((value for value in state["versions"].values()
+                                                    if value["manifest_digest"] == manifest_digest), None)
+        if binding is None or state is None or binding["task_id"] != task_id or binding["project_id"] != project_id:
             raise ProgressEventError("bound lifecycle requires an exact host-created task in this project")
-        if manifest["manifest_digest"] != manifest_digest:
+        if manifest is None:
             raise ProgressEventError("bound task manifest changed; reload before continuing")
-        if manifest["supersedes_digest"] is not None:
-            raise ProgressEventError("bound lifecycle requires the original host-created manifest")
+        if manifest["project_id"] != project_id or manifest["task_id"] != task_id:
+            raise ProgressEventError("bound lifecycle requires an exact host-created task in this project")
+        revisions = sorted(state["versions"].values(), key=lambda value: int(value["manifest_version"]))
+        if any(value.get("work_assignment") is None for value in revisions[1:]):
+            raise ProgressEventError("bound lifecycle requires the original host-created manifest or admitted work revisions")
+        introduced = next((value for value in revisions if any(item["block_id"] == block_id for item in value["blocks"])), None)
+        if introduced is None:
+            raise ProgressEventError("BLOCK_NOT_IN_ORIGINAL_MANIFEST: block needs its exact admitted work revision")
+        if introduced["manifest_digest"] != manifest_digest:
+            raise ProgressEventError("block lifecycle requires its exact original or assigned manifest")
         block = next((item for item in manifest["blocks"] if item["block_id"] == block_id), None)
         created = next((item["receipt_id"] for item in binding["receipts"]["block_receipts"]
                         if item["id"] == block_id), None)
+        assignment = manifest.get("work_assignment")
+        if assignment is not None and assignment["block_id"] == block_id:
+            command = projection["connector_receipts"].get(assignment["operation_id"], {})
+            receipts = command.get("receipts", [])
+            if (command.get("terminal") and receipts and receipts[-1]["status"] == "RESULT"
+                    and command.get("payload_digest") == manifest_digest.removeprefix("sha256:")):
+                created = receipts[-1]["receipt_id"]
         if block is None or created is None:
             raise ProgressEventError("bound lifecycle block is not part of the host-confirmed task")
         retained = [item for item in projection["blocks"].values()
@@ -4502,6 +4647,18 @@ class Ledger:
             projection, records = self._replay_unlocked()
             operation_id, manifest, block, created, retained = self._bound_block_context(
                 projection, project_id, task_id, block_id, manifest_digest)
+            assignment = manifest.get("work_assignment")
+            if assignment is not None and (runtime_task.creator != assignment["accepting_ctrl_id"]
+                    or runtime_task.goal_id != (assignment["goal_id"] or "")
+                    or accepted.reviewer != assignment["reviewer_thread_id"]
+                    or contract.artifact.observed_paths != (assignment["artifact_path"],)
+                    or contract.required_gates != tuple(gate[0] for gate in assignment["gates"])
+                    or any(runtime_task.gate_receipts[gate].command != tuple(argv) for gate, argv in assignment["gates"])
+                    or runtime_task.acceptance_review_receipt.strategy.value != assignment["review_strategy"]
+                    or projection["task_manifests"][task_id]["active_digest"] != manifest_digest
+                    or projection["role_assignments"].get(task_id, {}).get("manifest_version") != assignment["role_manifest_ref"]["manifest_version"]
+                    or projection["role_assignments"].get(task_id, {}).get("role_id") != assignment["role_manifest_ref"]["manifest_id"]):
+                raise ProgressEventError("runtime acceptance conflicts with the current work assignment")
             if retained is None:
                 raise ProgressEventError("bound acceptance requires retained ACTIVE evidence for the block")
             if any(item["task_id"] == task_id and item["block_id"] != block_id

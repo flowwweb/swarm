@@ -717,8 +717,8 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertNotIn("SECRET", output.getvalue() + telemetry.read_text())
 
     def test_output_cap_and_scratch_validation(self) -> None:
-        usage = mcp._compact_usage({"items": [{"bucket_ms": i, "delta_tokens": 1} for i in range(300)],
-                                   "total_tokens": 300, "window": {"after_ms": 0, "before_ms": 300},
+        usage = mcp._compact_usage({"items": [{"bucket_ms": i*60000, "delta_tokens": 1} for i in range(300)],
+                                   "total_tokens": 300, "window": {"after_ms": 0, "before_ms": 300*60000},
                                    "task_history": {"items": ["detail"], "status": "PARTIAL"}, "verified_yield": {"detail": "omitted"}})
         self.assertEqual(len(usage["items"]), 256)
         self.assertTrue(usage["truncated"])
@@ -738,6 +738,45 @@ class SwarmMCPTests(unittest.TestCase):
                 self.assertTrue(json.loads(output.getvalue())["result"]["isError"])
                 self.assertLess(len(output.getvalue()), 1024)
 
+    def test_usage_continuity_raw_compacted_and_omitted_runs(self):
+        from console.server import TOKEN_SAMPLE_SECONDS
+        self.assertEqual(TOKEN_SAMPLE_SECONDS * 1000, 60000)  # Bind the projection decoder to the existing store cadence.
+        def compact(times):
+            original = {"ok":True,"hours":720,"status":"partial", "scope":{"type":"project","project_id":"alpha"},
+                "window":{"after_ms":0,"before_ms":30*86400000}, "coverage":{"observed_threads":1,"expected_threads":2},
+                "items":[{"bucket_ms":t,"delta_tokens":1} for t in times], "total_tokens":len(times)}
+            before = json.dumps(original,sort_keys=True)
+            result = mcp._compact_usage(original)
+            self.assertEqual(json.dumps(original,sort_keys=True),before)
+            self.assertEqual(result,mcp._compact_usage(original))
+            for key in ("scope","window","coverage","status","total_tokens"):
+                self.assertEqual(result[key],original[key])
+            return result
+        rows=compact([0,60000,180000])["items"]
+        self.assertEqual([r["connect_from_previous"] for r in rows],[False,True,False])
+        self.assertEqual([r["bucket_start_ms"] for r in rows],[0,60000,180000])
+        self.assertEqual(compact([0])["items"][0]["connect_from_previous"],False)
+        times=[i*60000 for i in range(300)]+[(i+301)*60000 for i in range(300)]
+        result=compact(times); rows=result["items"]
+        self.assertEqual(len(rows),256)
+        self.assertEqual(sum(r["delta_tokens"] for r in rows),600)
+        self.assertEqual(sum(not r["connect_from_previous"] for r in rows),2)
+        self.assertTrue(all(not (r["bucket_start_ms"] < 300*60000 < r["bucket_ms"]) for r in rows))
+        for previous,row in zip(rows,rows[1:]):
+            self.assertEqual(row["connect_from_previous"],row["bucket_start_ms"]-previous["bucket_ms"]==60000)
+        result=compact([i*120000 for i in range(257)])
+        self.assertEqual(len(result["items"]),256)
+        self.assertTrue(all(not r["connect_from_previous"] for r in result["items"]))
+        self.assertEqual(result["items"][0]["bucket_ms"],120000)
+        self.assertEqual(result["series_aggregation"]["omitted_input_count"],1)
+        self.assertEqual(result["series_aggregation"]["omitted_tokens"],1)
+        self.assertEqual(sum(r["delta_tokens"] for r in result["items"])+result["series_aggregation"]["omitted_tokens"],257)
+        self.assertTrue(result["truncated"])
+        for count in (3,257):
+            with self.subTest(count=count),self.assertRaises(mcp.MCPError):
+                mcp._compact_usage({"items":[{"bucket_ms":i*60000,"delta_tokens":-1 if i==1 else 1} for i in range(count)],
+                    "total_tokens":count,"window":{"after_ms":0,"before_ms":30*86400000}})
+
     def test_compacted_usage_passes_actual_reader_without_losing_window_deltas(self):
         script = ("import fs from 'node:fs'; "
                   "import {usageView} from './skills/swarm/assets/ui/swarm-usage.mjs'; "
@@ -745,9 +784,9 @@ class SwarmMCPTests(unittest.TestCase):
                   "console.log(JSON.stringify(inputs.map(value=>usageView(value,24))));")
         inputs = []
         for count in (0, 256, 257, 4097):
-            items = [{"bucket_ms": 10 + i * 3, "delta_tokens": i % 7} for i in range(count)]
+            items = [{"bucket_ms": 10 + i * 60000, "delta_tokens": i % 7} for i in range(count)]
             view = {"ok": True, "hours": 24, "status": "partial" if count else "no_data",
-                    "window": {"after_ms": 10, "before_ms": 13000}, "items": items,
+                    "window": {"after_ms": 10, "before_ms": 4097*60000}, "items": items,
                     "total_tokens": sum(row["delta_tokens"] for row in items),
                     "coverage": {"observed_threads": 1, "expected_threads": 2}}
             compact = mcp._compact_usage(view)
@@ -755,7 +794,8 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertEqual(sum(row["delta_tokens"] for row in compact["items"]), view["total_tokens"])
             self.assertEqual(len(compact["items"]), min(count, 256))
             if count <= 256:
-                self.assertEqual(compact["items"], items)
+                self.assertEqual(compact["items"], [{**row,"bucket_start_ms":row["bucket_ms"],"connect_from_previous":i>0}
+                                                   for i,row in enumerate(items)])
             else:
                 self.assertEqual(compact["series_aggregation"]["input_count"], count)
                 self.assertEqual(compact["items"][-1]["bucket_ms"], items[-1]["bucket_ms"])
@@ -808,9 +848,9 @@ class SwarmMCPTests(unittest.TestCase):
                   "console.log(JSON.stringify(cases.map(([value,project])=>{try{return {ok:true,view:project===null?usageView(value,24):usageView(value,24,project)};}catch{return {ok:false};}})));")
 
         def view(count, scope, status=None):
-            items = [{"bucket_ms": 10 + i * 3, "delta_tokens": i % 7} for i in range(count)]
+            items = [{"bucket_ms": 10 + i * 60000, "delta_tokens": i % 7} for i in range(count)]
             return {"ok": True, "hours": 24, "status": status or ("partial" if count else "no_data"),
-                    "window": {"after_ms": 10, "before_ms": 13000}, "items": items,
+                    "window": {"after_ms": 10, "before_ms": 257*60000}, "items": items,
                     "total_tokens": sum(row["delta_tokens"] for row in items),
                     "coverage": {"observed_threads": 1, "expected_threads": 2}, "scope": scope}
 

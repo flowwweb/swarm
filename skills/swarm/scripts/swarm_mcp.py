@@ -29,8 +29,8 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "f091161404a774c649552646c317d8afaf995f653fa7359b02f58e2582797146"
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "90755ec9e46e46b8f3153820c77b3a4464fb24b63df0b49a4542c014a338632d", "skills/swarm/assets/ui/swarm-hq-host.css": "73b7a50cbb24f6ac765abeb2606c11d05a7613f08b54ec2811a433c0abb72a9b", "skills/swarm/assets/swarm-wordmark.png": "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
+HQ_SDK_SHA256 = "13975ccee16da487ca1be1a3e420c0717ff5c669e287df13e949f9c67d38c8c3"
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "90755ec9e46e46b8f3153820c77b3a4464fb24b63df0b49a4542c014a338632d", "skills/swarm/assets/ui/swarm-hq-host.css": "3cdb043e87cb1031732a5a15ba0d0b513ba2d2bcd431320a86ca84c323c01eb6", "skills/swarm/assets/swarm-wordmark.png": "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
 
 
 PROJECTS_SUPPORT_IMAGES = {
@@ -470,7 +470,7 @@ def _compact_usage(view: dict[str, Any]) -> dict[str, Any]:
     if isinstance(view.get("task_history"), dict):
         compact["task_history"] = _pick(view["task_history"], ("status", "total_tokens", "coverage", "model_status", "claim_limit"))
     items = view.get("items")
-    if isinstance(items, list) and len(items) > 256:
+    if isinstance(items, list) and items:
         window = view.get("window", {})
         after, before = window.get("after_ms"), window.get("before_ms")
         if type(after) is not int or type(before) is not int or not 0 <= after <= before <= 2**53 - 1:
@@ -485,14 +485,35 @@ def _compact_usage(view: dict[str, Any]) -> dict[str, Any]:
         total = sum(row["delta_tokens"] for row in items)
         if type(view.get("total_tokens")) is not int or total != view["total_tokens"] or total > 2**53 - 1:
             raise MCPError("Token total mismatch")
-        # Aggregate all observed deltas, never invent observations in gaps.
+        # The existing token_samples authority emits 60-second buckets. Never
+        # aggregate across a missing bucket or infer continuity from array order.
+        runs = []
+        for row in items:
+            if not runs or row["bucket_ms"] - runs[-1][-1]["bucket_ms"] != 60_000:
+                runs.append([])
+            runs[-1].append(row)
+        omitted = [row for run in runs[:-256] for row in run]
+        runs = runs[-256:]
+        target = min(256, sum(len(run) for run in runs))
+        capacity = sum(len(run) - 1 for run in runs)
+        extra, cumulative, allocated = target - len(runs), 0, 0
         compact["items"] = []
-        for index in range(256):
-            group = items[index * len(items) // 256:(index + 1) * len(items) // 256]
-            compact["items"].append({"bucket_ms": group[-1]["bucket_ms"],
-                                     "bucket_start_ms": group[0]["bucket_ms"],
-                                     "delta_tokens": sum(row["delta_tokens"] for row in group)})
-        compact["series_aggregation"] = {"method": "contiguous_observed_sum", "input_count": len(items), "output_count": 256}
+        for run in runs:
+            cumulative += len(run) - 1
+            next_allocated = cumulative * extra // capacity if capacity else 0
+            count = 1 + next_allocated - allocated
+            allocated = next_allocated
+            for index in range(count):
+                group = run[index * len(run) // count:(index + 1) * len(run) // count]
+                previous = compact["items"][-1] if compact["items"] else None
+                compact["items"].append({**(group[0] if len(group) == 1 else {}),
+                    "bucket_ms": group[-1]["bucket_ms"], "bucket_start_ms": group[0]["bucket_ms"],
+                    "delta_tokens": sum(row["delta_tokens"] for row in group),
+                    "connect_from_previous": previous is not None and group[0]["bucket_ms"] - previous["bucket_ms"] == 60_000})
+        if len(items) > 256:
+            compact["series_aggregation"] = {"method": "contiguous_observed_sum", "input_count": len(items),
+                "output_count": len(compact["items"]), "omitted_input_count": len(omitted),
+                "omitted_tokens": sum(row["delta_tokens"] for row in omitted)}
     for key in ("task_usage", "rate_history"):
         if isinstance(view.get(key), list):
             compact[key] = view[key][-256:]

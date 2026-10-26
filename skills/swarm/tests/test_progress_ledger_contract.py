@@ -217,12 +217,13 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.ledger.append_connector_receipt({**base, "receipt_id": f"{operation_id}:ack", "receipt_index": 1, "status": "ACKNOWLEDGED", "thread_id": task_id, "observed_root_digest": "b" * 64, "observed_at_ms": 2})
         return {**base, "receipt_id": f"{operation_id}:result", "receipt_index": 2, "status": "RESULT", "thread_id": task_id, "turn_id": f"turn:{task_id}", "observed_root_digest": "b" * 64, "observed_at_ms": 3}
 
-    def _bound_task(self, operation_id: str, task_id: str, *, weight: int | None = None, block_count: int = 1) -> dict:
+    def _bound_task(self, operation_id: str, task_id: str, *, weight: int | None = None, block_count: int = 1,
+                    ctrl_id="ctrl-alpha", role_scope="DOER_SINGLE") -> dict:
         role = next(item for item in self.role_manifests() if item["id"] == "developer")
         milestone, block = f"{task_id}-milestone", f"{task_id}-block"
         manifest = build_task_manifest(
             manifest_id=f"task-manifest:{task_id}", task_id=task_id, task_name=f"Task {task_id}",
-            project_id="project-alpha", ctrl_id="ctrl-alpha",
+            project_id="project-alpha", ctrl_id=ctrl_id, role_scope=role_scope,
             policy={"presentation_priority": 1000, "weighted_progress": weight is not None,
                     "expected_update_interval_minutes": 30, "amber_freshness_multiplier": 2,
                     "red_freshness_multiplier": 4, "amber_estimate_ratio_milli": 1000,
@@ -235,7 +236,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         )
         result = self._host_result(operation_id, task_id)
         event = task_creation_binding_event(
-            operation_id=operation_id, project_id="project-alpha", root_digest="b" * 64, ctrl_id="ctrl-alpha",
+            operation_id=operation_id, project_id="project-alpha", root_digest="b" * 64, ctrl_id=ctrl_id,
             task_id=task_id, role_manifest=role, task_manifest=manifest, parent_task_id=None,
             topology_manifest_receipt_id=f"{operation_id}:topology", task_receipt_id=f"{operation_id}:task",
             milestone_receipts=[{"id": milestone, "receipt_id": f"receipt:{milestone}"}],
@@ -245,6 +246,81 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.ledger.append_connector_result_with_task_creation(result, event)
         state = self.ledger.replay()["task_manifests"][task_id]
         return state["versions"][state["active_version"]]
+
+    def _new_work(self, previous, ctrl, *, operation="new-assignment", **changes):
+        from skills.swarm.runtime.execution_adapters import HQCommandEnvelope, HQCommandAction, HQTargetIntent, UniversalHQConnector
+        p = self.ledger.replay()
+        binding = p["task_creation_bindings"][p["task_creation_operations_by_task"][previous["task_id"]]]
+        assignment = dict(operation_id=operation, accepting_ctrl_id=ctrl["task_id"],
+            accepting_ctrl_manifest_digest=ctrl["manifest_digest"], goal_id="current-goal", goal_status_at_assignment="blocked",
+            role_manifest_ref=binding["role_manifest_ref"], block_id=operation + "-block", attempt=1,
+            artifact_path="report.md", gates=[["content", ["python", "check.py"]]], review_strategy="standard",
+            reviewer_thread_id="independent-reviewer", expected_ledger_revision=p["cursor"]["event_seq"])
+        assignment.update(changes)
+        manifest = build_task_manifest(**{**previous, "manifest_version":str(int(previous["manifest_version"]) + 1),
+            "supersedes_digest":previous["manifest_digest"], "work_assignment":assignment,
+            "blocks":[*previous["blocks"], {**previous["blocks"][0], "block_id":assignment["block_id"], "order":len(previous["blocks"])}]})
+        envelope = HQCommandEnvelope(command_id=operation, idempotency_key=operation, action=HQCommandAction.LOCAL_HQ,
+            project_id=manifest["project_id"], root_digest="b" * 64, ctrl_id=ctrl["task_id"], target_intent=HQTargetIntent.LOCAL,
+            target_thread_id="", payload_digest=manifest["manifest_digest"].removeprefix("sha256:"),
+            expected_ledger_revision=assignment["expected_ledger_revision"], submitted_at_ms=20, expires_at_ms=60)
+        receipts = [UniversalHQConnector._receipt(envelope, receipt_id=operation + ":" + status.lower(), index=index,
+            status=status, observed_at_ms=20, observed_root_digest=None if index == 0 else "b" * 64)
+            for index,status in enumerate(("COMMAND", "ACKNOWLEDGED", "RESULT"))]
+        return manifest, receipts
+
+    def test_existing_work_assignment_atomic_restart_original_scope_and_no_progress(self):
+        original = self._bound_task("old", "producer")
+        ctrl = self._bound_task("current", "current-ctrl", ctrl_id="current-ctrl", role_scope="CTRL_BOUNDED")
+        self._accept_bound_block(original, original["blocks"][0]["block_id"], "historical.md")
+        before = self.ledger.replay()
+        historical_bytes = self.ledger._state.path.read_bytes()
+        manifest, receipts = self._new_work(original, ctrl)
+        revision = before["cursor"]["event_seq"]
+        verify = mock.Mock()
+        result = self.ledger.append_work_assignment(manifest, receipts, expected_revision=revision, verify_current_scope=verify)
+        self.assertEqual(result["status"], "appended")
+        verify.assert_called_once_with()
+        raw = self.ledger._state.path.read_bytes()
+        self.assertTrue(raw.startswith(historical_bytes))
+        restarted = self.host_ledger(self.root)
+        p = restarted.replay()
+        self.assertEqual(p["blocks"], before["blocks"])
+        self.assertEqual(p["task_creation_bindings"], before["task_creation_bindings"])
+        self.assertEqual(p["role_assignments"], before["role_assignments"])
+        self.assertEqual(p["task_manifests"]["producer"]["versions"]["1"], original)
+        self.assertEqual(restarted.append_work_assignment(manifest, receipts, expected_revision=revision,
+            verify_current_scope=mock.Mock(side_effect=AssertionError("replay must not reapply")))["status"], "unchanged")
+        self.assertEqual(restarted._state.path.read_bytes(), raw)
+        for doc, block in ((original, original["blocks"][0]["block_id"]), (manifest, manifest["work_assignment"]["block_id"])):
+            context = restarted._bound_block_context(p, "project-alpha", "producer", block, doc["manifest_digest"])
+            self.assertEqual(context[1], doc)
+        with self.assertRaises(ProgressEventError):
+            restarted.append_work_assignment(manifest, receipts, expected_revision=revision + 1, verify_current_scope=lambda:None)
+        self.assertEqual(restarted._state.path.read_bytes(), raw)
+
+    def test_existing_work_assignment_rejects_metadata_forgery_scope_and_races(self):
+        original = self._bound_task("old", "producer")
+        ctrl = self._bound_task("current", "current-ctrl", ctrl_id="current-ctrl", role_scope="CTRL_BOUNDED")
+        before = self.ledger._state.path.read_bytes()
+        good, receipts = self._new_work(original, ctrl)
+        with self.assertRaisesRegex(ProgressEventError, "exact local assignment receipt"):
+            self.ledger.append(identity_manifest_event(good, event_id="forgery", dedupe_key="forgery", observed_at_ms=20, provenance="test"))
+        for changes in ({"accepting_ctrl_id":"missing"}, {"accepting_ctrl_manifest_digest":"sha256:" + "0"*64},
+                        {"reviewer_thread_id":"producer"}, {"role_manifest_ref":{**good["work_assignment"]["role_manifest_ref"],"manifest_id":"researcher"}}):
+            manifest, prefix = self._new_work(original, ctrl, **changes)
+            with self.assertRaises(ProgressEventError):
+                self.ledger.append_work_assignment(manifest, prefix, expected_revision=manifest["work_assignment"]["expected_ledger_revision"], verify_current_scope=lambda:None)
+            self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        with self.assertRaisesRegex(ValueError, "goal raced"):
+            self.ledger.append_work_assignment(good, receipts, expected_revision=good["work_assignment"]["expected_ledger_revision"],
+                verify_current_scope=mock.Mock(side_effect=ValueError("goal raced")))
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        self.ledger.append(self.event("unrelated", "unrelated"))
+        raced = self.ledger._state.path.read_bytes()
+        with self.assertRaisesRegex(ProgressEventError, "ledger changed"):
+            self.ledger.append_work_assignment(good, receipts, expected_revision=good["work_assignment"]["expected_ledger_revision"], verify_current_scope=lambda:None)
+        self.assertEqual(self.ledger._state.path.read_bytes(), raced)
 
     def _work_file(self, name: str, data: bytes):
         path = self.root / "work" / name
