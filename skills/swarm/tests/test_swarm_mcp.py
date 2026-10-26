@@ -75,7 +75,7 @@ class SwarmMCPTests(unittest.TestCase):
         self.assertEqual(sum(t["name"] == spec["name"] for t in tools), 1)
         self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "create", "update", "migrate_legacy"])
         for tool in tools:
-            if tool["name"] in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign",
+            if tool["name"] in {"swarm_role_read", "swarm_role_save", "swarm_library_read", "swarm_flow_save", "swarm_flow_assign",
                                 "swarm_settings_read", "swarm_settings_save"}:
                 self.assertEqual(tool["_meta"]["ui"]["visibility"], ["app"])
         read = {"operation": "read", "project_id": "project:alpha"}
@@ -271,6 +271,111 @@ class SwarmMCPTests(unittest.TestCase):
         self.assertEqual(brief.read_bytes(), saved)
         self.assertEqual(projection._app.progress_ledger._state.path.read_bytes(), ledger)
         self.assertEqual(transport.mock_calls, [])
+
+    def test_native_roles_use_existing_authority_replay_and_no_host_dispatch(self):
+        sys.path.insert(0, str(mcp.REPO_ROOT))
+        from console.server import App
+        from console.tests.test_console import SwarmConsoleTests
+        fixture = SwarmConsoleTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        bridge = Mock()
+        projection = mcp.SwarmProjection()
+        projection._app = App(fixture.codex_home, fixture.config, auto_bridge=bridge)
+        ledger_path = projection._app.progress_ledger._state.path
+        retained = lambda: ledger_path.read_bytes() if ledger_path.exists() else None
+        before = retained()
+        current = projection.call("swarm_role_read", {})
+        self.assertEqual(current["scope"], "global-definitions")
+        self.assertEqual(len(current["roles"]), 24)
+        self.assertEqual(retained(), before)
+        self.assertNotIn("critic", {r["id"] for r in current["roles"]})
+        role = next(r for r in current["roles"] if r["id"] == "producer")
+        # An HTTP-admitted avatar is not automatically native-app renderable.
+        server_role = next(r for r in projection._app.role_manifest_projection()["roles"] if r["id"] == role["id"])
+        self.assertEqual(server_role["avatar"]["state"], "AVAILABLE")
+        self.assertEqual(role["avatar_asset_digest"], server_role["avatar_asset_digest"])
+        self.assertIsNone(role["avatar"])
+        self.assertNotIn("versions", role)
+        self.assertNotIn("source_event_ids", role)
+        manifest = {k: role[k] for k in ("name", "purpose", "owns", "instructions", "boundaries", "default_skills", "specializations", "avatar_asset_digest", "accent", "lucide_icon") if k in role}
+        manifest["purpose"] = "Produce an independently checked result."
+        request = {"command": "ROLE_MANIFEST_REVISE", "role_id": role["id"], "manifest": manifest,
+                   "expected_active_version": role["active_version"], "event_id": "native-role-one",
+                   "dedupe_key": "native-role-one", "provenance": "hq-roles-editor",
+                   "observed_at_ms": 1000, "acknowledge": True}
+        saved = projection.call("swarm_role_save", request)
+        self.assertTrue(saved["ok"])
+        updated = next(r for r in saved["roles"] if r["id"] == role["id"])
+        self.assertEqual(updated["purpose"], manifest["purpose"])
+        self.assertEqual(updated["active_version"], saved["receipt"]["active_version"])
+        self.assertNotEqual(updated["active_version"], role["active_version"])
+        written = retained()
+        projection._app = App(fixture.codex_home, fixture.config, auto_bridge=bridge)
+        replay = projection.call("swarm_role_save", request)
+        self.assertTrue(replay["ok"])
+        self.assertEqual(replay["receipt"]["status"], "unchanged")
+        self.assertEqual(replay["roles"], saved["roles"])
+        self.assertEqual(retained(), written)
+        stale = {**request, "event_id": "native-role-two", "dedupe_key": "native-role-two"}
+        self.assertEqual(projection.call("swarm_role_save", stale)["state"], "CONFLICT")
+        changed_identity = {**request, "manifest": {**manifest, "purpose": "Conflicting retry"}}
+        self.assertEqual(projection.call("swarm_role_save", changed_identity)["state"], "CONFLICT")
+        self.assertEqual(retained(), written)
+        for extra in ({"acknowledge": False}, {"acknowledge": 1}, {"command": "ROLE_ASSIGNMENT_BOUND"}, {"project_id": "foreign"}):
+            with self.subTest(extra=extra), self.assertRaises(mcp.MCPError):
+                projection.call("swarm_role_save", {**request, **extra})
+        with self.assertRaises(mcp.MCPError):
+            projection.call("swarm_role_save", {k: v for k, v in request.items() if k != "acknowledge"})
+        rejected = {**stale, "expected_active_version": updated["active_version"],
+                    "manifest": {**manifest, "avatar_asset_digest": "0" * 64}}
+        self.assertEqual(projection.call("swarm_role_save", rejected)["state"], "REJECTED")
+        self.assertEqual(retained(), written)
+        self.assertEqual(bridge.mock_calls, [])
+        wire = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "swarm_role_save", "arguments": stale}}
+        with patch.object(mcp.SwarmProjection, "_load_app", return_value=projection._app), patch.object(sys, "stdin", io.StringIO(json.dumps(wire))), patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+            mcp.serve(telemetry_path=fixture.root / "roles-wire.jsonl")
+        outcome = json.loads(output.getvalue())["result"]
+        self.assertTrue(outcome["isError"])
+        self.assertEqual(outcome["structuredContent"]["state"], "CONFLICT")
+        self.assertNotIn(manifest["purpose"], (fixture.root / "roles-wire.jsonl").read_text())
+        custom = {k: v for k, v in request.items() if k != "expected_active_version"}
+        custom.update(command="ROLE_MANIFEST_CREATE", role_id="native-scribe",
+                      event_id="native-role-create", dedupe_key="native-role-create",
+                      manifest={**manifest, "name": "Native Scribe", "specializations": []})
+        created = projection.call("swarm_role_save", custom)
+        self.assertTrue(created["ok"])
+        self.assertEqual(len(created["roles"]), 25)
+        self.assertEqual(next(r for r in created["roles"] if r["id"] == "native-scribe")["source"], "custom")
+        before_critic = retained()
+        self.assertEqual(projection.call("swarm_role_save", {**custom, "role_id": "Critic",
+            "event_id": "native-critic", "dedupe_key": "native-critic"})["state"], "REJECTED")
+        self.assertEqual(retained(), before_critic)
+        reset = {k: v for k, v in request.items() if k != "manifest"}
+        reset.update(command="ROLE_MANIFEST_RESET", expected_active_version=updated["active_version"],
+                     event_id="native-role-reset", dedupe_key="native-role-reset")
+        restored = projection.call("swarm_role_save", reset)
+        self.assertTrue(restored["ok"])
+        self.assertEqual(next(r for r in restored["roles"] if r["id"] == role["id"])["active_version"], role["active_version"])
+        final = retained()
+        self.assertTrue(projection.call("swarm_role_save", reset)["ok"])
+        self.assertEqual(retained(), final)
+        self.assertEqual(projection._app.role_manifest_projection()["assignments"], [])
+        self.assertEqual(bridge.mock_calls, [])
+
+    def test_native_roles_wire_rejects_invalid_arguments_before_loading_authority(self):
+        projection = mcp.SwarmProjection()
+        with patch.object(projection, "_load_app", side_effect=AssertionError("must not load")):
+            for name, args in [("swarm_role_read", {"path": "private"}), ("swarm_role_save", {}),
+                               ("swarm_role_save", {"command": "ROLE_MANIFEST_RESET", "acknowledge": True})]:
+                with self.subTest(name=name, args=args), self.assertRaises(mcp.MCPError):
+                    projection.call(name, args)
+        tools = {t["name"]: t for t in mcp.TOOLS}
+        for name in ["swarm_role_read", "swarm_role_save"]:
+            self.assertEqual(tools[name]["_meta"]["ui"]["visibility"], ["app"])
+        self.assertTrue(tools["swarm_role_read"]["annotations"]["readOnlyHint"])
+        self.assertFalse(tools["swarm_role_save"]["annotations"]["readOnlyHint"])
 
     def test_library_mcp_save_readback_restart_and_invalid_write(self):
         sys.path.insert(0, str(mcp.REPO_ROOT))
@@ -606,8 +711,8 @@ class SwarmMCPTests(unittest.TestCase):
                 self.assertEqual(mcp.serve(hq_app=app), 0)
             rows = [json.loads(line) for line in output.getvalue().splitlines()]
             self.assertIn("resources", rows[0]["result"]["capabilities"])
-            self.assertEqual(rows[1]["result"]["tools"][:10], list(mcp.TOOLS))
-            self.assertEqual(len(rows[1]["result"]["tools"]), 11)
+            self.assertEqual(rows[1]["result"]["tools"][:12], list(mcp.TOOLS))
+            self.assertEqual(len(rows[1]["result"]["tools"]), 13)
             tool = rows[1]["result"]["tools"][-1]
             self.assertEqual(tool["name"], "swarm_hq_view")
             self.assertEqual(tool["_meta"], {"ui": {"resourceUri": app.uri}, "openai/ui": {"entrypoints": [{"type": "global"}, {"type": "thread"}]}})
@@ -729,7 +834,7 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertTrue(rows[7]["result"]["isError"])
             self.assertFalse(rows[8]["result"]["isError"])
             self.assertFalse(rows[9]["result"]["isError"])
-            self.assertEqual(len(rows[-1]["result"]["tools"]), 10)
+            self.assertEqual(len(rows[-1]["result"]["tools"]), 12)
             self.assertNotIn("SECRET", output.getvalue() + telemetry.read_text())
 
     def test_output_cap_and_scratch_validation(self) -> None:

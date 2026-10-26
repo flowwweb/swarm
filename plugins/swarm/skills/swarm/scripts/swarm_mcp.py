@@ -58,6 +58,27 @@ PROJECTS_PUBLIC_IMAGES = {
 
 TOOLS: tuple[dict[str, Any], ...] = (
     {
+        "name": "swarm_role_read", "title": "Read global roles",
+        "description": "Read current validated role definitions and versions. No task assignment or host execution authority.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
+    {
+        "name": "swarm_role_save", "title": "Save an acknowledged role version",
+        "description": "Submit an explicitly acknowledged role definition command through existing manifest validation, version and event identity checks. Never assign or dispatch work.",
+        "inputSchema": {"type": "object", "properties": {
+            "command": {"type": "string", "enum": ["ROLE_MANIFEST_CREATE", "ROLE_MANIFEST_REVISE", "ROLE_MANIFEST_RESET"]},
+            "role_id": {"type": "string"}, "manifest": {"type": "object"},
+            "expected_active_version": {"type": "string"}, "event_id": {"type": "string"},
+            "dedupe_key": {"type": "string"}, "provenance": {"type": "string"},
+            "observed_at_ms": {"type": "integer"}, "acknowledge": {"type": "boolean", "enum": [True]}},
+            "required": ["command", "role_id", "event_id", "dedupe_key", "provenance", "observed_at_ms", "acknowledge"],
+            "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
+    {
         "name": "swarm_project_ticket_execution", "title": "Ticket execution bindings",
         "description": "Read or explicitly bind an existing host-created block attempt to a reserved project ticket. Never dispatch or complete work.",
         "inputSchema": {"type": "object", "properties": {
@@ -282,6 +303,17 @@ def _require_hq_read(params: dict[str, Any], hq_app: HQApp | None) -> HQApp:
     raise MCPError("unknown HQ resource")
 
 
+def _native_roles(projection: dict[str, Any]) -> dict[str, Any]:
+    # Relative HTTP avatar paths are not resources of the native app. Preserve
+    # admitted identity, but never advertise an unavailable transport as a preview.
+    return {"ok": True, "scope": "global-definitions", "cursor": projection["cursor"],
+            "roles": [{**_pick(role, ("id", "name", "source", "active_version", "purpose", "owns",
+                "instructions", "boundaries", "default_skills", "specializations", "accent",
+                "lucide_icon", "avatar_asset_digest")), "avatar": None}
+                for role in projection["roles"] if role["id"].casefold() != "critic"],
+            "claim_limit": "Global definitions only; no host authority. Native avatar preview transport is unavailable."}
+
+
 class SwarmProjection:
     def __init__(self, telemetry_path: Path = DEFAULT_TELEMETRY) -> None:
         self.codex_home = DEFAULT_CODEX_HOME.expanduser().resolve()
@@ -305,6 +337,19 @@ class SwarmProjection:
             raise MCPError("unknown tool")
         _validate_arguments(spec, arguments)
         app = self._load_app()
+        if name in {"swarm_role_read", "swarm_role_save"}:
+            from console.server import ConsoleConflict, ConsoleError
+            try:
+                if name == "swarm_role_read":
+                    return _native_roles(app.role_manifest_projection())
+                result = app.role_manifest_command({key: value for key, value in arguments.items() if key != "acknowledge"})
+                return {**_native_roles(result["projection"]), "receipt": result["receipt"]}
+            except ConsoleConflict:
+                return {"ok": False, "state": "CONFLICT", "role_id": arguments.get("role_id"),
+                        "message": "Role changed. Reload and reconcile the preserved draft."}
+            except ConsoleError:
+                return {"ok": False, "state": "REJECTED", "role_id": arguments.get("role_id"),
+                        "message": "Role definition or retained avatar is invalid or unavailable."}
         if name == "swarm_project_ticket_execution":
             from console.server import ConsoleError, ConsoleConflict
             try:
@@ -341,10 +386,7 @@ class SwarmProjection:
                 result = app.project_flow_command({"operation": "read", "project_id": arguments["project_id"]})
                 kind = arguments["kind"]
                 if kind == "ROLE":
-                    roles = app.role_manifest_projection()
-                    inventory = {"roles": [_pick(role, ("id", "name", "active_version", "purpose", "owns", "instructions",
-                        "boundaries", "default_skills", "specializations", "accent", "lucide_icon", "avatar"))
-                        for role in roles["roles"] if role["id"].casefold() != "critic"], "scope": "global-definitions"}
+                    inventory = _native_roles(app.role_manifest_projection())
                 else:
                     inventory = app.unit_catalog_projection(kind)
                     inventory["instances"] = [unit for unit in inventory["instances"] if unit["project_id"] == arguments["project_id"]]
@@ -715,7 +757,7 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
                     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                     if len(encoded.encode("utf-8")) > 262144:
                         raise MCPError("projection exceeds 262144 bytes; narrow the requested scope")
-                    rejected = name in {"swarm_library_read", "swarm_flow_save", "swarm_flow_assign", "swarm_project_tickets", "swarm_project_ticket_execution"} and value.get("ok") is False
+                    rejected = name in {"swarm_role_read", "swarm_role_save", "swarm_library_read", "swarm_flow_save", "swarm_flow_assign", "swarm_project_tickets", "swarm_project_ticket_execution"} and value.get("ok") is False
                     _telemetry(telemetry_path, tool=name, started=started, ok=not rejected,
                                result_bytes=len(encoded.encode("utf-8")), error="projection_rejected" if rejected else "")
                     result = {"content": [{"type": "text", "text": encoded}], "structuredContent": value, "isError": rejected}
