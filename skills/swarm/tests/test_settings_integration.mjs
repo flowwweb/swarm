@@ -47,7 +47,15 @@ try {
     const css=fs.readFileSync(path.join(repo,'skills/swarm/assets/ui/swarm-settings.css'),'utf8');
     const legacy=fs.readFileSync(path.join(repo,'console/static/app.js'),'utf8');
     const editor=legacy.slice(legacy.indexOf('function configTomlLiteral('),legacy.indexOf('function configWriteRequest('));
-    const shell=fs.readFileSync(path.join(scratch,'rendered.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'');
+    const stripScripts=async markup=>page.evaluate(source=>{
+      const parsed=new DOMParser().parseFromString(source,'text/html');
+      parsed.querySelectorAll('script').forEach(script=>script.remove());
+      return `${parsed.doctype?'<!doctype html>':''}${parsed.documentElement.outerHTML}`;
+    },markup);
+    const shell=await stripScripts(fs.readFileSync(path.join(scratch,'rendered.html'),'utf8'));
+    assert.doesNotMatch(shell,/<script\b/i);
+    const scriptEndTagProbe=await stripScripts('<!doctype html><script>window.__scriptEndTagProbe=true</script >');
+    assert.doesNotMatch(scriptEndTagProbe,/<script\b/i);
     const hostState=()=>execFileSync(python,['-B','-c',`import sqlite3,json,sys;from pathlib import Path;p=next(Path(sys.argv[1]).rglob('state_*.sqlite'));c=sqlite3.connect(p);print(json.dumps(c.execute('select * from threads order by id').fetchall()))`,scratch],{cwd:repo,encoding:'utf8'});
     const beforeHost=hostState();
     await page.route('https://swarm-integration.invalid/**',route=>route.fulfill({contentType:'text/html',body:shell}));

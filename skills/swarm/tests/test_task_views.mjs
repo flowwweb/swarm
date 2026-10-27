@@ -320,8 +320,11 @@ async function ready(page){await page.waitForFunction(()=>document.querySelector
 async function scenario(page,name){
   await page.locator('[data-fixture-debug]').evaluate(node=>node.open=true);
   await page.locator(`input[name="stv-fixture-scenario"][value="${name}"]`).check();
-  await page.waitForFunction(name=>!document.querySelector('[data-fixture]').hasAttribute('data-fixture-busy')&&
-    document.querySelector('[data-fixture-result]').dataset.action==='scenario:'+name,name);
+  await page.waitForFunction(name=>{
+    try{return !document.querySelector('[data-fixture]').hasAttribute('data-fixture-busy')&&
+      JSON.parse(document.querySelector('[data-fixture-result]').textContent).action==='scenario:'+name;}
+    catch{return false;}
+  },name);
   const result=await page.locator('[data-fixture-result]').getAttribute('data-ok');assert.equal(result,'true');
   await page.locator('[data-fixture-debug]').evaluate(node=>node.open=false);
 }
