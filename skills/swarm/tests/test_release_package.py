@@ -472,6 +472,53 @@ class ReleasePackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "source bytes differ from HEAD"):
                 build_package_bytes(root)
 
+    def test_explicit_commit_build_excludes_dirty_and_untracked_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_plugin(Path(temporary))
+            commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            tree = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD^{tree}"], text=True).strip()
+            retained = subprocess.check_output(["git", "-C", str(root), "show", f"{commit}:README.md"])
+            (root / "README.md").write_text("uncommitted change", encoding="utf-8")
+            (root / "untracked.txt").write_text("untracked", encoding="utf-8")
+            output = Path(temporary) / "immutable.zip"
+            with self.assertRaisesRegex(ValueError, "untracked"):
+                write_package(root, output)
+            digest, _ = write_package(root, output, verify_repeat=True, commit=commit, tree=tree)
+            first = output.read_bytes()
+            self.assertEqual(digest, hashlib.sha256(first).hexdigest())
+            with zipfile.ZipFile(io.BytesIO(first)) as archive:
+                metadata = json.loads(archive.read(PACKAGE_METADATA_PATH))
+                self.assertEqual((metadata["commit"], metadata["tree"]), (commit, tree))
+                self.assertEqual(archive.read("README.md"), retained)
+                self.assertNotIn("untracked.txt", archive.namelist())
+            write_package(root, output, verify_repeat=True, commit=commit, tree=tree)
+            self.assertEqual(output.read_bytes(), first)
+            for bad_commit, bad_tree in ((commit[:8], tree), (commit.upper(), tree), (commit, "0" * 40), (commit, None)):
+                with self.subTest(commit=bad_commit, tree=bad_tree), self.assertRaises(ValueError):
+                    write_package(root, output, commit=bad_commit, tree=bad_tree)
+
+    def test_immutable_build_ignores_git_replacement_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_plugin(Path(temporary))
+            git = ["git", "-C", str(root)]
+            commit = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+            tree = subprocess.check_output([*git, "rev-parse", "HEAD^{tree}"], text=True).strip()
+            original = subprocess.check_output([*git, "show", f"{commit}:README.md"])
+            blob = subprocess.check_output([*git, "rev-parse", f"{commit}:README.md"], text=True).strip()
+            (root / "README.md").write_text("replacement contents", encoding="utf-8")
+            subprocess.run([*git, "add", "README.md"], check=True)
+            subprocess.run([*git, "commit", "-qm", "replacement"], check=True)
+            replacement_commit = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+            replacement_blob = subprocess.check_output([*git, "rev-parse", "HEAD:README.md"], text=True).strip()
+            subprocess.run([*git, "replace", blob, replacement_blob], check=True)
+            subprocess.run([*git, "replace", commit, replacement_commit], check=True)
+            output = Path(temporary) / "original.zip"
+            write_package(root, output, commit=commit, tree=tree, verify_repeat=True)
+            with zipfile.ZipFile(output) as archive:
+                metadata = json.loads(archive.read(PACKAGE_METADATA_PATH))
+                self.assertEqual((metadata["commit"], metadata["tree"]), (commit, tree))
+                self.assertEqual(archive.read("README.md"), original)
+
     def test_clean_filter_normalization_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = self.make_plugin(Path(temporary))

@@ -338,7 +338,7 @@ def validate_plugin_manifest(root: Path, files: dict[str, str] | None = None) ->
 
 def _git(root: Path, *arguments: str) -> str:
     completed = subprocess.run(
-        ["git", "-C", str(root), *arguments],
+        ["git", "--no-replace-objects", "-C", str(root), *arguments],
         capture_output=True,
         check=False,
         text=True,
@@ -351,7 +351,7 @@ def _git(root: Path, *arguments: str) -> str:
 
 def _git_bytes(root: Path, *arguments: str) -> bytes:
     completed = subprocess.run(
-        ["git", "-C", str(root), *arguments], capture_output=True, check=False
+        ["git", "--no-replace-objects", "-C", str(root), *arguments], capture_output=True, check=False
     )
     if completed.returncode:
         detail = completed.stderr.decode("utf-8", "replace").strip()
@@ -561,6 +561,20 @@ def release_identity(root: Path) -> GitSnapshot:
     return snapshot
 
 
+def immutable_release_identity(root: Path, commit: str, tree: str) -> GitSnapshot:
+    """Capture one explicitly identified commit, without reading worktree bytes."""
+    root = root.resolve()
+    if Path(_git(root, "rev-parse", "--show-toplevel").strip()).resolve() != root:
+        raise ValueError(f"source must be the repository root: {root}")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit) or not re.fullmatch(r"[0-9a-f]{40}", tree):
+        raise ValueError("commit and tree must be full lowercase Git object IDs")
+    if _git(root, "rev-parse", "--verify", f"{commit}^{{commit}}").strip() != commit:
+        raise ValueError("commit identity mismatch")
+    if _git(root, "rev-parse", f"{commit}^{{tree}}").strip() != tree:
+        raise ValueError("tree identity mismatch")
+    return _capture_snapshot(root, commit, tree)
+
+
 def proof_policy_digest(files: dict[str, str]) -> str:
     try:
         policy = {path: files[path] for path in PROOF_POLICY_PATHS}
@@ -618,7 +632,7 @@ def build_package_bytes(root: Path) -> tuple[bytes, dict[str, object]]:
     return _build_snapshot_bytes(release_identity(root))
 
 
-def write_package(root: Path, output: Path, verify_repeat: bool = False) -> tuple[str, int]:
+def write_package(root: Path, output: Path, verify_repeat: bool = False, *, commit: str | None = None, tree: str | None = None) -> tuple[str, int]:
     root = root.resolve()
     output = output.resolve()
     try:
@@ -628,7 +642,9 @@ def write_package(root: Path, output: Path, verify_repeat: bool = False) -> tupl
     else:
         raise ValueError("package output must be outside the source repository")
     output.parent.mkdir(parents=True, exist_ok=True)
-    snapshot = release_identity(root)
+    if (commit is None) != (tree is None):
+        raise ValueError("commit and tree must be supplied together")
+    snapshot = release_identity(root) if commit is None else immutable_release_identity(root, commit, tree)
     first, metadata = _build_snapshot_bytes(snapshot)
     if verify_repeat:
         second, _ = _build_snapshot_bytes(snapshot)
@@ -647,9 +663,11 @@ def main() -> int:
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--verify-repeat", action="store_true", help="build twice and require identical ZIP bytes")
+    parser.add_argument("--commit", help="full immutable commit ID; requires --tree")
+    parser.add_argument("--tree", help="full expected tree ID; requires --commit")
     args = parser.parse_args()
     try:
-        checksum, count = write_package(args.source, args.output, args.verify_repeat)
+        checksum, count = write_package(args.source, args.output, args.verify_repeat, commit=args.commit, tree=args.tree)
     except ValueError as error:
         parser.error(str(error))
     print(f"built {args.output.resolve()} ({count} files, sha256 {checksum})")
