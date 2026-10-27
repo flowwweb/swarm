@@ -267,3 +267,5 @@ main:not([hidden]),.ticket-dialog[open]{animation:hq-enter var(--hq-motion) var(
 
 
 [data-unit-catalog]{padding:14px}
+
+@container hq (max-width:700px){.library-header{align-items:stretch}.library-header .library-toolbar{flex:0 0 auto;justify-content:flex-start}}
