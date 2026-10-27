@@ -293,7 +293,6 @@
         reason: result?.reason ?? null,
       };
       resultEl.textContent = JSON.stringify(payload);
-      resultEl.dataset.action = action;
       resultEl.dataset.ok = String(payload.ok);
       resultEl.dataset.state = payload.state;
     }
