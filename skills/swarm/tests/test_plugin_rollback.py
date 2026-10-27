@@ -220,6 +220,55 @@ class PluginRollbackTests(unittest.TestCase):
                 with self.assertRaisesRegex(rollback.RollbackError, '^config TOML is invalid; no restore attempted$'):
                     rollback._section_bytes(bad)
 
+    def test_malformed_restore_config_stops_before_host_or_cache_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config, _package, snapshot, _manifest = self.prepare(Path(temporary))
+            malformed = b'model = "unterminated-fixture\n'
+            config.write_bytes(malformed)
+            native = self.native_config(config)
+            with patch.object(rollback, "_copy_cache_atomic") as copy_cache:
+                with self.assertRaisesRegex(rollback.RollbackError, '^config TOML is invalid; no restore attempted$'):
+                    rollback.restore_snapshot(snapshot, config.parent, config_request=native)
+            copy_cache.assert_not_called()
+            self.assertEqual(native.calls, [])
+            self.assertEqual(config.read_bytes(), malformed)
+            self.assertFalse((config.parent / "plugins").exists())
+            self.assertFalse((snapshot / "rollback-log.jsonl").exists())
+
+    def test_applied_native_write_with_lost_ack_preserves_read_only_restart_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config, _package, snapshot, _manifest = self.prepare(Path(temporary))
+            before = tomllib.loads(config.read_text(encoding="utf-8"))
+            expected = json.loads(json.dumps(before))
+            expected["marketplaces"]["flowwweb"] = {
+                "source_type": "local", "source": str(snapshot.resolve() / "marketplace")}
+            native = self.native_config(config)
+
+            def disconnected(method, params):
+                result = native(method, params)
+                if method == "config/batchWrite":
+                    raise OSError("fixture acknowledgement lost after native apply")
+                return result
+
+            with patch.object(rollback, "_atomic_write", side_effect=AssertionError("no direct config rewrite")):
+                with self.assertRaisesRegex(OSError, "acknowledgement lost"):
+                    rollback.restore_snapshot(snapshot, config.parent, config_request=disconnected)
+            applied_bytes = config.read_bytes()
+            self.assertEqual(tomllib.loads(applied_bytes.decode("utf-8")), expected)
+            self.assertEqual([method for method, _ in native.calls], ["config/read", "config/batchWrite"])
+            self.assertFalse((snapshot / "rollback-log.jsonl").exists())
+
+            # Fresh module state reconciles by native read; it never repeats restore.
+            spec = importlib.util.spec_from_file_location("rollback_restarted", SCRIPT_PATH)
+            restarted = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(restarted)
+            observation = restarted._native_user_layer(native, config.resolve())
+            self.assertEqual(observation["config"], expected)
+            self.assertEqual(observation["version"], hashlib.sha256(applied_bytes).hexdigest())
+            self.assertEqual(config.read_bytes(), applied_bytes)
+            self.assertEqual([method for method, _ in native.calls], ["config/read", "config/batchWrite", "config/read"])
+            self.assertFalse((snapshot / "rollback-log.jsonl").exists())
+
     def test_native_user_revision_must_match_exact_config_and_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             config, _package, snapshot, _manifest = self.prepare(Path(temporary))
