@@ -11,7 +11,8 @@ from enum import StrEnum
 from hashlib import sha256
 import json
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Mapping, Protocol
+from typing import Callable, Mapping, Protocol
+from xml.etree import ElementTree
 
 from .core import (
     ArtifactIdentity,
@@ -371,6 +372,106 @@ class CodexAppTaskTransport(Protocol):
     def verify_observation(self, observation: HQAppTaskObservation, envelope: HQCommandEnvelope) -> bool: ...
 
 
+class NativeCodexAppTaskTransport:
+    """Capture one native tool exchange; the injected host owns all tool access.
+
+    Only safe observation metadata is kept in memory. The connector retains the
+    pre-send turn in its existing ACK, so a fresh instance can reconcile without
+    recovering a prompt or sending it again. No polling or model overrides.
+    """
+
+    def __init__(self, request: Callable[[str, Mapping[str, object]], object], *, clock_ms: Callable[[], int]) -> None:
+        self.request = request
+        self.clock_ms = clock_ms
+        self._observation: HQAppTaskObservation | None = None
+
+    def _read(self, thread_id: str) -> Mapping[str, object]:
+        raw = self.request("read_thread", {"threadId": thread_id, "turnLimit": 2,
+            "includeOutputs": False, "maxOutputCharsPerItem": 65536})
+        if isinstance(raw, Mapping) and "content" in raw:
+            content = raw["content"]
+            if raw.get("isError") or not isinstance(content, list) or len(content) != 1:
+                raise InvariantError("native task read is unavailable or ambiguous")
+            item = content[0]
+            if not isinstance(item, Mapping) or item.get("type") != "text":
+                raise InvariantError("native task read requires exact structured text")
+            raw = json.loads(item["text"])
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("thread"), Mapping):
+            raise InvariantError("native task read requires a thread")
+        thread = raw["thread"]
+        if thread.get("id") != thread_id or not isinstance(thread.get("cwd"), str) or not thread["cwd"]:
+            raise InvariantError("native task read identity or cwd conflicts")
+        turns = raw.get("turns")
+        if (not isinstance(turns, list) or not turns or len(turns) > 2
+                or raw.get("page", {}).get("order") != "newest_first"
+                or any(not isinstance(turn, Mapping) or not isinstance(turn.get("id"), str)
+                       or not turn["id"] for turn in turns)
+                or len({turn["id"] for turn in turns}) != len(turns)):
+            raise InvariantError("native task read requires ordered distinct turns")
+        return raw
+
+    def prepare_command(self, envelope: HQCommandEnvelope) -> tuple[str, str, int]:
+        read = self._read(envelope.target_thread_id)
+        if read["turns"][0].get("status") == "inProgress":
+            self.request("wait_threads", {"targets": [{"threadId": envelope.target_thread_id}], "timeoutMs": 30000})
+            read = self._read(envelope.target_thread_id)
+        terminal = {"completed", "failed", "interrupted"} if envelope.action is HQCommandAction.AUTO else {"completed"}
+        if read["turns"][0].get("status") not in terminal:
+            raise InvariantError("native task has no completed pre-send turn")
+        return read["turns"][0]["id"], read["thread"]["cwd"], self.clock_ms()
+
+    def send_message_to_thread(self, *, thread_id: str, prompt: str) -> object:
+        return self.request("send_message_to_thread", {"threadId": thread_id, "prompt": prompt})
+
+    def observe_command(self, envelope: HQCommandEnvelope, *, previous_turn_id: str = "") -> HQAppTaskObservation | None:
+        self._observation = None
+        if not previous_turn_id:
+            return None  # Retained COMMAND alone does not establish a pre-send floor.
+        read = self._read(envelope.target_thread_id)
+        turns = read["turns"]
+        if len(turns) != 2 or turns[1]["id"] != previous_turn_id:
+            return None
+        messages = [item for item in turns[0].get("items", [])
+                    if isinstance(item, Mapping) and item.get("type") == "userMessage"]
+        if len(messages) != 1 or not isinstance(messages[0].get("content"), list) or not messages[0]["content"]:
+            return None  # Summaries and a thread-only send response are not proof.
+        content = messages[0]["content"]
+        if any(not isinstance(part, Mapping) or part.get("type") != "text"
+               or not isinstance(part.get("text"), str) for part in content):
+            return None
+        text = "".join(part["text"] for part in content)
+        if (sha256(text.encode("utf-8")).hexdigest() != envelope.payload_digest
+                and text.startswith("<codex_delegation>")):
+            try:
+                # XML's literal-CR normalization must not change the original UTF-8 input.
+                wrapper = ElementTree.fromstring(text.replace("\r", "&#13;"))
+                if (wrapper.attrib or (wrapper.text or "").strip()
+                        or [part.tag for part in wrapper] != ["source_thread_id", "input"]
+                        or any(part.attrib or len(part) for part in wrapper)
+                        or any((part.tail or "").strip() for part in wrapper)
+                        or not wrapper[0].text or wrapper[1].text is None):
+                    return None
+                text = wrapper[1].text  # Decode once; the input hash, never the sender label, binds it.
+            except ElementTree.ParseError:
+                return None
+        if sha256(text.encode("utf-8")).hexdigest() != envelope.payload_digest:
+            return None
+        evidence = sha256(json.dumps(read, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+        self._observation = HQAppTaskObservation(evidence, envelope.digest, envelope.payload_digest,
+            envelope.target_thread_id, previous_turn_id, turns[0]["id"], read["thread"]["cwd"], self.clock_ms())
+        return self._observation
+
+    def verify_observation(self, observation: HQAppTaskObservation, envelope: HQCommandEnvelope) -> bool:
+        return observation == self._observation and observation.command_digest == envelope.digest
+
+    def observe_turn(self, thread_id: str, turn_id: str) -> Mapping[str, object] | None:
+        read = self._read(thread_id)
+        turn = next((item for item in read["turns"] if item["id"] == turn_id), None)
+        if turn is None or turn.get("status") not in {"inProgress", "completed", "failed", "interrupted"}:
+            return None
+        return {"thread_id": thread_id, "turn_id": turn_id, "cwd": read["thread"]["cwd"], "status": turn["status"]}
+
+
 @dataclass(frozen=True)
 class HQConnectorResult:
     status: str
@@ -383,13 +484,20 @@ class HQConnectorResult:
 
 
 class UniversalHQConnector:
-    def __init__(self, adapter: "CodexAppServerAdapter", *, authorization_verifier: HQAuthorizationVerifier, material_resolver: HQDispatchMaterialResolver, root_verifier: HQRootVerifier) -> None:
+    def __init__(self, adapter: "CodexAppServerAdapter", *, authorization_verifier: HQAuthorizationVerifier, material_resolver: HQDispatchMaterialResolver, root_verifier: HQRootVerifier, admission_guard: Callable[[], bool] | None = None) -> None:
         if not isinstance(adapter, CodexAppServerAdapter):
             raise InvariantError("universal connector requires the Codex adapter")
         self.adapter = adapter
         self.authorization_verifier = authorization_verifier
         self.material_resolver = material_resolver
         self.root_verifier = root_verifier
+        self.admission_guard = admission_guard
+
+    def _reserve_command(self, ledger, command, envelope):
+        if self.admission_guard is None:
+            return ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
+        return ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision,
+                                                _before_append=self.admission_guard)
 
     @staticmethod
     def _receipt(envelope: HQCommandEnvelope, *, receipt_id: str, index: int, status: str, observed_at_ms: int, thread_id: str | None = None, turn_id: str | None = None, observed_root_digest: str | None = None) -> dict[str, object]:
@@ -641,7 +749,12 @@ class UniversalHQConnector:
         if transport is None or not self.adapter.plan_hq(envelope).ready:
             return HQConnectorResult("PENDING", envelope.digest, attention="APP_TASK_CAPABILITY_UNAVAILABLE")
         try:
-            observation = transport.observe_command(envelope)
+            if isinstance(transport, NativeCodexAppTaskTransport):
+                observation = transport.observe_command(envelope,
+                    previous_turn_id=str(ack.get("native_pre_turn_id") or "") if ack else "")
+                now_ms = max(now_ms, transport.clock_ms())
+            else:
+                observation = transport.observe_command(envelope)
             if observation is None:
                 return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
                                          attention="APP_TASK_EVIDENCE_PENDING")
@@ -673,7 +786,7 @@ class UniversalHQConnector:
         projection = ledger.replay()
         retained = projection.get("connector_receipts", {}).get(envelope.idempotency_key)
         if retained is not None:
-            reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
+            reservation = self._reserve_command(ledger, command, envelope)
             if reservation["status"] == "REPLAY":
                 return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms, terminal_handoff=terminal_handoff)
             raise InvariantError("HQ command reservation conflicts")
@@ -690,7 +803,21 @@ class UniversalHQConnector:
         if not isinstance(material, HQDispatchMaterial) or material.digest != envelope.payload_digest:
             raise InvariantError("HQ dispatch material does not match the authorized digest")
         self._verify_cwd_root(envelope, material.cwd)
-        reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
+        native_pre = None
+        task_transport = self.adapter.task_transport
+        if isinstance(task_transport, NativeCodexAppTaskTransport) and self.adapter.plan_hq(envelope).ready:
+            try:
+                previous_turn, cwd, captured_at_ms = task_transport.prepare_command(envelope)
+                verified_root = self._verify_cwd_root(envelope, cwd)
+                if type(captured_at_ms) is not int or captured_at_ms < now_ms:
+                    raise InvariantError("native task capture clock regressed")
+                self._validate_authorization(envelope, authorization, captured_at_ms)
+                now_ms = captured_at_ms
+                native_pre = (previous_turn, verified_root)
+            except Exception:
+                return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
+                                         attention="APP_TASK_PRE_SEND_UNAVAILABLE")
+        reservation = self._reserve_command(ledger, command, envelope)
         if reservation["status"] == "REPLAY":
             return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms, terminal_handoff=terminal_handoff)
         if reservation["status"] != "APPENDED":
@@ -703,6 +830,15 @@ class UniversalHQConnector:
             ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-unsupported", index=1, status="UNSUPPORTED", observed_at_ms=now_ms))
             return HQConnectorResult("UNSUPPORTED", envelope.digest)
         if self.adapter.task_transport is not None:
+            ack = None
+            if native_pre is not None:
+                # ACK confirms the observed existing thread/root, not delivery.
+                # Keep the pre-send floor separate from the nullable result turn.
+                ack = self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1,
+                    status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=envelope.target_thread_id,
+                    observed_root_digest=native_pre[1])
+                ack["native_pre_turn_id"] = native_pre[0]
+                ledger.append_connector_receipt(ack)
             try:
                 # Only APPENDED reaches this call. Its return is NOT a turn receipt.
                 # Omit model/thinking; the app preserves the existing task settings.
@@ -711,7 +847,8 @@ class UniversalHQConnector:
             except Exception:
                 return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
                                          attention="APP_TASK_DELIVERY_UNCERTAIN")
-            return self._observe_app_task(envelope, ledger, now_ms=now_ms, terminal_handoff=terminal_handoff)
+            return self._observe_app_task(envelope, ledger, now_ms=now_ms, ack=ack,
+                                          terminal_handoff=terminal_handoff)
         first_capability = "thread.start" if envelope.target_intent is HQTargetIntent.NEW_THREAD else "thread.resume"
         try:
             started = self.adapter.dispatch(envelope, material, first_capability, thread_id=envelope.target_thread_id)
@@ -1579,9 +1716,10 @@ class CodexAppServerAdapter(ExecutionAdapter):
         if self.task_transport is not None:
             if not self.enabled:
                 return AdapterExecutionPlan(AdapterPlanStatus.DISABLED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="app task capability is disabled")
-            if envelope.action is not HQCommandAction.TASK or any(not callable(getattr(self.task_transport, name, None)) for name in (
+            actions = {HQCommandAction.TASK, HQCommandAction.AUTO} if isinstance(self.task_transport, NativeCodexAppTaskTransport) else {HQCommandAction.TASK}
+            if envelope.action not in actions or any(not callable(getattr(self.task_transport, name, None)) for name in (
                     "send_message_to_thread", "observe_command", "verify_observation")):
-                return AdapterExecutionPlan(AdapterPlanStatus.BLOCKED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="app task capability supports verified existing-thread TASK only")
+                return AdapterExecutionPlan(AdapterPlanStatus.BLOCKED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="app task capability requires a supported verified existing-thread action")
             return AdapterExecutionPlan(AdapterPlanStatus.READY, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), (), "codex-app-task-tool")
         if not self.enabled or self.transport is None:
             return AdapterExecutionPlan(AdapterPlanStatus.DISABLED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="Codex App Server adapter is disabled or unavailable")

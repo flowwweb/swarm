@@ -31,7 +31,7 @@ import webbrowser
 import uuid
 from collections import Counter
 from contextlib import closing, contextmanager, ExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -72,6 +72,7 @@ from runtime.progress_events import (  # noqa: E402
 )
 from runtime.execution_adapters import (  # noqa: E402
     HQAuthorizationReceipt,
+    HQAutoGrant, NativeCodexAppTaskTransport,
     HQCommandEnvelope,
     HQCommandAction, HQTargetIntent, HQDispatchMaterial, HQRootObservation,
     UniversalHQConnector,
@@ -2926,7 +2927,8 @@ class ConsoleStore:
         if incoming_state == "complete" and not bool(incoming.get("host_completed")):
             raise ConsoleError("completed execution reservation requires consumed host completion")
 
-    def persist_execution_ledger(self, ledger: ExecutionDispatchLedger, *, now_ms: int) -> None:
+    def persist_execution_ledger(self, ledger: ExecutionDispatchLedger, *, now_ms: int,
+                                 _auto_events: tuple[tuple[str, str, dict[str, Any]], ...] = ()) -> None:
         """Persist only typed queue identities/digests; raw request or tool content is never accepted."""
         if not isinstance(ledger, ExecutionDispatchLedger) or not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
             raise ConsoleError("execution ledger persistence requires typed state and nonnegative time")
@@ -3015,6 +3017,19 @@ class ConsoleStore:
                     "INSERT OR IGNORE INTO execution_event_receipts(event_digest, retained_at_ms) VALUES (?, ?)",
                     (event_digest, now_ms),
                 )
+            for kind, identity, payload in _auto_events:
+                if kind not in {"AUTO_DISPATCH", "AUTO_DECISION", "AUTO_RELEASE"}:
+                    raise ConsoleError("execution transaction has an invalid Auto receipt")
+                if kind == "AUTO_RELEASE":
+                    row = connection.execute("SELECT fields_json FROM ctrl_overrides WHERE ctrl_id = ?", (payload["ctrl_id"],)).fetchone()
+                    fields = {} if row is None else json.loads(row["fields_json"])
+                    settings = self._auto_settings(fields, ctrl_id=payload["ctrl_id"], project_id=payload["project_id"])
+                    if settings["enabled"] or payload.get("reason") != "PRE_SEND_CANCELLED":
+                        raise ConsoleConflict("Auto preparation cancellation lost its disabled scope")
+                    fields[AUTO_CTRL_OVERRIDE_KEY] = {**settings, "stop_after_turn": False}
+                    connection.execute("UPDATE ctrl_overrides SET fields_json = ?, updated_at_ms = ? WHERE ctrl_id = ?",
+                                       (json.dumps(fields, sort_keys=True), now_ms, payload["ctrl_id"]))
+                self._retain_auto_event(connection, event_kind=kind, identity=identity, payload=payload, now_ms=now_ms)
             connection.commit()
 
     def load_execution_ledger(self) -> ExecutionDispatchLedger:
@@ -3077,6 +3092,51 @@ class ConsoleStore:
         binding = dict(reservation.artifact.observables)
         required = {"ctrl_id", "project_id", "goal_id", "task_id", "request_id", "observed_turn_id", "decision_digest", "route_digest", "next_operation"}
         return binding if required <= set(binding) else None
+
+    @staticmethod
+    def auto_dispatch_identity(decision: dict[str, Any]) -> str:
+        return _auto_digest(tuple(decision[key] for key in ("goal_id", "request_id", "observed_turn_id", "decision_digest")))
+
+    def auto_connector_packet(self, reservation_id: str, command_digest: str = "") -> dict[str, Any] | None:
+        prefix = f"connector:{_auto_id(reservation_id, 'reservation_id')}"
+        with self._lock, closing(self._connect()) as connection:
+            if command_digest:
+                if re.fullmatch(r"[0-9a-f]{64}", command_digest) is None:
+                    raise ConsoleError("Auto connector command digest is invalid")
+                row = connection.execute(
+                    "SELECT payload_json, payload_digest FROM execution_event_receipts "
+                    "WHERE event_kind = 'AUTO_DECISION' AND identity IN (?, ?) ORDER BY rowid DESC LIMIT 1",
+                    (prefix, f"{prefix}:{command_digest}"),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT payload_json, payload_digest FROM execution_event_receipts "
+                    "WHERE event_kind = 'AUTO_DECISION' AND (identity = ? OR substr(identity, 1, ?) = ?) ORDER BY rowid DESC LIMIT 1",
+                    (prefix, len(prefix) + 1, prefix + ":"),
+                ).fetchone()
+        if row is None:
+            return None
+        packet = json.loads(row["payload_json"])
+        if self._auto_payload(packet)[1] != row["payload_digest"]:
+            raise ConsoleError("retained Auto connector packet digest conflicts")
+        return packet
+
+    def _cancel_auto_preparation(self, reservation_id: str, cursor: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+        # Caller holds the existing connector admission lock and proved no COMMAND.
+        with self._lock:
+            ledger = self.load_execution_ledger()
+            reservation = ledger.reservation(reservation_id)
+            binding = self._auto_binding(reservation)
+            if binding is None or reservation.state is not ExecutionDispatchState.ACTIVE or reservation.host_turn_id:
+                raise ConsoleConflict("Auto cancellation requires an exact unsubmitted preparation")
+            reservation.state = ExecutionDispatchState.UNVERIFIED
+            reservation.updated_at_ms = max(now_ms, reservation.updated_at_ms + 1)
+            payload = {"ctrl_id": binding["ctrl_id"], "project_id": binding["project_id"],
+                "reservation_id": reservation_id, "reason": "PRE_SEND_CANCELLED", "observed_cursor": cursor,
+                "material_progress": False}
+            self.persist_execution_ledger(ledger, now_ms=reservation.updated_at_ms,
+                _auto_events=(("AUTO_RELEASE", f"{reservation_id}:pre-send-cancel", payload),))
+        return self.auto_status(binding["ctrl_id"], binding["project_id"])
 
     def _auto_active(self, ledger: ExecutionDispatchLedger | None = None) -> list[tuple[ExecutionReservation, dict[str, str]]]:
         ledger = ledger or self.load_execution_ledger()
@@ -3203,6 +3263,7 @@ class ConsoleStore:
     def claim_auto_dispatch(
         self, decision: dict[str, Any], generation: ExecutionConfigGeneration, *, now_ms: int,
         scoped_generations: tuple[ExecutionConfigGeneration, ...] = (),
+        connector_packet: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         required = {
             "ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "request_id",
@@ -3226,9 +3287,18 @@ class ConsoleStore:
             raise ConsoleError("Auto instruction must be a positive bounded UTF-8 payload")
         if not isinstance(generation, ExecutionConfigGeneration):
             raise ConsoleError("Auto dispatch requires a typed current execution generation")
-        identity = _auto_digest((values["goal_id"], values["request_id"], values["observed_turn_id"], digests["decision_digest"]))
+        identity = self.auto_dispatch_identity({**values, **digests})
         payload = {**values, **digests, "request_bytes": request_bytes, "idempotency_key": identity}
         reservation_id = f"auto-{identity}"
+        events = [("AUTO_DISPATCH", identity, payload)]
+        if connector_packet is not None:
+            if (connector_packet.get("reservation_id") != reservation_id
+                    or any(connector_packet.get(key) != payload[key] for key in ("ctrl_id", "project_id", "decision_digest"))):
+                raise ConsoleError("Auto connector packet conflicts with its dispatch")
+            digest = HQCommandEnvelope(**{**connector_packet["envelope"],
+                "action": HQCommandAction(connector_packet["envelope"]["action"]),
+                "target_intent": HQTargetIntent(connector_packet["envelope"]["target_intent"])}).digest
+            events.append(("AUTO_DECISION", f"connector:{reservation_id}:{digest}", connector_packet))
         with self._lock:
             state = self.auto_status(values["ctrl_id"], values["project_id"])
             if not state["enabled"] or state["stop_after_turn"]:
@@ -3251,10 +3321,8 @@ class ConsoleStore:
             ledger.reserve(reservation_id, f"auto-operation-{identity}", values["owner_id"], artifact, observed_at_ms=now_ms,
                            project_id=values["project_id"], settings_task_id=values["task_id"])
             ledger.dispatch(reservation_id, digests["instruction_digest"], request_bytes, observed_at_ms=now_ms)
-            self.persist_execution_ledger(ledger, now_ms=now_ms)
-            with closing(self._connect()) as connection:
-                self._retain_auto_event(connection, event_kind="AUTO_DISPATCH", identity=identity, payload=payload, now_ms=now_ms)
-                connection.commit()
+            # The lease and its recovery input must survive or roll back together.
+            self.persist_execution_ledger(ledger, now_ms=now_ms, _auto_events=tuple(events))
         return {"claimed": True, "reservation_id": reservation_id, "idempotency_key": identity,
                 "speed_control": ledger.speed_application(reservation_id)}
 
@@ -8389,7 +8457,7 @@ class App:
     def __init__(
         self, codex_home: Path, config_path: Path, state_path: Path | None = None,
         *, auto_bridge: Any | None = None, project_view_resolver: Any | None = None,
-        task_transport: Any | None = None,
+        task_transport: Any | None = None, auto_authorization: Any | None = None,
     ):
         self.codex_home = codex_home.resolve()
         self.config_path = config_path.resolve()
@@ -8397,6 +8465,7 @@ class App:
         self.progress_ledger = ProgressLedger(self.codex_home)
         self.auto_bridge = auto_bridge or CodexStdioBridge()
         self.task_transport = task_transport  # Host-owned existing-task capability, never supplied by HTTP.
+        self.auto_authorization = auto_authorization  # Injected scoped-grant provider/verifier; never an HTTP flag.
         self.project_view_resolver = project_view_resolver or self._default_project_view_resolver
         self.builtin_role_avatar_assets = load_builtin_role_avatar_assets(
             SWARM_SKILL_ROOT / "assets" / "role-avatars"
@@ -11475,7 +11544,10 @@ class App:
         return overview
 
     def auto_status(self, ctrl_id: str, project_id: str) -> dict[str, Any]:
-        self._auto_scope(ctrl_id, project_id)
+        if isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport):
+            self._native_auto_scope(ctrl_id, project_id)  # Read scope only; execution still needs its verified grant.
+        else:
+            self._auto_scope(ctrl_id, project_id)
         return {"ok": True, **self.store.auto_status(ctrl_id, project_id)}
 
     def auto_command(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -11488,7 +11560,10 @@ class App:
             raise ConsoleError("Auto command must be ENABLE, DISABLE, or an exact RELEASE_UNREACHABLE request")
         ctrl_id = _auto_id(payload.get("ctrl_id"), "ctrl_id")
         project_id = _auto_id(payload.get("project_id"), "project_id")
-        self._auto_scope(ctrl_id, project_id)
+        if isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport):
+            self._native_auto_scope(ctrl_id, project_id)
+        else:
+            self._auto_scope(ctrl_id, project_id)
         if command == "RELEASE_UNREACHABLE":
             return {"ok": True, **self.store.release_auto_dispatch(
                 ctrl_id, project_id, payload.get("reservation_id"),
@@ -11694,6 +11769,178 @@ class App:
                 "", "", changed_at_ms, f"config:{digest}", project_id, scope.get("task_id", ""), value is None))
         return tuple(observations)
 
+    def _native_auto_scope(self, ctrl_id: str, project_id: str) -> Path:
+        root = self._auto_project_root(project_id)
+        if self._observed_task_root(project_id, ctrl_id) != root:
+            raise ConsoleError("native Auto controller does not belong to the registered project root")
+        return root
+
+    def _cancel_native_auto_preparation(self, state: dict[str, Any], envelope: HQCommandEnvelope) -> dict[str, Any]:
+        with self.progress_ledger._state.locked():
+            projection, _ = self.progress_ledger._replay_unlocked()
+            if envelope.idempotency_key in projection["connector_receipts"]:
+                return {"dispatched": False, "reason": "NATIVE_RECONCILIATION_REQUIRED", "state": state}
+            current = self.store._cancel_auto_preparation(envelope.command_id, projection["cursor"], now_ms=int(time.time() * 1000))
+        return {"dispatched": False, "reason": "AUTO_OFF", "state": current, "work_completed": False}
+
+    def _native_auto_dispatch(self, state: dict[str, Any], candidate: dict[str, Any] | None) -> dict[str, Any]:
+        transport = getattr(self, "task_transport", None)
+        if not isinstance(transport, NativeCodexAppTaskTransport):
+            return {"dispatched": False, "reason": "NATIVE_AUTO_CAPABILITY_UNAVAILABLE", "state": state}
+        authority = getattr(self, "auto_authorization", None)
+        now = int(time.time() * 1000)
+        root = self._native_auto_scope(state["ctrl_id"], state["project_id"])
+        root_digest = _auto_digest({"project_id": state["project_id"], "canonical_root": _normalized_project_path(str(root))})
+        projection = self.progress_ledger.replay()
+        fresh = candidate is not None
+        if fresh:
+            if not callable(getattr(authority, "grant", None)) or not callable(getattr(authority, "verify", None)):
+                return {"dispatched": False, "reason": "AUTO_HOST_AUTHORIZATION_UNAVAILABLE", "state": state}
+            grant = authority.grant(dict(state), root_digest)
+            if not isinstance(grant, HQAutoGrant):
+                raise ConsoleError("native Auto requires a host-owned scoped AUTO grant")
+            identity = self.store.auto_dispatch_identity(candidate)
+            reservation_id = f"auto-{identity}"
+            envelope = HQCommandEnvelope(reservation_id, identity, HQCommandAction.AUTO,
+                state["project_id"], root_digest, state["ctrl_id"], HQTargetIntent.EXISTING_THREAD,
+                candidate["disposition"]["next_owner"], candidate["instruction_digest"],
+                projection["cursor"]["event_seq"], now, grant.expires_at_ms)
+            meta = {key: candidate[key] for key in ("goal_id", "task_id", "disposition")}
+        else:
+            reservation_id = state["reservation_id"]
+            retained = projection["connector_receipts"].get(reservation_id.removeprefix("auto-"))
+            packet = self.store.auto_connector_packet(reservation_id,
+                "" if retained is None else retained["receipts"][0]["command_digest"])
+            if packet is None:
+                return {"dispatched": False, "reason": "LEGACY_AUTO_RECONCILIATION_REQUIRED", "state": state}
+            fields = dict(packet["envelope"])
+            fields["action"] = HQCommandAction(fields["action"])
+            fields["target_intent"] = HQTargetIntent(fields["target_intent"])
+            envelope = HQCommandEnvelope(**fields)
+            fields = dict(packet["grant"])
+            fields["actions"] = tuple(HQCommandAction(action) for action in fields["actions"])
+            grant = HQAutoGrant(**fields)
+            meta = packet["instruction_meta"]
+            binding = self.store._auto_binding(self.store.load_execution_ledger().reservation(reservation_id))
+            if (binding is None or envelope.command_id != reservation_id
+                    or any(packet[key] != state[key] for key in ("ctrl_id", "project_id"))
+                    or binding["decision_digest"] != packet["decision_digest"]):
+                raise ConsoleError("retained Auto packet conflicts with its execution reservation")
+        if (envelope.action is not HQCommandAction.AUTO or envelope.project_id != state["project_id"]
+                or envelope.ctrl_id != state["ctrl_id"] or envelope.root_digest != root_digest):
+            raise ConsoleError("native Auto command scope conflicts")
+        if self._observed_task_root(envelope.project_id, envelope.target_thread_id) != root:
+            raise ConsoleError("native Auto owner does not belong to the exact project root")
+        retained_command = envelope.idempotency_key in projection["connector_receipts"]
+        preparing = not retained_command
+        if preparing and (not state["enabled"] or state["stop_after_turn"]):
+            return self._cancel_native_auto_preparation(state, envelope)
+        if not fresh and preparing and (now >= envelope.expires_at_ms
+                or envelope.expected_ledger_revision != projection["cursor"]["event_seq"]):
+            # No COMMAND exists: renew preparation, never an admitted/submitted command.
+            if not callable(getattr(authority, "grant", None)) or not callable(getattr(authority, "verify", None)):
+                return {"dispatched": False, "reason": "AUTO_HOST_AUTHORIZATION_UNAVAILABLE", "state": state}
+            grant = authority.grant(dict(state), root_digest)
+            if not isinstance(grant, HQAutoGrant):
+                raise ConsoleError("native Auto requires a host-owned scoped AUTO grant")
+            envelope = replace(envelope, submitted_at_ms=now, expires_at_ms=grant.expires_at_ms,
+                expected_ledger_revision=projection["cursor"]["event_seq"])
+        material = None
+        if fresh or not retained_command:
+            material = HQDispatchMaterial(str(root), self._auto_instruction(meta).encode("utf-8"))
+            if material.digest != envelope.payload_digest:
+                raise ConsoleError("native Auto instruction no longer binds the retained operation")
+
+        def resolve_material(command):
+            if material is None:
+                raise ConsoleError("retained Auto reconciliation must not reconstruct transient input")
+            return material
+
+        def verify(receipt, command, observed_at):
+            current = self.store.auto_status(state["ctrl_id"], state["project_id"])
+            return (current["enabled"] and not current["stop_after_turn"]
+                and current["revision"] == state["revision"] and receipt == grant and command == envelope
+                and callable(getattr(authority, "verify", None))
+                and authority.verify(receipt, command, observed_at) is True)
+
+        def observe(cwd):
+            if Path(cwd).resolve(strict=True) != root or self._native_auto_scope(state["ctrl_id"], state["project_id"]) != root:
+                raise ConsoleError("native Auto observed root changed")
+            return HQRootObservation("native-auto-root", str(root), root_digest)
+
+        def admit():
+            # Deny-only local state check inside the Ledger lock; host capability
+            # verification already ran before admission, never call it under that lock.
+            current = self.store.auto_status(state["ctrl_id"], state["project_id"])
+            return (current["enabled"] and not current["stop_after_turn"]
+                and current["revision"] == state["revision"]
+                and current["reservation_id"] == envelope.command_id
+                and int(time.time() * 1000) < min(envelope.expires_at_ms, grant.expires_at_ms))
+
+        connector = UniversalHQConnector(CodexAppServerAdapter(task_transport=transport),
+            authorization_verifier=SimpleNamespace(verify=verify),
+            material_resolver=SimpleNamespace(resolve=resolve_material),
+            root_verifier=SimpleNamespace(observe=observe,
+                verify=lambda observation, command: observation.canonical_cwd == str(root) and observation.root_digest == command.root_digest),
+            admission_guard=admit)
+        if fresh or preparing:
+            connector._validate_authorization(envelope, grant, now)
+            fields = {key: value for key, value in asdict(envelope).items() if key not in {"digest", "_task_creation_json"}}
+            prepared_packet = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
+                "reservation_id": reservation_id, "decision_digest": candidate["decision_digest"] if fresh else packet["decision_digest"],
+                "envelope": fields, "grant": asdict(grant), "instruction_meta": meta}
+        if fresh:
+            decision = {key: candidate[key] for key in ("ctrl_id", "project_id", "goal_id", "task_id", "owner_id",
+                "request_id", "observed_turn_id", "decision_digest", "route_digest", "instruction_digest")}
+            decision.update(next_operation=candidate["disposition"]["next_operation"],
+                request_bytes=len(material.instruction.encode("utf-8")))
+            with self.write_lock:
+                claim = self.store.claim_auto_dispatch(decision, self._auto_generation(), now_ms=now,
+                    scoped_generations=self._auto_scoped_generations(state["project_id"], candidate["task_id"]),
+                    connector_packet=prepared_packet)
+            if not claim["claimed"]:
+                return {"dispatched": False, **claim}
+        elif preparing:
+            # Keep immutable preparation attempts in the existing journal. After
+            # admission, lookup selects the exact COMMAND digest, not the newest attempt.
+            self.store.retain_auto_control("AUTO_DECISION", f"connector:{reservation_id}:{envelope.digest}", prepared_packet, now_ms=now)
+        try:
+            result = connector.execute(envelope, grant, self.progress_ledger, now_ms=int(time.time() * 1000),
+                observed_project_id=state["project_id"], observed_root_digest=root_digest)
+        except ValueError:
+            current = self.store.auto_status(state["ctrl_id"], state["project_id"])
+            if not current["enabled"] or current["stop_after_turn"]:
+                return self._cancel_native_auto_preparation(current, envelope)
+            raise
+        if result.thread_id:
+            retained = self.store.auto_status(state["ctrl_id"], state["project_id"])
+            if (retained["thread_id"], retained["turn_id"]) != (result.thread_id, result.turn_id):
+                self.store.retain_auto_host_ids(reservation_id, result.thread_id, result.turn_id,
+                    bool(result.turn_id) or result.attention == "APP_TASK_DELIVERY_UNCERTAIN", now_ms=int(time.time() * 1000))
+        if result.status not in {"RESULT", "REPLAY"} or not result.turn_id:
+            return {"dispatched": False, "reason": result.attention or "NATIVE_OUTCOME_PENDING",
+                    "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "work_completed": False}
+        try:
+            observed = transport.observe_turn(result.thread_id, result.turn_id)
+        except Exception:
+            observed = None  # Transport failure is not evidence that the native turn is absent.
+        if observed is None or Path(observed["cwd"]).resolve(strict=True) != root:
+            return {"dispatched": preparing, "reason": "NATIVE_TERMINAL_UNKNOWN",
+                    "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "work_completed": False}
+        if observed["status"] == "inProgress":
+            return {"dispatched": preparing, "reason": "IN_FLIGHT",
+                    "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "work_completed": False}
+        ok = observed["status"] == "completed"
+        disposition = None if ok else {"disposition": "WAIT_USER", "next_operation": "ADMIT_TERMINAL_FAILURE_BEFORE_RETRY",
+            "next_owner": state["ctrl_id"], "next_route": "",
+            "release_condition": "admit the exact native terminal failure into Ledger",
+            "responsible_authority": state["ctrl_id"]}
+        completed = self.store.finish_auto_dispatch(reservation_id, result=AutoBridgeResult(
+            ok, result.thread_id, result.turn_id, failure_kind="" if ok else "NATIVE_TURN_FAILED",
+            turn_started=True, terminal=True, reachable=True), disposition=disposition, now_ms=int(time.time() * 1000))
+        return {"dispatched": preparing, "reason": "NATIVE_DELIVERED" if preparing else "RECONCILED",
+                "state": completed, "work_completed": False, "bridge_ok": ok}
+
     def evaluate_auto_once(self, overview: dict[str, Any] | None = None) -> dict[str, Any]:
         states = self.store.enabled_auto_states()
         if not states:
@@ -11702,125 +11949,31 @@ class App:
         projection = self.progress_ledger.replay()
         waiting = None
         for state in states:
-            self._auto_scope(state["ctrl_id"], state["project_id"])
+            if isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport):
+                self._native_auto_scope(state["ctrl_id"], state["project_id"])
+            else:
+                self._auto_scope(state["ctrl_id"], state["project_id"])
             if state["in_flight"]:
-                speed_error = ""
-                try:
-                    with self.write_lock:
-                        self.store.refresh_auto_speed(state["reservation_id"], self._auto_generation(),
-                            self._auto_scoped_generations(state["project_id"], state["task_id"]), now_ms=int(time.time() * 1000))
-                except ConsoleError as exc:
-                    speed_error = str(exc)[:256]
-                if not state["thread_id"]:
-                    return {"dispatched": False, "reason": "UNREACHABLE_IN_FLIGHT", "state": state, "speed_settings_error": speed_error or None}
-                result = self.auto_bridge.reconcile(
-                    cwd=self._auto_project_root(state["project_id"]),
-                    thread_id=state["thread_id"], turn_id=state["turn_id"],
-                )
-                if result.turn_id and not state["turn_id"]:
-                    self.store.retain_auto_host_ids(
-                        state["reservation_id"], result.thread_id, result.turn_id, True,
-                        now_ms=int(time.time() * 1000),
-                    )
-                if not result.terminal:
-                    payload = {
-                        "ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
-                        "reservation_id": state["reservation_id"], "thread_id": result.thread_id,
-                        "turn_id": result.turn_id, "failure_kind": result.failure_kind,
-                        "reachable": result.reachable, "turn_started": result.turn_started,
-                        "material_progress": False,
-                    }
-                    self.store.retain_auto_control(
-                        "AUTO_RECONCILE", f"{state['reservation_id']}:{_auto_digest(payload)}",
-                        payload, now_ms=int(time.time() * 1000),
-                    )
-                    reason = "IN_FLIGHT" if result.failure_kind == "TURN_ACTIVE" else "UNREACHABLE_IN_FLIGHT"
-                    return {"dispatched": False, "reason": reason, "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "speed_settings_error": speed_error or None}
-                disposition = None if result.ok else {
-                    "disposition": "WAIT_USER", "next_operation": "ADMIT_TERMINAL_FAILURE_BEFORE_RETRY",
-                    "next_owner": state["ctrl_id"], "next_route": "",
-                    "release_condition": "admit the retained terminal host failure into Ledger",
-                    "responsible_authority": state["ctrl_id"],
-                }
-                completed = self.store.finish_auto_dispatch(
-                    state["reservation_id"], result=result, disposition=disposition, now_ms=int(time.time() * 1000),
-                )
-                return {"dispatched": False, "reason": "RECONCILED", "state": completed, "speed_settings_error": speed_error or None}
+                return self._native_auto_dispatch(state, None)
             if not state["enabled"] or state["stop_after_turn"]:
                 continue
             candidate = self._auto_candidate(state, overview, projection)
             if candidate is None:
                 continue
             if candidate["disposition"]["disposition"] in {"WAIT_USER", "TERMINAL_BLOCKED"}:
-                payload = {
-                    "ctrl_id": candidate["ctrl_id"], "project_id": candidate["project_id"],
-                    "decision_digest": candidate["decision_digest"],
-                    "disposition": candidate["disposition"], "rubric": candidate["rubric"],
-                    "material_progress": False,
-                }
-                fresh = self.store.retain_auto_control(
-                    "AUTO_DECISION", candidate["decision_digest"], payload,
-                    now_ms=int(time.time() * 1000),
-                )
-                retained = {**self.store.auto_status(state["ctrl_id"], state["project_id"]), "replayed": not fresh}
-                if waiting is None:
-                    waiting = {"dispatched": False, "reason": candidate["disposition"]["disposition"], "state": retained}
+                payload = {"ctrl_id": candidate["ctrl_id"], "project_id": candidate["project_id"],
+                    "decision_digest": candidate["decision_digest"], "disposition": candidate["disposition"],
+                    "rubric": candidate["rubric"], "material_progress": False}
+                fresh = self.store.retain_auto_control("AUTO_DECISION", candidate["decision_digest"], payload,
+                    now_ms=int(time.time() * 1000))
+                waiting = waiting or {"dispatched": False, "reason": candidate["disposition"]["disposition"],
+                    "state": {**self.store.auto_status(state["ctrl_id"], state["project_id"]), "replayed": not fresh}}
                 continue
-            project_root = self._auto_project_root(state["project_id"])
-            decision = {key: candidate[key] for key in (
-                "ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "request_id",
-                "observed_turn_id", "decision_digest", "route_digest", "instruction_digest",
-            )}
-            decision["next_operation"] = candidate["disposition"]["next_operation"]
-            decision["request_bytes"] = len(candidate["instruction"].encode("utf-8"))
-            with self.write_lock:
-                claim = self.store.claim_auto_dispatch(decision, self._auto_generation(), now_ms=int(time.time() * 1000),
-                    scoped_generations=self._auto_scoped_generations(state["project_id"], candidate["task_id"]))
-            if not claim["claimed"]:
-                if claim.get("reason") == "REPLAY":
-                    if waiting is None:
-                        waiting = {"dispatched": False, **claim}
-                    continue
-                return {"dispatched": False, **claim}
-            result = AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True)
-            retained_thread_id = ""
-            for attempt in range(3):
-                try:
-                    result = self.auto_bridge.run(
-                        cwd=project_root, instruction=candidate["instruction"],
-                        service_tier=claim["speed_control"]["requested_service_tier"],
-                        thread_id=retained_thread_id,
-                        retain_ids=lambda thread_id, turn_id, submission_started: self.store.retain_auto_host_ids(
-                            claim["reservation_id"], thread_id, turn_id, submission_started,
-                            now_ms=int(time.time() * 1000),
-                        ),
-                    )
-                except (ConsoleError, OSError, RuntimeError):
-                    result = AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True)
-                retained_thread_id = result.thread_id or retained_thread_id
-                if result.ok or result.turn_started or not result.transient:
-                    break
-                if attempt < 2:
-                    jitter = int(candidate["decision_digest"][:4], 16) % 100 / 1000
-                    time.sleep(0.25 * (2**attempt) + jitter)
-            disposition = None
-            if not result.ok:
-                if result.turn_started:
-                    disposition = {
-                        "disposition": "WAIT_USER", "next_operation": "RECONCILE_RETAINED_HOST_TURN",
-                        "next_owner": state["ctrl_id"], "next_route": "",
-                        "release_condition": "confirm the retained host turn outcome before another turn/start",
-                        "responsible_authority": state["ctrl_id"],
-                    }
-                else:
-                    disposition = {
-                        "disposition": "WAIT_USER", "next_operation": "RESTORE_APP_SERVER_TRANSPORT",
-                        "next_owner": state["ctrl_id"], "next_route": "",
-                        "release_condition": "restore the private Codex App Server transport",
-                        "responsible_authority": state["ctrl_id"],
-                    }
-            completed = self.store.finish_auto_dispatch(claim["reservation_id"], result=result, disposition=disposition, now_ms=int(time.time() * 1000))
-            return {"dispatched": True, "bridge_ok": result.ok, "state": completed}
+            result = self._native_auto_dispatch(state, candidate)
+            if not result["dispatched"] and result.get("reason") == "REPLAY":
+                waiting = waiting or result
+                continue
+            return result
         return waiting or {"dispatched": False, "reason": "NO_DUE_DECISION"}
 
     def _host_overview(self, *, refresh: bool = False) -> dict[str, Any]:

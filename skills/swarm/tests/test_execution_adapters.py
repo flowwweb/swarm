@@ -65,7 +65,7 @@ from skills.swarm.runtime import (
     route_execution,
 )
 from skills.swarm.runtime.progress_events import Ledger, ProgressEventError, build_task_manifest, load_builtin_role_manifests
-from skills.swarm.runtime.execution_adapters import HQAppTaskObservation, handoff_dispatch_instruction
+from skills.swarm.runtime.execution_adapters import HQAppTaskObservation, NativeCodexAppTaskTransport, handoff_dispatch_instruction
 
 
 class FakeCodexTransport:
@@ -170,6 +170,48 @@ class FakeAppTaskTransport:
 
     def verify_observation(self, observation, envelope):
         return observation == self.trusted and observation.command_digest == envelope.digest
+
+
+class NativeTaskTools:
+    def __init__(self, *, busy=False, uncertain=False):
+        self.busy = busy
+        self.uncertain = uncertain
+        self.submitted = False
+        self.calls = []
+        self.prompt = ""
+        self.post_text = None
+        self.cwd = "C:/work/project-a"
+        self.post_cwd = None
+        self.release_on_wait = True
+
+    def request(self, method, params):
+        self.calls.append((method, dict(params)))
+        if method == "read_thread":
+            if params != {"threadId": "thread-1", "turnLimit": 2,
+                          "includeOutputs": False, "maxOutputCharsPerItem": 65536}:
+                raise AssertionError("invented native read schema")
+            turns = [{"id": "turn-before", "status": "inProgress" if self.busy else "completed", "items": []}]
+            if self.submitted:
+                turns.insert(0, {"id": "turn-after", "status": "inProgress", "items": [
+                    {"type": "userMessage", "content": [{"type": "text",
+                        "text": self.post_text if self.post_text is not None else self.prompt}]}]})
+            return {"thread": {"id": "thread-1", "cwd": (self.post_cwd or self.cwd) if self.submitted else self.cwd},
+                    "turns": turns, "page": {"order": "newest_first"}}
+        if method == "wait_threads":
+            if params != {"targets": [{"threadId": "thread-1"}], "timeoutMs": 30000}:
+                raise AssertionError("invented native wait schema")
+            if self.release_on_wait:
+                self.busy = False
+            return {"timedOut": self.busy}
+        if method == "send_message_to_thread":
+            if set(params) != {"threadId", "prompt"} or params["threadId"] != "thread-1":
+                raise AssertionError("model override or invented native send schema")
+            self.submitted = True
+            self.prompt = params["prompt"]
+            if self.uncertain:
+                raise TimeoutError("applied but tool response disconnected")
+            return {"threadId": "thread-1"}  # Never a fabricated turn receipt.
+        raise AssertionError(method)
 
 
 class ExecutionAdapterTests(unittest.TestCase):
@@ -470,6 +512,191 @@ class ExecutionAdapterTests(unittest.TestCase):
             authorization_verifier=FakeHQAuthorizationVerifier(), material_resolver=FakeHQMaterialResolver(material),
             root_verifier=FakeHQRootVerifier())
         return envelope, material, transport, connector
+
+    def native_task_connector(self, tools, *, enabled=True, clock_ms=lambda: 2):
+        envelope, material, _, _ = self.app_task_case()
+        transport = NativeCodexAppTaskTransport(tools.request, clock_ms=clock_ms)
+        connector = UniversalHQConnector(CodexAppServerAdapter(enabled=enabled, task_transport=transport),
+            authorization_verifier=FakeHQAuthorizationVerifier(), material_resolver=FakeHQMaterialResolver(material),
+            root_verifier=FakeHQRootVerifier())
+        return envelope, material, connector
+
+    def test_native_capture_waits_reads_sends_and_binds_exact_new_turn(self):
+        import tempfile
+        from pathlib import Path
+        tools = NativeTaskTools(busy=True)
+        envelope, material, connector = self.native_task_connector(tools)
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            before = ledger.replay()
+            result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual((result.status, result.thread_id, result.turn_id), ("RESULT", "thread-1", "turn-after"))
+            self.assertEqual([x[0] for x in tools.calls], ["read_thread", "wait_threads", "read_thread",
+                                                         "send_message_to_thread", "read_thread"])
+            retained = ledger.replay()["connector_receipts"]["app-key"]["receipts"]
+            self.assertEqual([(r["status"], r["turn_id"]) for r in retained],
+                             [("COMMAND", None), ("ACKNOWLEDGED", None), ("RESULT", "turn-after")])
+            self.assertEqual(retained[1]["native_pre_turn_id"], "turn-before")
+            self.assertNotIn(material.instruction, repr(retained))
+            for key in ("scopes", "blocks", "latest_material_signatures", "task_creation_bindings"):
+                self.assertEqual(ledger.replay()[key], before[key])
+
+    def test_native_auto_preserves_auto_action_and_requires_exact_scoped_grant(self):
+        import tempfile
+        from pathlib import Path
+        for wrong in (None, "project", "root", "ctrl", "expired"):
+            with self.subTest(wrong=wrong), tempfile.TemporaryDirectory() as directory:
+                tools = NativeTaskTools()
+                envelope, _, connector = self.native_task_connector(tools)
+                envelope = replace(envelope, action=HQCommandAction.AUTO)
+                grant = HQAutoGrant("auto-native", "other" if wrong == "project" else "project-a",
+                    "b" * 64 if wrong == "root" else "a" * 64,
+                    "other" if wrong == "ctrl" else "ctrl-a", (HQCommandAction.AUTO,), 1 if wrong == "expired" else 3)
+                ledger = Ledger(Path(directory))
+                if wrong:
+                    with self.assertRaises(InvariantError):
+                        connector.execute(envelope, grant, ledger, now_ms=2,
+                            observed_project_id="project-a", observed_root_digest="a" * 64)
+                    self.assertEqual(tools.calls, [])
+                    self.assertEqual(ledger.replay()["cursor"]["event_seq"], 0)
+                else:
+                    result = connector.execute(envelope, grant, ledger, now_ms=2,
+                        observed_project_id="project-a", observed_root_digest="a" * 64)
+                    self.assertEqual(result.status, "RESULT")
+                    self.assertTrue(all(r["action"] == "AUTO" for r in ledger.replay()["connector_receipts"]["app-key"]["receipts"]))
+
+    def test_native_auto_atomic_admission_guard_only_denies_and_replay_bypasses_it(self):
+        import tempfile
+        from pathlib import Path
+        tools = NativeTaskTools()
+        envelope, _, connector = self.native_task_connector(tools)
+        envelope = replace(envelope, action=HQCommandAction.AUTO)
+        grant = HQAutoGrant("auto-native", "project-a", "a" * 64, "ctrl-a", (HQCommandAction.AUTO,), 3)
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            connector.admission_guard = lambda: False
+            with self.assertRaises(InvariantError):
+                connector.execute(envelope, grant, ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a"*64)
+            self.assertEqual(ledger.replay()["cursor"]["event_seq"], 0)
+            self.assertFalse(any(method == "send_message_to_thread" for method, _ in tools.calls))
+            connector.admission_guard = lambda: True
+            connector.authorization_verifier = FakeHQAuthorizationVerifier(False)
+            with self.assertRaises(InvariantError):
+                connector.execute(envelope, grant, ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a"*64)
+            self.assertEqual(ledger.replay()["cursor"]["event_seq"], 0)
+            connector.authorization_verifier = FakeHQAuthorizationVerifier()
+            self.assertEqual(connector.execute(envelope, grant, ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a"*64).status, "RESULT")
+            calls = list(tools.calls)
+            connector.admission_guard = lambda: (_ for _ in ()).throw(AssertionError("retained replay is not new admission"))
+            connector.material_resolver = UnavailableHQMaterialResolver()
+            connector.authorization_verifier = FakeHQAuthorizationVerifier(False)
+            self.assertEqual(connector.execute(envelope, grant, Ledger(Path(directory)), now_ms=100,
+                observed_project_id="project-a", observed_root_digest="a"*64).status, "REPLAY")
+            self.assertEqual(tools.calls, calls)
+
+    def test_native_capture_restart_after_uncertain_send_needs_no_prompt_or_resend(self):
+        import tempfile
+        from pathlib import Path
+        tools = NativeTaskTools(uncertain=True)
+        envelope, _, connector = self.native_task_connector(tools)
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual(result.status, "PENDING")
+            self.assertEqual([r["status"] for r in ledger.replay()["connector_receipts"]["app-key"]["receipts"]],
+                             ["COMMAND", "ACKNOWLEDGED"])
+            _, _, restarted = self.native_task_connector(tools)
+            restarted.material_resolver = UnavailableHQMaterialResolver()
+            restarted.authorization_verifier = FakeHQAuthorizationVerifier(False)
+            result = restarted.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=100,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual((result.status, result.turn_id), ("RESULT", "turn-after"))
+            replay = restarted.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=101,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual((replay.status, replay.turn_id), ("REPLAY", "turn-after"))
+            self.assertEqual(sum(m == "send_message_to_thread" for m, _ in tools.calls), 1)
+            self.assertEqual(restarted.material_resolver.calls, [])
+
+    def test_native_capture_busy_wrong_root_expiry_and_disabled_never_send(self):
+        import tempfile
+        from pathlib import Path
+        for kind in ("busy", "root", "expiry", "disabled"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                tools = NativeTaskTools(busy=kind == "busy")
+                tools.release_on_wait = False
+                if kind == "root": tools.cwd = "C:/work/foreign"
+                envelope, _, connector = self.native_task_connector(tools, enabled=kind != "disabled",
+                    clock_ms=lambda: 100 if kind == "expiry" else 2)
+                ledger = Ledger(Path(directory))
+                result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertIn(result.status, {"PENDING", "UNSUPPORTED"})
+                self.assertFalse(any(m == "send_message_to_thread" for m, _ in tools.calls))
+                if kind != "disabled": self.assertEqual(ledger.replay()["cursor"]["event_seq"], 0)
+                else: self.assertEqual(tools.calls, [])
+
+    def test_native_capture_mismatched_input_root_or_missing_floor_never_complete(self):
+        import tempfile
+        from pathlib import Path
+        for kind in ("input", "root", "summary", "floor", "top-level-text", "truncated"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                tools = NativeTaskTools()
+                if kind == "input": tools.post_text = "unrelated user input"
+                if kind == "root": tools.post_cwd = "C:/work/foreign"
+                original = tools.request
+                def request(method, params):
+                    response = original(method, params)
+                    if method == "read_thread" and tools.submitted:
+                        if kind == "summary": response["turns"][0]["items"] = [{"type": "agentMessage", "text": tools.prompt}]
+                        if kind == "floor": response["turns"][1]["id"] = "different-previous-turn"
+                        if kind == "top-level-text": response["turns"][0]["items"] = [{"type": "userMessage", "text": tools.prompt}]
+                        if kind == "truncated": response["turns"][0]["items"][0]["content"][0]["text"] = tools.prompt[:-1]
+                    return response
+                tools.request = request
+                envelope, _, connector = self.native_task_connector(tools)
+                ledger = Ledger(Path(directory))
+                result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertIn(result.status, {"PENDING", "ATTENTION"})
+                self.assertEqual([r["status"] for r in ledger.replay()["connector_receipts"]["app-key"]["receipts"]],
+                                 ["COMMAND", "ACKNOWLEDGED"])
+
+    def test_native_capture_decodes_exact_typed_delegation_content_not_summary(self):
+        import tempfile
+        from pathlib import Path
+        from xml.sax.saxutils import escape
+        for kind in ("delegation", "parts", "literal-wrapper", "malformed", "unknown-part"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                tools = NativeTaskTools()
+                original = tools.request
+                def request(method, params):
+                    response = original(method, params)
+                    if method == "read_thread" and tools.submitted:
+                        message = response["turns"][0]["items"][0]
+                        if kind == "delegation": message["content"] = [{"type": "text", "text":
+                            "<codex_delegation><source_thread_id>host-sender</source_thread_id><input>"
+                            + escape(tools.prompt) + "</input></codex_delegation>"}]
+                        if kind == "parts": message["content"] = [{"type": "text", "text": tools.prompt[:10]},
+                            {"type": "text", "text": tools.prompt[10:]}]
+                        if kind == "malformed": message["content"] = [{"type": "text", "text": "<codex_delegation><input>broken"}]
+                        if kind == "unknown-part": message["content"].append({"type": "image", "text": "ignored?"})
+                    return response
+                tools.request = request
+                envelope, _, connector = self.native_task_connector(tools)
+                if kind in {"delegation", "literal-wrapper"}:
+                    text = "Original Ω\r\n<safe> & &amp;" if kind == "delegation" else (
+                        "<codex_delegation><source_thread_id>literal</source_thread_id>"
+                        "<input>Keep this whole literal input.</input></codex_delegation>")
+                    material = HQDispatchMaterial("C:/work/project-a", text.encode("utf-8"))
+                    envelope = replace(envelope, payload_digest=material.digest)
+                    connector.material_resolver = FakeHQMaterialResolver(material)
+                ledger = Ledger(Path(directory))
+                result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(result.status, "RESULT" if kind in {"delegation", "parts", "literal-wrapper"} else "PENDING")
 
     def test_app_task_exact_delivery_and_terminal_restart_preserve_identity(self):
         import tempfile

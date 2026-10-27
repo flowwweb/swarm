@@ -43,6 +43,85 @@ def image_sources(markup: str) -> list[str | None]:
 
 
 class SwarmMCPTests(unittest.TestCase):
+    def test_runtime_startup_identity_matches_package_and_rejects_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".codex-plugin").mkdir()
+            (root / ".codex-plugin/plugin.json").write_text(json.dumps({"name": "swarm", "version": "1.2.3-test"}))
+            source = root / "entry.py"
+            source.write_bytes(b"# fixture, never executed\n")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            metadata = {"schema": "swarm-package-v2", "version": "1.2.3-test", "commit": "a"*40,
+                        "tree": "b"*40, "files": {"entry.py": digest}}
+            (root / "swarm-package.json").write_text(json.dumps(metadata))
+            captured = mcp._startup_runtime_identity(root, source)
+            self.assertEqual(captured["package_state"], "PACKAGED_MATCH")
+            self.assertEqual(captured["package_version"], "1.2.3-test")
+            self.assertEqual(captured["mcp_source_sha256_at_import"], digest)
+            self.assertEqual(captured["package_commit"], "a"*40)
+            self.assertIs(type(captured["process_id"]), int)
+            self.assertRegex(captured["instance_id"], r"^[a-f0-9]{16}$")
+            self.assertNotIn(str(root), json.dumps(captured))
+            metadata["files"]["entry.py"] = "0"*64
+            (root / "swarm-package.json").write_text(json.dumps(metadata))
+            rejected = mcp._startup_runtime_identity(root, source)
+            self.assertEqual(rejected["package_state"], "MISMATCH")
+            self.assertIsNone(rejected["package_commit"])
+            self.assertIsNone(rejected["package_tree"])
+
+    def test_runtime_startup_identity_nested_metadata_is_unverified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".codex-plugin").mkdir()
+            manifest = root / ".codex-plugin/plugin.json"
+            metadata = root / "swarm-package.json"
+            source = root / "entry.py"
+            source.write_bytes(b"# fixture, never executed\n")
+            entry = root / "skills/swarm/scripts/swarm_mcp.py"
+            entry.parent.mkdir(parents=True)
+            entry.write_bytes(SERVER.read_bytes())
+            nested = "[" * 10000 + "0" + "]" * 10000
+            for target in (manifest, metadata):
+                with self.subTest(target=target.name):
+                    manifest.write_text(json.dumps({"name": "swarm", "version": "1.2.3-test"}))
+                    target.write_text(nested)
+                    captured = mcp._startup_runtime_identity(root, source)
+                    self.assertEqual(captured["package_state"], "UNVERIFIED")
+                    self.assertIsNone(captured["package_commit"])
+                    self.assertIsNone(captured["package_tree"])
+                    wire = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+                    process = subprocess.run([sys.executable, "-X", "utf8", "-B", str(entry), "--stdio",
+                        "--telemetry", str(root / "telemetry.jsonl")], input=json.dumps(wire) + "\n",
+                        text=True, encoding="utf-8", capture_output=True, timeout=20)
+                    self.assertEqual(process.returncode, 0, process.stderr)
+                    response = json.loads(process.stdout)
+                    self.assertEqual(response["id"], 1)
+                    self.assertEqual(response["result"]["serverInfo"]["version"],
+                                     "unverified" if target == manifest else "1.2.3-test")
+                    self.assertFalse((root / "telemetry.jsonl").exists())
+
+    def test_status_and_initialize_keep_startup_identity_after_disk_edit(self):
+        _, _, projection, _ = self._unit_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".codex-plugin").mkdir()
+            manifest = root / ".codex-plugin/plugin.json"
+            manifest.write_text(json.dumps({"name": "swarm", "version": "1.2.3-test"}))
+            source = root / "entry.py"
+            source.write_bytes(b"# original startup source\n")
+            captured = mcp._startup_runtime_identity(root, source)
+            with patch.object(mcp, "_STARTUP_RUNTIME", captured), patch.object(mcp, "_device_status", return_value={}):
+                first = projection.call("swarm_status", {"project_id": "project:alpha"})["runtime"]
+                manifest.write_text(json.dumps({"name": "swarm", "version": "9.9.9-later"}))
+                source.write_bytes(b"# later on-disk source\n")
+                self.assertEqual(projection.call("swarm_status", {"project_id": "project:alpha"})["runtime"], first)
+                first["package_version"] = "client mutation"
+                self.assertEqual(projection.call("swarm_status", {"project_id": "project:alpha"})["runtime"]["package_version"], "1.2.3-test")
+                wire = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+                with patch.object(sys, "stdin", io.StringIO(json.dumps(wire))), patch.object(sys, "stdout", new_callable=io.StringIO) as output, patch.object(mcp, "SwarmProjection", return_value=projection):
+                    self.assertEqual(mcp.serve(hq_app=Mock()), 0)
+                self.assertEqual(json.loads(output.getvalue())["result"]["serverInfo"]["version"], "1.2.3-test")
+
     def _unit_fixture(self):
         sys.path.insert(0, str(mcp.REPO_ROOT))
         from console import server

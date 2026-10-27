@@ -992,6 +992,43 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(blocked.action, ControlPathRecoveryAction.TERMINAL_BLOCKED)
         self.assertEqual(blocked.release_receipt_id, release.receipt)
 
+    def test_native_pre_turn_floor_is_ack_only_restart_safe_and_non_material(self) -> None:
+        command = {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": "native-command",
+            "command_id": "native-task", "receipt_index": 0, "idempotency_key": "native-key",
+            "command_digest": "1" * 64, "project_id": "project-alpha", "root_digest": "2" * 64,
+            "action": "TASK", "status": "COMMAND", "thread_id": None, "turn_id": None,
+            "observed_root_digest": None, "observed_at_ms": 1}
+        self.ledger.append_connector_receipt(command)
+        before = self.ledger.project("project-alpha")
+        ack = {**command, "receipt_id": "native-ack", "receipt_index": 1, "status": "ACKNOWLEDGED",
+               "thread_id": "thread-native", "observed_root_digest": "2" * 64,
+               "observed_at_ms": 2, "native_pre_turn_id": "turn-before"}
+        original = self.ledger._state.path.read_bytes()
+        for invalid in ({**command, "native_pre_turn_id": "turn-before"},
+                        {**ack, "turn_id": "turn-before"},
+                        {**ack, "action": "REPAIR"},
+                        {**ack, "observed_root_digest": "3" * 64},
+                        *({**ack, "native_pre_turn_id": value} for value in (None, True, "", "unsafe/id"))):
+            with self.subTest(invalid=invalid), self.assertRaises(ProgressEventError):
+                self.ledger.append_connector_receipt(invalid)
+            self.assertEqual(self.ledger._state.path.read_bytes(), original)
+        self.assertEqual(self.ledger.append_connector_receipt(ack)["status"], "appended")
+        self.assertEqual(self.ledger.append_connector_receipt(ack)["status"], "unchanged")
+        exact = self.ledger._state.path.read_bytes()
+        restarted = self.host_ledger(self.root)
+        retained = restarted.replay()["connector_receipts"]["native-key"]["receipts"][-1]
+        self.assertEqual((retained["turn_id"], retained["native_pre_turn_id"]), (None, "turn-before"))
+        self.assertEqual(restarted._state.path.read_bytes(), exact)
+        with self.assertRaises(ProgressEventError):
+            restarted.append_connector_receipt({**ack, "native_pre_turn_id": "other-turn"})
+        with self.assertRaises(ProgressEventError):
+            restarted.append_connector_receipt({**ack, "receipt_id": "native-result", "receipt_index": 2,
+                "status": "RESULT", "turn_id": "turn-after"})
+        after = restarted.project("project-alpha")
+        self.assertEqual({k: v for k, v in before.items() if k != "cursor"},
+                         {k: v for k, v in after.items() if k != "cursor"})
+        self.assertEqual(restarted._state.path.read_bytes(), exact)
+
     def test_connector_receipt_is_non_material_idempotent_and_restart_safe(self) -> None:
         base = {
             "schema_version": 1, "record_type": "CONNECTOR", "command_id": "connector-command-1",
@@ -1204,8 +1241,14 @@ class ProgressLedgerContractTests(unittest.TestCase):
             "action": "TASK", "status": "COMMAND", "thread_id": None, "turn_id": None,
             "observed_root_digest": None, "observed_at_ms": 1,
         }
-        appended = self.ledger.reserve_connector_command(command, expected_revision=0)
-        replay = self.ledger.reserve_connector_command(command, expected_revision=0)
+        before = self.ledger.replay()
+        denied = self.ledger.reserve_connector_command(command, expected_revision=0, _before_append=lambda: False)
+        self.assertEqual(denied["status"], "CONFLICT")
+        self.assertEqual(self.ledger.replay(), before)
+        self.assertFalse(self.ledger._state.path.exists())
+        appended = self.ledger.reserve_connector_command(command, expected_revision=0, _before_append=lambda: True)
+        replay = self.ledger.reserve_connector_command(command, expected_revision=0,
+            _before_append=lambda: self.fail("retained replay must not run a new admission check"))
         self.assertEqual((appended["status"], replay["status"]), ("APPENDED", "REPLAY"))
         self.assertEqual(appended["cursor"], replay["cursor"])
         for changed in (

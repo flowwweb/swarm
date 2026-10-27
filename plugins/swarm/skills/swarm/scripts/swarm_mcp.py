@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import socket
 import stat
 import sys
@@ -29,8 +30,48 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "a4ba2fb1e60041b2ec4221dc5d36cf9a2e5e862210765a0771cdd64005c40132"
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "b0f262a07126fbd5a7180d344849188ec8e28e5cd6595d68f170f0b8ae3b05da", "skills/swarm/assets/ui/swarm-hq-host.css": "d8973b342265d5119431d51d1ce5474bac9c1399af55d2f42d4a268637f186d5", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250"}
+HQ_SDK_SHA256 = "458447606baf4b498c152a851020d594164090647429e040577d8862dacefd55"
+
+
+def _startup_runtime_identity(root: Path, source: Path) -> dict[str, Any]:
+    identity = {"schema_version": 1, "process_id": os.getpid(), "instance_id": secrets.token_hex(8),
+        "started_at_ms": int(time.time() * 1000), "package_name": None, "package_version": None,
+        "package_state": "UNVERIFIED", "package_commit": None, "package_tree": None,
+        "mcp_source_sha256_at_import": None,
+        "claim_limit": "Process-start observations, not host authority or workflow acceptance. Match the installed tree and fresh native reload too."}
+    def read_json(path):
+        with path.open("rb") as stream:
+            raw = stream.read(512 * 1024 + 1)
+        if len(raw) > 512 * 1024:
+            raise ValueError("runtime metadata exceeds its bound")
+        return json.loads(raw)
+    try:
+        with source.open("rb") as stream:
+            raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("runtime source exceeds its bound")
+        identity["mcp_source_sha256_at_import"] = hashlib.sha256(raw).hexdigest()
+        manifest = read_json(root / ".codex-plugin/plugin.json")
+        if manifest.get("name") != "swarm" or not isinstance(manifest.get("version"), str) or not 1 <= len(manifest["version"]) <= 128:
+            raise ValueError("runtime package identity is invalid")
+        identity.update(package_name="swarm", package_version=manifest["version"], package_state="UNPACKAGED")
+        metadata_path = root / "swarm-package.json"
+        if metadata_path.exists():
+            metadata = read_json(metadata_path)
+            if (metadata.get("schema") != "swarm-package-v2" or metadata.get("version") != manifest["version"]
+                    or metadata.get("files", {}).get(source.relative_to(root).as_posix()) != identity["mcp_source_sha256_at_import"]
+                    or any(re.fullmatch(r"[a-f0-9]{40}", str(metadata.get(key) or "")) is None for key in ("commit", "tree"))):
+                identity["package_state"] = "MISMATCH"
+            else:
+                identity.update(package_state="PACKAGED_MATCH", package_commit=metadata["commit"], package_tree=metadata["tree"])
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+        identity["package_state"] = "UNVERIFIED"
+    return identity
+
+
+# Capture once. A later on-disk edit cannot relabel this already-running process.
+_STARTUP_RUNTIME = _startup_runtime_identity(REPO_ROOT, SCRIPT_ROOT)
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "00c1b5ec48522fdc31645280f8471eb507d6905f5d91c17d4bdf76a83557cf63", "skills/swarm/assets/ui/swarm-hq-host.css": "f5f24bacddfb39ce2b03ceb8d3fd79be7ed94b400f3d65b2c35aca896501f2b8", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250"}
 
 
 PROJECTS_SUPPORT_IMAGES = {
@@ -527,8 +568,13 @@ class SwarmProjection:
             if project_id is not None and (not isinstance(project_id, str) or not project_id.strip()):
                 raise MCPError("project_id must be non-empty text")
             app.refresh_native_observation()
+            runtime = dict(_STARTUP_RUNTIME)
+            code = getattr(getattr(type(app), "__init__", None), "__code__", None)
+            origin = Path(code.co_filename).resolve() if code is not None else None
+            runtime["backend_code_origin"] = (origin.relative_to(REPO_ROOT).as_posix()
+                if origin is not None and origin.is_relative_to(REPO_ROOT) else "OUTSIDE_PACKAGE_OR_UNKNOWN")
             return {**_compact_overview(app.overview(project_id.strip() if project_id else None)),
-                    "device": _device_status(self.telemetry_path)}
+                    "device": _device_status(self.telemetry_path), "runtime": runtime}
         if name == "swarm_projects":
             app.refresh_native_observation()
             return _compact_roster(app.project_roster())
@@ -906,7 +952,7 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
             if not isinstance(params, dict):
                 raise MCPError("params must be an object")
             if method == "initialize":
-                result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "swarm-mcp", "version": "1.0.0"}}
+                result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "swarm-mcp", "version": _STARTUP_RUNTIME["package_version"] or "unverified"}}
                 if hq_app:
                     result["capabilities"]["resources"] = {"listChanged": False}
             elif method == "tools/list":

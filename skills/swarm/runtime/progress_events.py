@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from threading import Condition
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from weakref import WeakKeyDictionary
 
 from .agent_colors import (
@@ -238,7 +238,7 @@ CONNECTOR_RECEIPT_FIELDS = frozenset({
     "schema_version", "record_type", "receipt_id", "command_id", "receipt_index",
     "idempotency_key", "command_digest", "payload_digest",
     "project_id", "root_digest", "action", "status", "thread_id", "turn_id",
-    "observed_root_digest", "observed_at_ms", "task_creation_identity", "non_delivery_evidence",
+    "observed_root_digest", "observed_at_ms", "task_creation_identity", "non_delivery_evidence", "native_pre_turn_id",
 })
 CONNECTOR_ACTIONS = frozenset({"AUTO", "MANUAL_AGENT", "TASK", "TOPOLOGY_MATERIALIZE", "REPAIR", "LOCAL_HQ"})
 CONNECTOR_STATUSES = frozenset({
@@ -971,7 +971,7 @@ def _validate_connector_receipt(payload: Any, *, replay: bool = False) -> dict[s
     admitted = replay and type(version) is int and version == 2
     allowed = set(CONNECTOR_RECEIPT_FIELDS) | (set(CONNECTOR_ADMISSION_FIELDS) if admitted else set())
     actual_fields = set(payload)
-    required = allowed - {"task_creation_identity", "payload_digest", "non_delivery_evidence"}
+    required = allowed - {"task_creation_identity", "payload_digest", "non_delivery_evidence", "native_pre_turn_id"}
     if not required <= actual_fields or actual_fields - allowed:
         raise ProgressEventError("connector receipt fields are incomplete or unexpected")
     if type(version) is not int or version != (2 if admitted else 1) or payload.get("record_type") != "CONNECTOR":
@@ -1037,6 +1037,11 @@ def _validate_connector_receipt(payload: Any, *, replay: bool = False) -> dict[s
         raise ProgressEventError("LOCAL_HQ lifecycle requires the exact local observed root")
     if normalized["action"] != "LOCAL_HQ" and normalized["status"] == "ACKNOWLEDGED" and (not has_thread or has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector acknowledgement requires a thread and exact root binding")
+    if "native_pre_turn_id" in payload:
+        if (normalized["action"] not in {"TASK", "AUTO"} or normalized["status"] != "ACKNOWLEDGED"
+                or not isinstance(payload["native_pre_turn_id"], str)):
+            raise ProgressEventError("native pre-send floor is reserved for a TASK or AUTO acknowledgement")
+        normalized["native_pre_turn_id"] = _safe_id(payload["native_pre_turn_id"], "native pre-send turn")
     if not pre_turn and normalized["action"] not in {"LOCAL_HQ", "ROOT_ADOPT"} and normalized["status"] in {"PROGRESS", "RESULT", "DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and (not has_thread or not has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector progress or result requires thread, turn, and exact root binding")
     if not pre_turn and normalized["status"] in {"DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and normalized["action"] != "REPAIR":
@@ -4318,7 +4323,8 @@ class Ledger:
             self._condition.notify_all()
         return {"status": "appended", "cursor": trial["cursor"], "event_digest": handoff_digest, "bytes": len(encoded)}
 
-    def reserve_connector_command(self, payload: Mapping[str, Any], *, expected_revision: int) -> dict[str, Any]:
+    def reserve_connector_command(self, payload: Mapping[str, Any], *, expected_revision: int,
+                                  _before_append: Callable[[], bool] | None = None) -> dict[str, Any]:
         event = _validate_connector_receipt(dict(payload), replay=True)
         if event["status"] != "COMMAND" or event["receipt_index"] != 0:
             raise ProgressEventError("connector reservation requires COMMAND index zero")
@@ -4335,6 +4341,8 @@ class Ledger:
                     return {"status": "REPLAY", "command": json.loads(json.dumps(command, sort_keys=True)), "cursor": {"event_seq": retained["event_seq"], "event_id": event["receipt_id"], "event_digest": event_digest}}
                 return {"status": "CONFLICT", "command": json.loads(json.dumps(command, sort_keys=True)), "cursor": projection["cursor"]}
             if retained_digest is not None or command_binding is not None or len(records) != expected_revision:
+                return {"status": "CONFLICT", "command": None, "cursor": projection["cursor"]}
+            if _before_append is not None and _before_append() is not True:
                 return {"status": "CONFLICT", "command": None, "cursor": projection["cursor"]}
             if event["schema_version"] == 2:
                 raise ProgressEventError("retained schema-2 connector receipts are read-only")

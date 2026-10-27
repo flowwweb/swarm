@@ -10927,6 +10927,299 @@ class SwarmConsoleTests(unittest.TestCase):
             console.HTTPStatus.FORBIDDEN, "Auto command requires strict loopback authorization",
         )
 
+    def _native_auto_case(self, *, terminal=True, uncertain=False):
+        self._confirm_root_ctrl()
+        host = {"calls": [], "sent": [], "turns": [{"id": "native-before", "status": "completed", "items": []}],
+                "terminal": terminal, "uncertain": uncertain, "missing_input": False, "deny": False}
+        def request(method, params):
+            host["calls"].append((method, dict(params)))
+            if method == "read_thread":
+                self.assertEqual(params, {"threadId": "task", "turnLimit": 2,
+                    "includeOutputs": False, "maxOutputCharsPerItem": 65536})
+                turns = copy.deepcopy(host["turns"][:2])
+                if host["missing_input"]: turns[0]["items"] = []
+                return {"thread": {"id": "task", "cwd": str(self.alpha_root)},
+                        "page": {"order": "newest_first"}, "turns": turns}
+            if method == "wait_threads":
+                self.assertEqual(params, {"targets": [{"threadId": "task"}], "timeoutMs": 30000})
+                return {"timedOut": True}
+            if method != "send_message_to_thread": raise AssertionError(method)
+            self.assertEqual(set(params), {"threadId", "prompt"})
+            self.assertEqual(params["threadId"], "task")
+            host["sent"].append(dict(params))
+            host["turns"].insert(0, {"id": f"native-turn-{len(host['sent'])}",
+                "status": "completed" if host["terminal"] else "inProgress",
+                "items": [{"type": "userMessage", "content": [{"type": "text", "text": params["prompt"]}]}]})
+            if host["uncertain"]: raise TimeoutError("applied but disconnected")
+            return {"threadId": "task"}
+        authority = SimpleNamespace(
+            grant=lambda state, digest: console.HQAutoGrant("native-grant", state["project_id"], digest,
+                state["ctrl_id"], (console.HQCommandAction.AUTO,), int(time.time() * 1000) + 60000),
+            verify=lambda receipt, envelope, now: not host["deny"],
+        )
+        transport = console.NativeCodexAppTaskTransport(request, clock_ms=lambda: int(time.time() * 1000))
+        app = console.App(self.codex_home, self.config, task_transport=transport, auto_authorization=authority)
+        app.auto_bridge = SimpleNamespace(run=mock.Mock(side_effect=AssertionError("private process fallback")),
+            reconcile=mock.Mock(side_effect=AssertionError("private read fallback")))
+        retained = app.progress_ledger
+        facts = {"projection": self._auto_projection(), "events": [self._auto_lifecycle()]}
+        class LedgerFixture:
+            # Only material input fixtures are controlled; connector writes/replay use real Ledger bytes.
+            def __init__(self, ledger): self.ledger = ledger
+            def __getattr__(self, name): return getattr(self.ledger, name)
+            def replay(self):
+                projection = self.ledger.replay()
+                projection["expected_receipts"] = facts["projection"]["expected_receipts"]
+                return projection
+            def _bounded_tail_records(self): return facts["events"], False
+        app.progress_ledger = LedgerFixture(retained)
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "native-enable"})
+        return app, host, facts, retained, authority, transport
+
+    def test_native_auto_production_caller_advances_distinct_material_result_once(self):
+        app, host, facts, ledger, _, _ = self._native_auto_case()
+        first = app.evaluate_auto_once(app._host_overview())
+        self.assertEqual((first["dispatched"], first["work_completed"]), (True, False))
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "REPLAY")
+        self.assertEqual(len(host["sent"]), 1, "turn completion alone cannot trigger another operation")
+        facts["projection"] = self._auto_projection(event_id="lifecycle-4")
+        facts["events"].append(self._auto_lifecycle(sequence=4))
+        second = app.evaluate_auto_once(app._host_overview())
+        self.assertTrue(second["dispatched"])
+        self.assertEqual(len(host["sent"]), 2)
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "REPLAY")
+        commands = ledger.replay()["connector_receipts"]
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(all(r["action"] == "AUTO" for c in commands.values() for r in c["receipts"]))
+        self.assertEqual(ledger.replay()["blocks"], {})
+        app.auto_bridge.run.assert_not_called()
+        app.auto_bridge.reconcile.assert_not_called()
+
+    def test_native_auto_uncertain_restart_reconciles_without_second_send(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case(terminal=False, uncertain=True)
+        first = app.evaluate_auto_once(app._host_overview())
+        self.assertFalse(first["dispatched"])
+        self.assertTrue(first["state"]["in_flight"])
+        fresh_transport = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=fresh_transport)
+        self.assertIsNot(restarted.progress_ledger, ledger)
+        restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+        restarted._auto_instruction = mock.Mock(side_effect=AssertionError("no prompt recovery on restart"))
+        host["uncertain"] = False
+        pending = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(pending["reason"], "IN_FLIGHT")
+        self.assertEqual(len(host["sent"]), 1)
+        host["turns"][0]["status"] = "completed"
+        result = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(result["reason"], "RECONCILED")
+        self.assertFalse(result["state"]["in_flight"])
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(len(ledger.replay()["connector_receipts"]), 1)
+
+    def test_native_auto_packet_interruption_rolls_back_lease_and_restart_can_dispatch(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case()
+        retain = app.store._retain_auto_event
+        def interrupted(connection, **kwargs):
+            if kwargs["event_kind"] == "AUTO_DECISION" and kwargs["identity"].startswith("connector:"):
+                raise OSError("interrupted before recovery packet commit")
+            return retain(connection, **kwargs)
+        with mock.patch.object(app.store, "_retain_auto_event", side_effect=interrupted):
+            with self.assertRaises(OSError): app.evaluate_auto_once(app._host_overview())
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(app.store.load_execution_ledger().reservations, ())
+        self.assertEqual(ledger.replay()["connector_receipts"], {})
+        self.assertEqual(host["calls"], [])
+        self.assertEqual(host["sent"], [])
+        with closing(app.store._connect()) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM execution_event_receipts WHERE event_kind='AUTO_DISPATCH' OR identity LIKE 'connector:%'").fetchone()[0], 0)
+        for _ in range(2):
+            native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+            restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+            restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+            restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(len(ledger.replay()["connector_receipts"]), 1)
+
+    def test_native_auto_busy_pre_send_renews_expired_preparation_only(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case()
+        base, elapsed = time.time(), [0.0]
+        def clock():
+            elapsed[0] += .002
+            return base + elapsed[0]
+        host["turns"][0]["status"] = "inProgress"
+        with mock.patch.object(console.time, "time", side_effect=clock):
+            pending = app.evaluate_auto_once(app._host_overview())
+            self.assertEqual(pending["reason"], "APP_TASK_PRE_SEND_UNAVAILABLE")
+            reservation_id = pending["state"]["reservation_id"]
+            first_packet = app.store.auto_connector_packet(reservation_id)
+            self.assertEqual(ledger.replay()["connector_receipts"], {})
+            self.assertEqual(host["sent"], [])
+            elapsed[0] += 61
+            native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+            restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+            restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+            host["deny"] = True
+            calls = list(host["calls"])
+            with self.assertRaises(ValueError): restarted.evaluate_auto_once(restarted._host_overview())
+            self.assertEqual(host["calls"], calls)
+            self.assertEqual(app.store.auto_connector_packet(reservation_id), first_packet)
+            self.assertEqual(ledger.replay()["connector_receipts"], {})
+            host["deny"] = False
+            host["turns"][0]["status"] = "completed"
+            result = restarted.evaluate_auto_once(restarted._host_overview())
+            self.assertEqual(result["reason"], "NATIVE_DELIVERED")
+            self.assertTrue(result["dispatched"])
+            self.assertFalse(result["state"]["in_flight"])
+            final_packet = app.store.auto_connector_packet(reservation_id)
+            self.assertEqual(first_packet["envelope"]["idempotency_key"], final_packet["envelope"]["idempotency_key"])
+            self.assertGreater(final_packet["envelope"]["expires_at_ms"], first_packet["envelope"]["expires_at_ms"])
+            commands = ledger.replay()["connector_receipts"]
+            self.assertEqual(len(commands), 1)
+            retained_digest = next(iter(commands.values()))["receipts"][0]["command_digest"]
+            self.assertEqual(app.store.auto_connector_packet(reservation_id, retained_digest), final_packet)
+            self.assertEqual(restarted.evaluate_auto_once(restarted._host_overview())["reason"], "REPLAY")
+        self.assertEqual(len(host["sent"]), 1)
+
+    def test_native_auto_interruption_after_atomic_prepare_restarts_without_duplicate(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case()
+        persist = app.store.persist_execution_ledger
+        def interrupted(*args, **kwargs):
+            persist(*args, **kwargs)
+            raise OSError("interrupted after complete preparation commit")
+        with mock.patch.object(app.store, "persist_execution_ledger", side_effect=interrupted):
+            with self.assertRaises(OSError): app.evaluate_auto_once(app._host_overview())
+        state = app.store.auto_status("root", "project:alpha")
+        self.assertTrue(state["in_flight"])
+        self.assertIsNotNone(app.store.auto_connector_packet(state["reservation_id"]))
+        self.assertEqual(ledger.replay()["connector_receipts"], {})
+        self.assertEqual(host["sent"], [])
+        for _ in range(2):
+            native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+            restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+            restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+            restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(len(ledger.replay()["connector_receipts"]), 1)
+
+    def test_native_auto_retained_command_selects_exact_preparation_not_newest(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case()
+        base, elapsed = time.time(), [0.0]
+        def clock():
+            elapsed[0] += .002
+            return base + elapsed[0]
+        host["turns"][0]["status"] = "inProgress"
+        with mock.patch.object(console.time, "time", side_effect=clock):
+            state = app.evaluate_auto_once(app._host_overview())["state"]
+            original = app.store.auto_connector_packet(state["reservation_id"])
+            elapsed[0] += 61
+            app.evaluate_auto_once(app._host_overview())
+            self.assertNotEqual(app.store.auto_connector_packet(state["reservation_id"]), original)
+            fields = {**original["envelope"], "action": console.HQCommandAction.AUTO,
+                      "target_intent": console.HQTargetIntent.EXISTING_THREAD}
+            envelope = console.HQCommandEnvelope(**fields)
+            # Interleaving fixture: the earlier valid preparation won Ledger admission.
+            ledger.append_connector_receipt(console.UniversalHQConnector._receipt(envelope,
+                receipt_id=envelope.command_id + "-command", index=0, status="COMMAND",
+                observed_at_ms=envelope.submitted_at_ms))
+            self.assertEqual(app.store.auto_connector_packet(state["reservation_id"], envelope.digest), original)
+            native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+            restarted = console.App(self.codex_home, self.config, task_transport=native)
+            restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+            restarted._auto_instruction = mock.Mock(side_effect=AssertionError("no retained prompt recovery"))
+            pending = restarted.evaluate_auto_once(restarted._host_overview())
+            self.assertEqual(pending["reason"], "APP_TASK_EVIDENCE_PENDING")
+        self.assertEqual(host["sent"], [])
+        self.assertEqual(len(ledger.replay()["connector_receipts"]), 1)
+
+    def test_native_auto_cancel_unsubmitted_preparation_releases_other_controller(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case()
+        host["turns"][0]["status"] = "inProgress"
+        pending = app.evaluate_auto_once(app._host_overview())
+        reservation_id = pending["state"]["reservation_id"]
+        self.assertEqual(ledger.replay()["connector_receipts"], {})
+        app.auto_command({"command": "DISABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "cancel-prepared"})
+        native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+        restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+        result = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(result["reason"], "AUTO_OFF")
+        self.assertEqual((result["state"]["enabled"], result["state"]["stop_after_turn"], result["state"]["in_flight"]), (False, False, False))
+        self.assertEqual(restarted.evaluate_auto_once()["reason"], "AUTO_CLOSED")
+        self.assertEqual(host["sent"], [])
+        self.assertEqual(ledger.replay()["connector_receipts"], {})
+        retained = restarted.store.load_execution_ledger().reservation(reservation_id)
+        self.assertEqual(retained.state, console.ExecutionDispatchState.UNVERIFIED)
+        self.assertIsNone(retained.failure_kind)
+        self.assertFalse(retained.host_completed)
+        self.assertIsNotNone(restarted.store.auto_connector_packet(reservation_id))
+        with closing(restarted.store._connect()) as db:
+            release = json.loads(db.execute("SELECT payload_json FROM execution_event_receipts WHERE event_kind='AUTO_RELEASE'").fetchone()[0])
+        self.assertEqual(release["reason"], "PRE_SEND_CANCELLED")
+        self.assertFalse(release["material_progress"])
+        restarted.store.set_auto("ctrl-2", "project:alpha", enabled=True, request_id="another-controller", now_ms=int(time.time()*1000))
+        self.assertTrue(restarted.store.claim_auto_dispatch(self._auto_decision("ctrl-2"), restarted._auto_generation(), now_ms=int(time.time()*1000))["claimed"])
+
+    def _native_auto_cancel_admission_race(self, admission_wins):
+        app, host, _, ledger, _, _ = self._native_auto_case()
+        reserve = ledger.reserve_connector_command
+        def raced(payload, **kwargs):
+            if admission_wins:
+                result = reserve(payload, **kwargs)
+            app.auto_command({"command": "DISABLE", "ctrl_id": "root", "project_id": "project:alpha",
+                              "request_id": "cancel-at-admission"})
+            return result if admission_wins else reserve(payload, **kwargs)
+        with mock.patch.object(ledger, "reserve_connector_command", side_effect=raced):
+            result = app.evaluate_auto_once(app._host_overview())
+        self.assertFalse(result["work_completed"])
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(len(host["sent"]), int(admission_wins))
+        self.assertEqual(len(ledger.replay()["connector_receipts"]), int(admission_wins))
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_CLOSED")
+
+    def test_native_auto_cancellation_wins_command_admission_race(self):
+        self._native_auto_cancel_admission_race(False)
+
+    def test_native_auto_admission_wins_cancellation_race_without_resend(self):
+        self._native_auto_cancel_admission_race(True)
+
+    def test_native_auto_cancel_success_and_max_route_exhaustion_stop(self):
+        app, host, facts, _, _, _ = self._native_auto_case(terminal=False)
+        app.evaluate_auto_once(app._host_overview())
+        app.auto_command({"command": "DISABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "native-disable"})
+        host["turns"][0]["status"] = "completed"
+        app.evaluate_auto_once(app._host_overview())
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_CLOSED")
+        self.assertEqual(len(host["sent"]), 1)
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "native-enable-next"})
+        facts["projection"]["expected_receipts"]["expected-auto"]["result"]["status"] = "MATCHED"
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "NO_DUE_DECISION")
+        facts["projection"] = self._auto_projection(event_id="lifecycle-6")
+        facts["events"] = [self._auto_lifecycle(sequence=i+3, routes=(f"r{i+1}",), turns=(f"t{i+1}",),
+            permitted=("r1", "r2", "r3")) for i in range(3)]
+        facts["events"].append(self._auto_lifecycle("BLOCKED", sequence=6, routes=("r1", "r2", "r3"),
+            permitted=("r1", "r2", "r3"), turns=("t1", "t2", "t3"),
+            release_authority="user", release_receipt_id="release-proof"))
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "TERMINAL_BLOCKED")
+        self.assertEqual(len(host["sent"]), 1)
+
+    def test_native_auto_unknown_input_and_missing_or_forged_authority_fail_closed(self):
+        app, host, _, ledger, authority, _ = self._native_auto_case(uncertain=True)
+        host["deny"] = True
+        before = ledger.replay()["cursor"]
+        with self.assertRaises(ValueError): app.evaluate_auto_once(app._host_overview())
+        self.assertEqual(ledger.replay()["cursor"], before)
+        self.assertEqual(host["sent"], [])
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        app.auto_authorization = None
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "AUTO_HOST_AUTHORIZATION_UNAVAILABLE")
+        app.auto_authorization = authority;host["deny"] = False
+        app.evaluate_auto_once(app._host_overview());host["missing_input"] = True
+        pending = app.evaluate_auto_once(app._host_overview())
+        self.assertEqual(pending["reason"], "APP_TASK_EVIDENCE_PENDING")
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertNotIn("RESULT", [r["status"] for c in ledger.replay()["connector_receipts"].values() for r in c["receipts"]])
+
     def test_auto_waiting_project_does_not_hide_later_project(self) -> None:
         app = object.__new__(console.App)
         app.write_lock = threading.Lock()
@@ -10951,172 +11244,125 @@ class SwarmConsoleTests(unittest.TestCase):
         app._auto_generation = lambda: None
         app._auto_scoped_generations = mock.Mock(return_value=[])
         app.store.claim_auto_dispatch = mock.Mock(return_value={"claimed": False, "reason": "REPLAY"})
+        app._native_auto_dispatch = mock.Mock(return_value={"dispatched": False, "reason": "REPLAY"})
         self.assertEqual(app.evaluate_auto_once({"current": True})["reason"], "REPLAY")
         self.assertEqual(visited, ["waiting", "next"])
-        app.store.claim_auto_dispatch.assert_called_once()
-        app._auto_scoped_generations.assert_called_once_with("waiting", "bound")
+        app._native_auto_dispatch.assert_called_once_with(states[0], replay)
+        app.store.claim_auto_dispatch.assert_not_called()  # Real native dispatch owns this boundary; tested below.
 
     def test_auto_due_event_dispatches_once_and_host_completion_is_zero_progress(self) -> None:
-        self._confirm_root_ctrl()
-        bridge = SimpleNamespace(run=mock.Mock(return_value=console.AutoBridgeResult(
-            True, "thread-auto", "turn-auto", "d" * 64, turn_started=True, terminal=True, reachable=True,
-        )))
-        app = console.App(self.codex_home, self.config, auto_bridge=bridge)
-        app.auto_command({
-            "command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha",
-            "request_id": "enable-auto",
-        })
-        projection = self._auto_projection()
-        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
-        overview = app._host_overview()
-        first = app.evaluate_auto_once(overview)
+        app, host, _, ledger, _, _ = self._native_auto_case()
+        first = app.evaluate_auto_once(app._host_overview())
         self.assertTrue(first["dispatched"])
         self.assertTrue(first["bridge_ok"])
-        self.assertEqual(bridge.run.call_count, 1)
-        status = app.store.auto_status("root", "project:alpha")
-        self.assertEqual(status["phase"], "IDLE")
+        self.assertFalse(first["work_completed"])
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(app.store.auto_status("root", "project:alpha")["phase"], "IDLE")
         with closing(sqlite3.connect(app.store.path)) as connection:
-            payload = json.loads(connection.execute(
-                "SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_OUTCOME'"
-            ).fetchone()[0])
-        self.assertFalse(payload["material_progress"])
-        self.assertEqual(app.evaluate_auto_once(overview)["reason"], "REPLAY")
-        self.assertEqual(bridge.run.call_count, 1)
+            rows = connection.execute("SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_OUTCOME'").fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertFalse(json.loads(rows[0][0])["material_progress"])
+            payloads = connection.execute("SELECT payload_json FROM execution_event_receipts").fetchall()
+            self.assertTrue(all(host["sent"][0]["prompt"] not in row[0] for row in payloads))
+        self.assertEqual(ledger.replay()["blocks"], {})
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "REPLAY")
+        self.assertEqual(len(host["sent"]), 1)
+        app.auto_bridge.run.assert_not_called()
 
-    def test_auto_prestart_transport_retry_reuses_thread_and_is_bounded(self) -> None:
+    def test_auto_prestart_missing_native_capability_never_uses_private_retry(self) -> None:
         self._confirm_root_ctrl()
-        bridge = SimpleNamespace(run=mock.Mock(side_effect=[
-            console.AutoBridgeResult(False, "thread-reuse", failure_kind="TURN_START_FAILED", transient=True),
-            console.AutoBridgeResult(True, "thread-reuse", "turn-reuse", "d" * 64, turn_started=True, terminal=True, reachable=True),
-        ]))
+        bridge = SimpleNamespace(run=mock.Mock(side_effect=AssertionError("private retry is retired")),
+                                 reconcile=mock.Mock(side_effect=AssertionError("private reconciliation is retired")))
         app = console.App(self.codex_home, self.config, auto_bridge=bridge)
-        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-retry"})
-        projection = self._auto_projection()
-        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-no-native"})
+        app.progress_ledger = self._auto_ledger(self._auto_projection(), self._auto_lifecycle())
         with mock.patch.object(console.time, "sleep") as sleep:
             result = app.evaluate_auto_once(app._host_overview())
-        self.assertTrue(result["bridge_ok"])
-        self.assertEqual(bridge.run.call_count, 2)
-        self.assertEqual(bridge.run.call_args_list[1].kwargs["thread_id"], "thread-reuse")
-        sleep.assert_called_once()
+        self.assertEqual(result["reason"], "NATIVE_AUTO_CAPABILITY_UNAVAILABLE")
+        self.assertFalse(result["dispatched"])
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(app.store.load_execution_ledger().reservations, ())
+        bridge.run.assert_not_called()
+        bridge.reconcile.assert_not_called()
+        sleep.assert_not_called()
 
     def test_auto_restart_reconciles_active_turn_and_authorized_release_recovers_global_lease(self) -> None:
-        self._confirm_root_ctrl()
-        def uncertain(*, retain_ids, **_kwargs):
-            retain_ids("thread-retained", "turn-retained", True)
-            return console.AutoBridgeResult(False, "thread-retained", "turn-retained", failure_kind="TRANSPORT_UNAVAILABLE", transient=True, turn_started=True)
-        bridge = SimpleNamespace(
-            run=mock.Mock(side_effect=uncertain),
-            reconcile=mock.Mock(return_value=console.AutoBridgeResult(False, "thread-retained", "turn-retained", failure_kind="TURN_ACTIVE", transient=True, turn_started=True, reachable=True)),
-        )
-        app = console.App(self.codex_home, self.config, auto_bridge=bridge)
+        app, host, _, _, authority, transport = self._native_auto_case(terminal=False, uncertain=True)
         with self.assertRaises(console.ConsoleError):
-            app.auto_command({
-                "command": "ENABLE", "ctrl_id": "root", "project_id": "project:missing",
-                "request_id": "wrong-project",
-            })
-        self.assertEqual(app.store.enabled_auto_states(), [])
-
-        app.auto_command({
-            "command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha",
-            "request_id": "enable-transient",
-        })
-        projection = self._auto_projection()
-        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+            app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:missing", "request_id": "wrong-project"})
         first = app.evaluate_auto_once(app._host_overview())
         self.assertTrue(first["state"]["in_flight"])
-        restarted = console.App(self.codex_home, self.config, auto_bridge=bridge)
-        restarted.progress_ledger = app.progress_ledger
+        fresh_transport = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=fresh_transport, auto_authorization=authority)
+        self.assertIsNot(restarted.progress_ledger, app.progress_ledger.ledger)
+        restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
         second = restarted.evaluate_auto_once(restarted._host_overview())
         self.assertEqual(second["reason"], "IN_FLIGHT")
-        self.assertEqual((bridge.run.call_count, bridge.reconcile.call_count), (1, 1))
+        self.assertEqual(len(host["sent"]), 1)
         reservation_id = second["state"]["reservation_id"]
+        release = {"command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
+                   "request_id": "release-native", "reservation_id": reservation_id,
+                   "recovery_authority": "root", "release_condition": "independently confirmed host absence"}
         with self.assertRaises(console.ConsoleConflict):
-            restarted.auto_command({
-                "command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
-                "request_id": "release-while-active", "reservation_id": reservation_id,
-                "recovery_authority": "root", "release_condition": "caller assertion is insufficient",
-            })
-        bridge.reconcile.return_value = console.AutoBridgeResult(
-            False, "thread-retained", "turn-retained", failure_kind="TURN_UNREACHABLE",
-            transient=True, turn_started=True, reachable=False,
-        )
-        unreachable = restarted.evaluate_auto_once(restarted._host_overview())
-        self.assertEqual(unreachable["reason"], "UNREACHABLE_IN_FLIGHT")
-        released = restarted.auto_command({
-            "command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
-            "request_id": "release-unreachable", "reservation_id": reservation_id,
-            "recovery_authority": "root", "release_condition": "host turn is unreachable after retained status read",
-        })
-        self.assertFalse(released["in_flight"])
-        other = self._auto_decision("ctrl-2")
+            restarted.auto_command(release)
+        fresh_transport.request = mock.Mock(side_effect=OSError("native control offline"))
+        unknown = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(unknown["reason"], "NATIVE_TERMINAL_UNKNOWN")
+        with self.assertRaises(console.ConsoleConflict):
+            restarted.auto_command(release)
+        # An unavailable control route never authorizes release. This separate
+        # fixture represents the existing independent host-absence receipt.
+        restarted.store.retain_auto_control("AUTO_RECONCILE", "independent-host-absence",
+            {"ctrl_id": "root", "project_id": "project:alpha", "reservation_id": reservation_id,
+             "failure_kind": "TURN_UNREACHABLE", "turn_started": True, "reachable": False},
+            now_ms=int(time.time() * 1000))
+        self.assertFalse(restarted.auto_command(release)["in_flight"])
+        self.assertEqual(len(host["sent"]), 1)
         restarted.store.set_auto("ctrl-2", "project:alpha", enabled=True, request_id="enable-two", now_ms=20)
         with self.assertRaises(console.ConsoleConflict):
-            restarted.store.claim_auto_dispatch(other, self._auto_generation(), now_ms=21)
-        self.assertTrue(restarted.store.claim_auto_dispatch(other, restarted._auto_generation(), now_ms=21)["claimed"])
+            restarted.store.claim_auto_dispatch(self._auto_decision("ctrl-2"), self._auto_generation(), now_ms=21)
+        self.assertTrue(restarted.store.claim_auto_dispatch(self._auto_decision("ctrl-2"), restarted._auto_generation(), now_ms=21)["claimed"])
 
     def test_auto_restart_terminal_read_releases_lease_without_second_turn_start(self) -> None:
-        self._confirm_root_ctrl()
-        def uncertain(*, retain_ids, **_kwargs):
-            retain_ids("thread-terminal", "turn-terminal", True)
-            return console.AutoBridgeResult(False, "thread-terminal", "turn-terminal", failure_kind="TRANSPORT_UNAVAILABLE", transient=True, turn_started=True)
-        first_bridge = SimpleNamespace(run=mock.Mock(side_effect=uncertain))
-        app = console.App(self.codex_home, self.config, auto_bridge=first_bridge)
-        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-terminal"})
-        projection = self._auto_projection()
-        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        app, host, _, _, authority, transport = self._native_auto_case(terminal=False)
         self.assertTrue(app.evaluate_auto_once(app._host_overview())["state"]["in_flight"])
-
-        read = mock.Mock(return_value=console.AutoBridgeResult(
-            True, "thread-terminal", "turn-terminal", "d" * 64,
-            turn_started=True, terminal=True, reachable=True,
-        ))
-        restarted = console.App(self.codex_home, self.config, auto_bridge=SimpleNamespace(reconcile=read))
-        restarted.progress_ledger = app.progress_ledger
+        host["turns"][0]["status"] = "completed"
+        fresh_transport = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=fresh_transport, auto_authorization=authority)
+        self.assertIsNot(restarted.progress_ledger, app.progress_ledger.ledger)
+        restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+        restarted._auto_instruction = mock.Mock(side_effect=AssertionError("transient input must not be recovered"))
         result = restarted.evaluate_auto_once(restarted._host_overview())
         self.assertEqual(result["reason"], "RECONCILED")
         self.assertFalse(result["state"]["in_flight"])
-        read.assert_called_once()
-        self.assertEqual(first_bridge.run.call_count, 1)
+        self.assertFalse(result["work_completed"])
+        self.assertEqual(len(host["sent"]), 1)
 
     def test_auto_restart_with_submitted_thread_and_no_turn_id_reconciles_or_releases_once(self) -> None:
-        self._confirm_root_ctrl()
-        def uncertain(*, retain_ids, **_kwargs):
-            retain_ids("thread-submitted", "", True)
-            return console.AutoBridgeResult(
-                False, "thread-submitted", failure_kind="TRANSPORT_UNAVAILABLE",
-                transient=True, turn_started=True,
-            )
-        first_bridge = SimpleNamespace(run=mock.Mock(side_effect=uncertain))
-        app = console.App(self.codex_home, self.config, auto_bridge=first_bridge)
-        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-submitted"})
-        projection = self._auto_projection()
-        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        app, host, _, ledger, authority, transport = self._native_auto_case(uncertain=True)
         first = app.evaluate_auto_once(app._host_overview())
         self.assertTrue(first["state"]["in_flight"])
-        self.assertEqual((first["state"]["thread_id"], first["state"]["turn_id"]), ("thread-submitted", ""))
-
-        read = mock.Mock(return_value=console.AutoBridgeResult(
-            False, "thread-submitted", failure_kind="TURN_NOT_FOUND",
-            transient=True, turn_started=True, reachable=True,
-        ))
-        restarted = console.App(self.codex_home, self.config, auto_bridge=SimpleNamespace(reconcile=read))
-        restarted.progress_ledger = app.progress_ledger
+        self.assertEqual((first["state"]["thread_id"], first["state"]["turn_id"]), ("task", ""))
+        host["missing_input"] = True
+        fresh_transport = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=fresh_transport, auto_authorization=authority)
+        self.assertIsNot(restarted.progress_ledger, app.progress_ledger.ledger)
+        restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
         pending = restarted.evaluate_auto_once(restarted._host_overview())
-        self.assertEqual(pending["reason"], "UNREACHABLE_IN_FLIGHT")
-        read.assert_called_once()
-        self.assertEqual(
-            (read.call_args.kwargs["thread_id"], read.call_args.kwargs["turn_id"]),
-            ("thread-submitted", ""),
-        )
-        reservation_id = pending["state"]["reservation_id"]
-        released = restarted.auto_command({
-            "command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
-            "request_id": "release-submitted", "reservation_id": reservation_id,
-            "recovery_authority": "root", "release_condition": "thread read retained no created turn",
-        })
-        self.assertFalse(released["in_flight"])
-        self.assertEqual(first_bridge.run.call_count, 1)
+        self.assertEqual(pending["reason"], "APP_TASK_EVIDENCE_PENDING")
+        self.assertTrue(pending["state"]["in_flight"])
+        self.assertEqual(len(host["sent"]), 1)
+        with self.assertRaises(console.ConsoleConflict):
+            restarted.auto_command({"command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
+                "request_id": "release-unknown", "reservation_id": pending["state"]["reservation_id"],
+                "recovery_authority": "root", "release_condition": "missing input is not host absence"})
+        self.assertEqual([r["status"] for c in ledger.replay()["connector_receipts"].values() for r in c["receipts"]],
+                         ["COMMAND", "ACKNOWLEDGED"])
+        host["missing_input"] = False
+        done = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(done["reason"], "RECONCILED")
+        self.assertFalse(done["state"]["in_flight"])
+        self.assertEqual(len(host["sent"]), 1)
 
     def test_auto_health_setting_defaults_off_and_uses_canonical_validator(self) -> None:
         _, effective, _ = console.load_config(self.config)
