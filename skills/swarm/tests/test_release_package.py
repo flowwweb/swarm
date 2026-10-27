@@ -39,6 +39,36 @@ SPEC.loader.exec_module(verifier)
 
 
 class ReleasePackageTests(unittest.TestCase):
+    def test_actual_configured_desktop_entry_serves_hq(self):
+        entry = json.loads((REPOSITORY_ROOT / '.mcp.json').read_bytes())['mcpServers']['swarm']
+        requests = [
+            {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}},
+            {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list', 'params': {}},
+            {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'swarm_hq_view', 'arguments': {}}},
+            {'jsonrpc': '2.0', 'id': 4, 'method': 'resources/list', 'params': {}},
+        ]
+        result = subprocess.run([entry['command'], *entry['args']], cwd=REPOSITORY_ROOT / entry['cwd'],
+            input='\n'.join(json.dumps(item) for item in requests) + '\n',
+            capture_output=True, text=True, encoding='utf-8', timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([row['id'] for row in rows], [1, 2, 3, 4])
+        self.assertTrue(all('error' not in row for row in rows), rows)
+        self.assertIn('swarm_hq_view', [tool['name'] for tool in rows[1]['result']['tools']])
+        self.assertFalse(rows[2]['result'].get('isError'), rows[2])
+        digest = rows[2]['result']['structuredContent']['served_html_sha256']
+        self.assertRegex(digest, r'^[0-9a-f]{64}$')
+        self.assertEqual(rows[3]['result']['resources'][0]['uri'], f'ui://swarm/hq/{digest}.html')
+        with tempfile.TemporaryDirectory() as directory:
+            copied = Path(directory) / 'skills/swarm/scripts'
+            copied.mkdir(parents=True)
+            shutil.copyfile(REPOSITORY_ROOT / entry['args'][1], copied / 'swarm_desktop.py')
+            (copied / 'swarm_mcp.py').write_bytes((REPOSITORY_ROOT / 'skills/swarm/scripts/swarm_mcp.py').read_bytes() + b'\n# tampered\n')
+            rejected = subprocess.run([entry['command'], *entry['args']], cwd=directory,
+                input='', capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn('Packaged MCP identity mismatch', rejected.stderr)
+
     def test_desktop_declaration_is_exact_and_requires_shipped_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.make_plugin(Path(directory))
@@ -62,11 +92,20 @@ class ReleasePackageTests(unittest.TestCase):
             (root / 'skills/swarm/scripts/swarm_mcp.py').write_text(
                 'PROJECTS_ASSETS = ' + repr({dependencies[1]: digest}) +
                 '\nHQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/sdk.js"\nHQ_SDK_SHA256 = ' + repr(digest), encoding='utf-8')
+            desktop = root / 'skills/swarm/scripts/swarm_desktop.py'
+            mcp_digest = hashlib.sha256((root / 'skills/swarm/scripts/swarm_mcp.py').read_bytes()).hexdigest()
+            with desktop.open('a', encoding='utf-8') as stream:
+                stream.write('\nMCP_SHA256 = ' + repr(mcp_digest))
             config = root / '.mcp.json'
             entry = {'type': 'stdio', 'command': 'python',
                      'args': ['-B', 'skills/swarm/scripts/swarm_desktop.py'], 'cwd': '.'}
             config.write_text(json.dumps({'mcpServers': {'swarm': entry}}), encoding='utf-8')
             package_builder.validate_plugin_manifest(root)
+            retained_desktop = desktop.read_bytes()
+            desktop.write_bytes(retained_desktop.replace(mcp_digest.encode(), b'0' * 64))
+            with self.assertRaisesRegex(ValueError, 'desktop dependency'):
+                package_builder.validate_plugin_manifest(root)
+            desktop.write_bytes(retained_desktop)
             # Acceptance must not depend on the interpreter running the validator.
             for host in ('C:/Users/other/AppData/Local/Programs/Python/Python313/python.exe', '/usr/bin/python3'):
                 with self.subTest(host=host), mock.patch.object(sys, 'executable', host):
@@ -199,6 +238,8 @@ class ReleasePackageTests(unittest.TestCase):
                 bundle.write_bytes(header + b'\ncompiled code')
                 (scripts / 'swarm_mcp.py').write_text('PROJECTS_ASSETS = ' + repr({'console/static/app.js': pins['console/static/app.js']}) +
                     '\nHQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"\nHQ_SDK_SHA256 = ' + repr(hashlib.sha256(bundle.read_bytes()).hexdigest()))
+                (scripts / 'swarm_desktop.py').write_text('ASSETS = ' + repr({'console/static/app.js': pins['console/static/app.js']}) +
+                    '\nMCP_SHA256 = ' + repr(hashlib.sha256((scripts / 'swarm_mcp.py').read_bytes()).hexdigest()))
             write_bundle(b'old bundle without source identity')
             with self.assertRaisesRegex(ValueError, 'desktop dependency pins'):
                 package_builder.validate_plugin_manifest(root)

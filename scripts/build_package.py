@@ -218,6 +218,8 @@ def _desktop_dependency_pins(read_bytes: Callable[[str], bytes]) -> dict[str, st
             declared = ast.literal_eval(values[constant])
             if not isinstance(declared, dict) or not declared:
                 raise ValueError("empty asset pins")
+            if module == "swarm_desktop.py":
+                declared["skills/swarm/scripts/swarm_mcp.py"] = ast.literal_eval(values["MCP_SHA256"])
             if module == "swarm_mcp.py":
                 sdk = values["HQ_SDK_PATH"]
                 if not (isinstance(sdk, ast.BinOp) and isinstance(sdk.op, ast.Div)
