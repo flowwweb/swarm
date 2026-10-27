@@ -238,7 +238,7 @@ CONNECTOR_RECEIPT_FIELDS = frozenset({
     "schema_version", "record_type", "receipt_id", "command_id", "receipt_index",
     "idempotency_key", "command_digest", "payload_digest",
     "project_id", "root_digest", "action", "status", "thread_id", "turn_id",
-    "observed_root_digest", "observed_at_ms", "task_creation_identity",
+    "observed_root_digest", "observed_at_ms", "task_creation_identity", "non_delivery_evidence",
 })
 CONNECTOR_ACTIONS = frozenset({"AUTO", "MANUAL_AGENT", "TASK", "TOPOLOGY_MATERIALIZE", "REPAIR", "LOCAL_HQ"})
 CONNECTOR_STATUSES = frozenset({
@@ -971,7 +971,7 @@ def _validate_connector_receipt(payload: Any, *, replay: bool = False) -> dict[s
     admitted = replay and type(version) is int and version == 2
     allowed = set(CONNECTOR_RECEIPT_FIELDS) | (set(CONNECTOR_ADMISSION_FIELDS) if admitted else set())
     actual_fields = set(payload)
-    required = allowed - {"task_creation_identity", "payload_digest"}
+    required = allowed - {"task_creation_identity", "payload_digest", "non_delivery_evidence"}
     if not required <= actual_fields or actual_fields - allowed:
         raise ProgressEventError("connector receipt fields are incomplete or unexpected")
     if type(version) is not int or version != (2 if admitted else 1) or payload.get("record_type") != "CONNECTOR":
@@ -1012,6 +1012,23 @@ def _validate_connector_receipt(payload: Any, *, replay: bool = False) -> dict[s
                 raise ProgressEventError("connector task creation identity kind is invalid")
             normalized["task_creation_identity"] = {"kind": kind, "role_manifest_ref": role_ref}
     has_thread, has_turn = normalized["thread_id"] is not None, normalized["turn_id"] is not None
+    pre_turn = "non_delivery_evidence" in payload
+    if pre_turn:
+        evidence = payload["non_delivery_evidence"]
+        bindings = {key: normalized.get(key) for key in (
+            "command_id", "idempotency_key", "command_digest", "payload_digest", "project_id", "root_digest")}
+        if (normalized["action"] != "TASK" or normalized["status"] != "RECONCILED_NOT_DELIVERED"
+                or not isinstance(evidence, dict) or set(evidence) != set(bindings) | {
+                    "target_thread_id", "phase", "turn_submitted", "evidence_digest", "review_digest"}
+                or any(evidence[key] != value for key, value in bindings.items())
+                or evidence["phase"] != "BEFORE_TURN_SUBMISSION" or evidence["turn_submitted"] is not False
+                or has_thread or has_turn or normalized["observed_root_digest"] is not None):
+            raise ProgressEventError("pre-turn non-delivery evidence conflicts with the command")
+        _safe_id(evidence["target_thread_id"], "non-delivery target thread")
+        for key in ("payload_digest", "evidence_digest", "review_digest"):
+            _sha256(evidence[key], f"non-delivery {key}")
+    if normalized["action"] == "TASK" and normalized["status"] == "RECONCILED_NOT_DELIVERED" and not pre_turn:
+        raise ProgressEventError("TASK non-delivery requires exact pre-turn evidence")
     if normalized["status"] in {"COMMAND", "UNSUPPORTED"} and (has_thread or has_turn or normalized["observed_root_digest"] is not None):
         raise ProgressEventError("connector command or unsupported receipt cannot claim host binding")
     if normalized["action"] == "LOCAL_HQ" and (has_thread or has_turn):
@@ -1020,9 +1037,9 @@ def _validate_connector_receipt(payload: Any, *, replay: bool = False) -> dict[s
         raise ProgressEventError("LOCAL_HQ lifecycle requires the exact local observed root")
     if normalized["action"] != "LOCAL_HQ" and normalized["status"] == "ACKNOWLEDGED" and (not has_thread or has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector acknowledgement requires a thread and exact root binding")
-    if normalized["action"] not in {"LOCAL_HQ", "ROOT_ADOPT"} and normalized["status"] in {"PROGRESS", "RESULT", "DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and (not has_thread or not has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
+    if not pre_turn and normalized["action"] not in {"LOCAL_HQ", "ROOT_ADOPT"} and normalized["status"] in {"PROGRESS", "RESULT", "DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and (not has_thread or not has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector progress or result requires thread, turn, and exact root binding")
-    if normalized["status"] in {"DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and normalized["action"] != "REPAIR":
+    if not pre_turn and normalized["status"] in {"DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and normalized["action"] != "REPAIR":
         raise ProgressEventError("uncertain steering delivery is reserved for an exact repair target")
     if admitted:
         admission = normalized["admission"] = _validate_connector_admission(payload.get("admission"))
@@ -1665,9 +1682,17 @@ def _validate_work_assignment(value: Any) -> dict[str, Any]:
     fields = {"operation_id", "accepting_ctrl_id", "accepting_ctrl_manifest_digest", "goal_id",
               "goal_status_at_assignment", "role_manifest_ref", "block_id", "attempt", "artifact_path",
               "gates", "review_strategy", "reviewer_thread_id", "expected_ledger_revision"}
-    if not isinstance(value, dict) or set(value) != fields:
+    if not isinstance(value, dict) or set(value) not in (fields, fields | {"root_equivalence"}):
         raise ProgressEventError("work assignment requires its exact acceptance contract")
     result = dict(value)
+    if "root_equivalence" in value:
+        evidence = value["root_equivalence"]
+        if (not isinstance(evidence, dict) or set(evidence) != {
+                "physical_root_digest", "canonical_root_digest", "admission_receipt_digest"}
+                or any(not isinstance(item, str) or re.fullmatch(r"[0-9a-f]{64}", item) is None
+                       for item in evidence.values())):
+            raise ProgressEventError("work assignment root equivalence requires exact digest evidence")
+        result["root_equivalence"] = dict(evidence)
     for name in ("operation_id", "accepting_ctrl_id", "block_id", "reviewer_thread_id"):
         result[name] = _safe_id(value[name], name)
     result["accepting_ctrl_manifest_digest"] = _manifest_digest(value["accepting_ctrl_manifest_digest"], "accepting CTRL manifest")
@@ -3251,6 +3276,7 @@ class Ledger:
             raise ProgressEventError("connector lifecycle observation time cannot regress")
         if previous is not None and not (
             previous == "COMMAND" and event["status"] in {"ACKNOWLEDGED", "UNSUPPORTED"}
+            or previous == "COMMAND" and event["status"] == "RECONCILED_NOT_DELIVERED" and event.get("non_delivery_evidence") is not None
             or previous == "ACKNOWLEDGED" and event["status"] in {"PROGRESS", "RESULT", "DISPATCHED_UNRESOLVED"}
             or previous == "PROGRESS" and event["status"] in {"PROGRESS", "RESULT"}
             or previous == "DISPATCHED_UNRESOLVED" and event["status"] in {"RESULT", "RECONCILED_NOT_DELIVERED"}
@@ -3425,11 +3451,30 @@ class Ledger:
         ctrl_binding = projection["task_creation_bindings"].get(projection["task_creation_operations_by_task"].get(ctrl))
         state = projection["task_manifests"].get(ctrl, {})
         ctrl_manifest = state.get("versions", {}).get(state.get("active_version"), {})
-        if (not binding or not ctrl_binding or ctrl_binding["project_id"] != manifest["project_id"]
-                or ctrl_binding["root_digest"] != binding["root_digest"]
+        if (not binding or not ctrl_binding or binding["project_id"] != manifest["project_id"]
+                or ctrl_binding["project_id"] != manifest["project_id"]
                 or ctrl_manifest.get("role_scope") != "CTRL_BOUNDED" or ctrl_manifest.get("ctrl_id") != ctrl
                 or ctrl_manifest.get("manifest_digest") != assignment["accepting_ctrl_manifest_digest"]):
             raise ProgressEventError("assignment requires an exact retained accepting CTRL at this root")
+        root_digest = ctrl_binding["root_digest"]
+        evidence = assignment.get("root_equivalence")
+        if evidence is None:
+            if root_digest != binding["root_digest"]:
+                raise ProgressEventError("assignment requires an exact retained accepting CTRL at this root")
+        else:
+            # Schema-2 admissions used physical file identity; never rewrite that history.
+            created = projection["connector_receipts"].get(binding["operation_id"], {})
+            retained = created.get("receipts", [])
+            first, terminal = (retained[0], retained[-1]) if retained else ({}, {})
+            admission = first.get("admission") or {}
+            if (first.get("schema_version") != 2 or admission.get("kind") != "CHILD_CREATE"
+                    or not created.get("terminal") or terminal.get("status") != "RESULT"
+                    or terminal.get("thread_id") != task or first.get("project_id") != manifest["project_id"]
+                    or evidence["canonical_root_digest"] != root_digest
+                    or evidence["physical_root_digest"] != binding["root_digest"]
+                    or admission.get("physical_root_digest") != binding["root_digest"]
+                    or evidence["admission_receipt_digest"] != terminal.get("event_digest")):
+                raise ProgressEventError("assignment root equivalence conflicts with retained admission")
         role = projection["role_assignments"].get(task, {})
         ref = assignment["role_manifest_ref"]
         if (role.get("role_id") != ref["manifest_id"] or role.get("manifest_version") != ref["manifest_version"]
@@ -3441,7 +3486,7 @@ class Ledger:
         if (not command.get("terminal") or not receipts or receipts[-1]["status"] != "RESULT"
                 or receipts[-1]["receipt_id"] != receipt_id or receipts[-1]["action"] != "LOCAL_HQ"
                 or receipts[-1]["project_id"] != manifest["project_id"]
-                or receipts[-1]["root_digest"] != binding["root_digest"]
+                or receipts[-1]["root_digest"] != root_digest
                 or command.get("payload_digest") != manifest["manifest_digest"].removeprefix("sha256:")):
             raise ProgressEventError("work revision requires its exact local assignment receipt")
 

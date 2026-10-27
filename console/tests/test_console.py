@@ -47,35 +47,178 @@ from runtime import (  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
-    def _existing_work_fixture(self):
+    def test_dashboard_counters_use_host_catalog_not_roles_or_brief_fanout(self):
+        app = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", ("saved-no-agents", "Saved sibling", "{}", 8, 0, 0))
+            db.commit()
+        overview = {"generated_at": "2026-10-26T00:00:00Z", "nodes": [
+            {"id": "a", "project_id": "project:alpha", "status": "active", "title": "ordinary task"},
+            {"id": "b", "project_id": "project:beta", "status": "active"},
+            {"id": "old", "project_id": "project:alpha", "status": "inactive", "title": "CTRL"},
+            {"id": "archived", "project_id": "project:alpha", "status": "active", "archived": True},
+            {"id": "virtual", "status": "active", "virtual": True}]}
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app, "_project_identity", side_effect=AssertionError("no brief fanout")), \
+             mock.patch.object(app, "_verified_yield", side_effect=AssertionError("no progress fanout")):
+            result = app.usage_history(hours=1, include_verified_yield=False)["dashboard"]
+            self.assertEqual(result["counters"]["active_agents"], {"value": 2, "state": "KNOWN"})
+            self.assertEqual(result["counters"]["projects"], {"value": 2, "state": "KNOWN"})
+            self.assertEqual(result["counters"]["completed_tasks"], {"value": None, "state": "UNKNOWN"})
+            scoped = app.usage_history(hours=24, project_id="project:alpha", include_verified_yield=False)["dashboard"]
+            self.assertEqual(scoped["counters"]["active_agents"]["value"], 1)
+            self.assertEqual(scoped["counters"]["projects"]["value"], 1)
+            self.assertNotEqual(result["cursor"], scoped["cursor"])
+            for hours in (1, 12, 24, 168, 720):
+                with mock.patch.object(console.time, "time", return_value=2_000_000_000):
+                    first = app.usage_history(hours=hours, include_verified_yield=False)["dashboard"]
+                    replay = app.usage_history(hours=hours, include_verified_yield=False)["dashboard"]
+                self.assertEqual(first, replay)
+                self.assertEqual(first["window"]["before_ms"] - first["window"]["after_ms"], hours * 3_600_000)
+            overview["nodes"][0]["status"] = "unknown"
+            unknown = app.usage_history(hours=1, include_verified_yield=False)["dashboard"]
+            self.assertEqual(unknown["counters"]["active_agents"], {"value": None, "state": "UNKNOWN"})
+            overview["nodes"].append(copy.deepcopy(overview["nodes"][0]))
+            duplicate = app.usage_history(hours=1, include_verified_yield=False)["dashboard"]
+            self.assertEqual(duplicate["counters"]["active_agents"]["state"], "UNKNOWN")
+            with mock.patch.object(app, "_host_project_records", return_value=("UNKNOWN", [], None, {})):
+                missing = app.usage_history(hours=1, include_verified_yield=False)["dashboard"]
+                self.assertEqual(missing["counters"]["projects"], {"value": None, "state": "UNKNOWN"})
+        self.assertEqual(app.auto_bridge.mock_calls, [])
+
+    def test_native_usage_sampling_is_bounded_restart_safe_and_not_heartbeat(self):
+        store = console.ConsoleStore(self.root / "native-samples.sqlite3")
+        now = int(time.time() * 1000) // 60_000 * 60_000
+        observed = {"nodes": [{"id": "a", "project_id": "project:alpha", "tokens": 100},
+                              {"id": "b", "project_id": "project:beta", "tokens": 50},
+                              {"id": "missing", "project_id": "project:alpha"}], "links": []}
+        def sample(target, at):
+            return target.observe_overview(observed, now_ms=at, trigger="native_read",
+                heartbeat_minutes=30, codex_home=self.codex_home, tokens_only=True)
+        with mock.patch.object(console, "_codex_jsonl_token_counts", return_value={}) as scan:
+            self.assertEqual(sample(store, now), 2)
+            self.assertEqual(store.token_history(before_ms=now), [], "baseline is not measured zero")
+            self.assertEqual(sample(store, now + 1), 0)
+            restarted = console.ConsoleStore(store.path)
+            self.assertEqual(sample(restarted, now + 2), 0)
+            self.assertEqual(scan.call_count, 1)
+            observed["nodes"][0]["tokens"] = 130
+            self.assertEqual(sample(restarted, now + 60_000), 2)
+            self.assertEqual(sum(row["delta_tokens"] for row in restarted.token_history(before_ms=now+60_000)), 30)
+            self.assertEqual(restarted.token_history(project_id="project:beta", before_ms=now+60_000)[0]["delta_tokens"], 0)
+            with closing(restarted._connect()) as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM task_heartbeats").fetchone()[0], 0)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM token_cursors WHERE thread_id='missing'").fetchone()[0], 0)
+            # Two processes may scan concurrently but only one can append a given bucket.
+            other = console.ConsoleStore(store.path)
+            barrier = threading.Barrier(2)
+            scan.side_effect = lambda *_: (barrier.wait(timeout=5), {})[1]
+            observed["nodes"][0]["tokens"] = 140
+            results, errors = [], []
+            def worker(target):
+                try:
+                    results.append(sample(target, now + 120_000))
+                except Exception as exc:
+                    errors.append(exc)
+            threads = [threading.Thread(target=worker, args=(target,)) for target in (restarted, other)]
+            for thread in threads: thread.start()
+            for thread in threads: thread.join(6)
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            self.assertEqual(sorted(results), [0, 2])
+            self.assertEqual(sum(row["delta_tokens"] for row in other.token_history(before_ms=now+120_000)), 40)
+
+    def test_native_read_refreshes_host_snapshot_without_auto_or_diagnostics(self):
+        app = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
+        old = {"nodes": [{"id": "a", "project_id": "project:alpha", "tokens": 10}], "links": []}
+        fresh = {"nodes": [{"id": "a", "project_id": "project:alpha", "tokens": 20}], "links": []}
+        with mock.patch.object(console, "observation_fingerprint", return_value="old") as fingerprint, \
+             mock.patch.object(console, "build_overview", side_effect=[old, fresh]) as build, \
+             mock.patch.object(console, "_codex_jsonl_token_counts", return_value={}), \
+             mock.patch.object(app, "observe_once", side_effect=AssertionError("observer forbidden")), \
+             mock.patch.object(app, "evaluate_auto_once", side_effect=AssertionError("Auto forbidden")), \
+             mock.patch.object(app.diagnostics_collector, "collect", side_effect=AssertionError("diagnostics forbidden")):
+            app.refresh_native_observation()
+            self.assertIs(app._host_overview(), old)
+            fingerprint.return_value = "changed"
+            app.refresh_native_observation()
+            self.assertIs(app._host_overview(), fresh)
+            app.refresh_native_observation()
+            self.assertEqual(build.call_count, 2, "unchanged fingerprint reuses the snapshot")
+            with mock.patch.object(app.store, "observe_overview", wraps=app.store.observe_overview) as sample:
+                with self.assertRaises(console.ConsoleError):
+                    app.refresh_native_observation(sample_usage=True, project_id="foreign")
+                sample.assert_not_called()
+                app.refresh_native_observation(sample_usage=True, project_id="project:alpha")
+                self.assertTrue(sample.call_args.kwargs["tokens_only"])
+            self.assertEqual(app.auto_bridge.mock_calls, [])
+
+    def _existing_work_fixture(self, *, physical=False, unit=False):
         app = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
         root_digest = console._auto_digest({"project_id":"project:alpha", "canonical_root":console._normalized_project_path(str(self.alpha_root))})
         def seed(task_id, ctrl_id, role_scope):
+            legacy = physical and task_id != ctrl_id
+            identity = self.alpha_root.stat()
+            creation_root = console._auto_digest({"device":identity.st_dev,"file_id":identity.st_ino}) if legacy else root_digest
             operation = "created-" + task_id
             role = next(item for item in app.builtin_role_manifests if item["id"] == ("manager" if role_scope == "CTRL_BOUNDED" else "developer"))
             manifest = build_task_manifest(manifest_id="manifest-" + task_id, task_id=task_id, task_name="Retained " + task_id,
                 project_id="project:alpha", ctrl_id=ctrl_id, role_scope=role_scope,
+                **({"work_unit": dict(kind="LAB", goal_id=None, parent_goal_id=None, parent_unit_task_id=None)}
+                   if unit and task_id != ctrl_id else {}),
                 milestones=[dict(milestone_id=task_id + "-milestone", order=0, title="Retained milestone", verification_policy="source", supersedes_milestone_id=None)],
                 blocks=[dict(block_id=task_id + "-old", milestone_id=task_id + "-milestone", order=0, title="Historical work",
                     verification_policy="source", estimate_minutes=1, weight=None, supersedes_block_id=None)])
             base = dict(schema_version=1, record_type="CONNECTOR", command_id=operation, idempotency_key=operation,
-                command_digest=hashlib.sha256(operation.encode()).hexdigest(), project_id="project:alpha", root_digest=root_digest,
+                command_digest=hashlib.sha256(operation.encode()).hexdigest(), project_id="project:alpha", root_digest=creation_root,
                 action="MANUAL_AGENT", thread_id=None, turn_id=None, observed_root_digest=None)
-            app.progress_ledger.append_connector_receipt({**base,"receipt_id":operation + "-command","receipt_index":0,"status":"COMMAND","observed_at_ms":1})
-            app.progress_ledger.append_connector_receipt({**base,"receipt_id":operation + "-ack","receipt_index":1,"status":"ACKNOWLEDGED",
-                "thread_id":task_id,"observed_root_digest":root_digest,"observed_at_ms":2})
+            command = {**base,"receipt_id":operation + "-command","receipt_index":0,"status":"COMMAND","observed_at_ms":1}
+            ack = {**base,"receipt_id":operation + "-ack","receipt_index":1,"status":"ACKNOWLEDGED",
+                "thread_id":task_id,"observed_root_digest":creation_root,"observed_at_ms":2}
             result = {**base,"receipt_id":operation + "-result","receipt_index":2,"status":"RESULT",
-                "thread_id":task_id,"turn_id":operation + "-turn","observed_root_digest":root_digest,"observed_at_ms":3}
-            event = task_creation_binding_event(operation_id=operation, project_id="project:alpha", root_digest=root_digest,
+                "thread_id":task_id,"turn_id":operation + "-turn","observed_root_digest":creation_root,"observed_at_ms":3}
+            if legacy:
+                from runtime.progress_events import _connector_receipt_digest
+                admission = dict(kind="ROOT_ADOPT", ctrl_id=ctrl_id, parent_thread_id=None, subject_thread_id=ctrl_id,
+                    structural_role="CTRL", role_manifest_ref=role_manifest_reference(role), authorization_digest="a"*64,
+                    physical_root_digest=creation_root)
+                observation = dict(method="thread/read", request_id=1, response_digest="b"*64, observed_at_ms=1)
+                roots = [{**base, "schema_version":2, "command_id":"old-root", "idempotency_key":"old-root",
+                    "command_digest":"c"*64, "action":"ROOT_ADOPT", "receipt_id":"old-root-"+str(i), "receipt_index":i,
+                    "status":status, "thread_id":ctrl_id if i else None, "turn_id":None,
+                    "observed_root_digest":creation_root if i else None, "observed_at_ms":1,
+                    "admission":admission, "host_observation":observation if i else None}
+                    for i,status in enumerate(("COMMAND","ACKNOWLEDGED","RESULT"))]
+                child = {**admission, "kind":"CHILD_CREATE", "parent_thread_id":ctrl_id, "subject_thread_id":None,
+                    "structural_role":"LEAD" if unit else "DOER", "parent_admission_digest":_connector_receipt_digest(roots[-1])}
+                receipts = [{**item,"schema_version":2,"admission":child,
+                    "host_observation":{**observation,"method":"thread/start"} if i else None}
+                    for i,item in enumerate((command,ack,result))]
+                # Exact old schema is replay-only. Seed retained bytes, never a new schema-2 append API.
+                path = app.progress_ledger._state.path
+                start = len(path.read_bytes().splitlines()) + 1
+                with path.open("ab") as handle:
+                    for seq,item in enumerate(roots + receipts,start):
+                        handle.write(json.dumps(dict(event_seq=seq,event_digest=_connector_receipt_digest(item),event=item),
+                            sort_keys=True,separators=(",",":")).encode()+b"\n")
+            else:
+                app.progress_ledger.append_connector_receipt(command)
+                app.progress_ledger.append_connector_receipt(ack)
+            event = task_creation_binding_event(operation_id=operation, project_id="project:alpha", root_digest=creation_root,
                 ctrl_id=ctrl_id, task_id=task_id, role_manifest=role, task_manifest=manifest, parent_task_id=None if task_id == ctrl_id else ctrl_id,
                 topology_manifest_receipt_id=operation + "-topology", task_receipt_id=operation + "-task",
                 milestone_receipts=[dict(id=manifest["milestones"][0]["milestone_id"],receipt_id=operation + "-milestone")],
                 block_receipts=[dict(id=manifest["blocks"][0]["block_id"],receipt_id=operation + "-block")],
                 explicit_empty_work_receipt_id=None,host_result_receipt_id=result["receipt_id"],observed_at_ms=4)
-            app.progress_ledger.append_connector_result_with_task_creation(result,event)
+            if legacy:
+                app.progress_ledger.append(event)
+            else:
+                app.progress_ledger.append_connector_result_with_task_creation(result,event)
             return manifest, role_manifest_reference(role)
         ctrl,_ = seed("root","root","CTRL_BOUNDED")
-        original,role = seed("task","historical-ctrl","DOER_SINGLE")
+        original,role = seed("task","historical-ctrl","LEAD_SINGLE" if unit else "DOER_SINGLE")
+        if unit:
+            return app, {"ctrl_id": "root", "manifest_digest": ctrl["manifest_digest"]}, original
         with closing(sqlite3.connect(console.goals_database(self.codex_home))) as connection:
             connection.execute("CREATE TABLE thread_goals(thread_id TEXT PRIMARY KEY,goal_id TEXT,status TEXT)")
             connection.execute("INSERT INTO thread_goals VALUES ('root','current-goal','blocked')")
@@ -85,11 +228,195 @@ class SwarmConsoleTests(unittest.TestCase):
             goal_id="current-goal",goal_status_at_assignment="blocked",role_manifest_ref=role,block_id="new-plan",attempt=1,
             artifact_path="report.txt",gates=[["report",[sys.executable,"-c","from pathlib import Path; assert Path('report.txt').read_text() == 'verified new work'"]]],
             review_strategy="light",reviewer_thread_id="review",expected_ledger_revision=revision)
+        if physical:
+            terminal = app.progress_ledger.replay()["connector_receipts"]["created-task"]["receipts"][-1]
+            assignment["root_equivalence"] = dict(physical_root_digest=terminal["root_digest"],
+                canonical_root_digest=root_digest,admission_receipt_digest=terminal["event_digest"])
         manifest = build_task_manifest(**{**original,"manifest_version":"2","supersedes_digest":original["manifest_digest"],
             "work_assignment":assignment,"blocks":[*original["blocks"],{**original["blocks"][0],"block_id":"new-plan","order":1,"title":"New plan"}]})
         payload = dict(operation_id="assign-new-work",project_id="project:alpha",root_digest=root_digest,
             expected_manifest_digest=original["manifest_digest"],task_manifest=manifest,expected_ledger_revision=revision,acknowledge=True)
         return app,payload,original
+
+    def test_flow_historical_unit_accepting_scope_preserves_origin_and_restart(self):
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        app, scope, original = self._existing_work_fixture(physical=True, unit=True)
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        current = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        current = app.project_flow_command(dict(operation="save", project_id="project:alpha",
+            expected_digest=current["source_digest"], definition=current["starter"], acknowledge=True))
+        flow = current["definitions"][0]
+        assignment = dict(version=1, subject_kind="LAB", subject_id="task", subject_version=original["manifest_digest"],
+            ctrl_id="historical-ctrl", flow_id=flow["id"], flow_version=flow["version"], flow_digest=flow["digest"],
+            label="Lab plan", notes="Planning only", repeat_count=1)
+        request = dict(operation="assign", project_id="project:alpha", expected_digest=current["source_digest"],
+            assignment=assignment, acknowledge=True)
+        ledger = app.progress_ledger._state.path.read_bytes()
+        source = brief.read_bytes()
+        with self.assertRaisesRegex(console.ConsoleError, "observed host CTRL"):
+            app.project_flow_command(request)
+        self.assertEqual(brief.read_bytes(), source)
+        result = app.project_flow_command({**request, "accepting_scope": scope})
+        saved = result["assignments"][0]
+        self.assertEqual(saved["ctrl_id"], "historical-ctrl")
+        self.assertEqual(saved["subject_version"], original["manifest_digest"])
+        self.assertNotIn("accepting_scope", saved, "Command context must not become a second origin")
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger)
+        restarted = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
+        self.assertEqual(restarted.project_flow_command(dict(operation="read", project_id="project:alpha")), result)
+        projection = restarted.progress_ledger.replay()
+        self.assertEqual(projection["task_manifests"]["task"]["versions"]["1"], original)
+        self.assertEqual(projection["task_creation_bindings"]["created-task"]["parent_edge"]["parent_task_id"], "historical-ctrl")
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), ledger)
+        self.assertEqual(app.auto_bridge.mock_calls, [])
+        self.assertEqual(restarted.auto_bridge.mock_calls, [])
+
+    def test_flow_historical_unit_accepting_scope_rejects_stale_unrelated_and_race(self):
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        app, scope, original = self._existing_work_fixture(physical=True, unit=True)
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        current = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        current = app.project_flow_command(dict(operation="save", project_id="project:alpha",
+            expected_digest=current["source_digest"], definition=current["starter"], acknowledge=True))
+        flow = current["definitions"][0]
+        assignment = dict(version=1, subject_kind="LAB", subject_id="task", subject_version=original["manifest_digest"],
+            ctrl_id="historical-ctrl", flow_id=flow["id"], flow_version=flow["version"], flow_digest=flow["digest"],
+            label="Lab plan", notes="Planning only", repeat_count=1)
+        request = dict(operation="assign", project_id="project:alpha", expected_digest=current["source_digest"],
+            assignment=assignment, accepting_scope=scope, acknowledge=True)
+        source, ledger = brief.read_bytes(), app.progress_ledger._state.path.read_bytes()
+        changes = [{"accepting_scope": None}, {"accepting_scope": {}},
+            {"accepting_scope": {**scope, "extra": True}},
+            {"accepting_scope": {**scope, "ctrl_id": 7}},
+            {"accepting_scope": {**scope, "ctrl_id": "foreign"}},
+            {"accepting_scope": {**scope, "ctrl_id": "review"}},
+            {"accepting_scope": {**scope, "ctrl_id": "task"}},
+            {"accepting_scope": {**scope, "manifest_digest": "sha256:" + "0" * 64}},
+            {"assignment": {**assignment, "subject_version": "sha256:" + "0" * 64}},
+            {"assignment": {**assignment, "ctrl_id": "root"}},
+            {"assignment": {**assignment, "subject_id": "review"}},
+            {"assignment": {**assignment, "subject_kind": "FACTORY"}},
+            {"project_id": "project:beta"}, {"acknowledge": False}]
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(console.ConsoleError):
+                app.project_flow_command({**request, **change})
+            self.assertEqual(brief.read_bytes(), source)
+            self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger)
+        retained = app.progress_ledger.replay()
+        for field, value in (("schema_version", 1), ("status", "ACKNOWLEDGED"),
+                             ("thread_id", "foreign"), ("project_id", "project:beta"),
+                             ("root_digest", "0" * 64), ("admission", None)):
+            altered = copy.deepcopy(retained)
+            altered["connector_receipts"]["created-task"]["receipts"][-1][field] = value
+            with self.subTest(admission_field=field), mock.patch.object(app.progress_ledger, "replay", return_value=altered), self.assertRaises(console.ConsoleError):
+                app.project_flow_command(request)
+            self.assertEqual(brief.read_bytes(), source)
+            self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger)
+        for task in ("root", "task"):
+            with closing(sqlite3.connect(self.database)) as db:
+                db.execute("UPDATE threads SET archived=1 WHERE id=?", (task,)); db.commit()
+            with self.assertRaises(console.ConsoleError):
+                app.project_flow_command(request)
+            with closing(sqlite3.connect(self.database)) as db:
+                db.execute("UPDATE threads SET archived=0 WHERE id=?", (task,)); db.commit()
+            self.assertEqual(brief.read_bytes(), source)
+        actual_stat = Path.stat
+        def changed_root(path, *args, **kwargs):
+            info = actual_stat(path, *args, **kwargs)
+            if str(path) == str(self.alpha_root):
+                return SimpleNamespace(st_mode=info.st_mode, st_dev=info.st_dev, st_ino=info.st_ino + 1)
+            return info
+        with mock.patch.object(Path, "stat", changed_root), self.assertRaisesRegex(console.ConsoleError, "physical-root"):
+            app.project_flow_command(request)
+        check = app._require_flow_assignment_subject
+        calls = []
+        def race(*args, **kwargs):
+            calls.append(True)
+            if len(calls) == 2:
+                with closing(sqlite3.connect(self.database)) as db:
+                    db.execute("UPDATE threads SET archived=1 WHERE id='root'"); db.commit()
+            return check(*args, **kwargs)
+        with mock.patch.object(app, "_require_flow_assignment_subject", side_effect=race), self.assertRaises(console.ConsoleError):
+            app.project_flow_command(request)
+        self.assertEqual(len(calls), 2, "Scope must be checked again inside the existing brief write lock")
+        self.assertEqual(brief.read_bytes(), source)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger)
+        self.assertEqual(app.auto_bridge.mock_calls, [])
+
+    def test_existing_work_assignment_physical_root_restart_and_hostile_evidence(self):
+        app,payload,original = self._existing_work_fixture(physical=True)
+        before = app.progress_ledger.replay()
+        retained = app.progress_ledger._state.path.read_bytes()
+        def changed(evidence):
+            draft = copy.deepcopy(payload["task_manifest"])
+            if evidence is None:
+                del draft["work_assignment"]["root_equivalence"]
+            else:
+                draft["work_assignment"]["root_equivalence"] = evidence
+            return {**payload,"task_manifest":build_task_manifest(**draft)}
+        evidence = payload["task_manifest"]["work_assignment"]["root_equivalence"]
+        for field in evidence:
+            with self.subTest(field=field), self.assertRaises(console.ConsoleError):
+                app.assign_existing_work(changed({**evidence,field:"0"*64}))
+            self.assertEqual(app.progress_ledger._state.path.read_bytes(),retained)
+        with self.assertRaisesRegex(console.ConsoleError,"root"):
+            app.assign_existing_work(changed(None))
+        for changes in ({"project_id":"project:beta"},{"expected_ledger_revision":0}):
+            with self.assertRaises(console.ConsoleError):
+                app.assign_existing_work({**payload,**changes})
+            self.assertEqual(app.progress_ledger._state.path.read_bytes(),retained)
+        original_stat = Path.stat
+        for field in ("st_dev","st_ino"):
+            def wrong_stat(path, *args, **kwargs):
+                info = original_stat(path,*args,**kwargs)
+                if str(path) == str(self.alpha_root):
+                    values = {key:getattr(info,key) for key in ("st_mode","st_dev","st_ino")}
+                    values[field] += 1
+                    return SimpleNamespace(**values)
+                return info
+            with self.subTest(field=field), mock.patch.object(Path,"stat",wrong_stat), self.assertRaises(console.ConsoleError):
+                app.assign_existing_work(payload)
+            self.assertEqual(app.progress_ledger._state.path.read_bytes(),retained)
+        scope, calls = app._work_assignment_scope, []
+        def race(*args, **kwargs):
+            calls.append(True)
+            if len(calls) == 2:
+                with mock.patch.object(Path,"stat",wrong_stat):
+                    return scope(*args,**kwargs)
+            return scope(*args,**kwargs)
+        with mock.patch.object(app,"_work_assignment_scope",side_effect=race), self.assertRaisesRegex(console.ConsoleError,"physical root"):
+            app.assign_existing_work(payload)
+        self.assertEqual(len(calls),2)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(),retained)
+        self.assertEqual(app.assign_existing_work(payload)["status"],"APPENDED")
+        after = app.progress_ledger.replay()
+        for key in ("blocks","role_assignments","task_creation_bindings"):
+            self.assertEqual(after[key],before[key])
+        self.assertEqual(after["task_manifests"]["task"]["versions"]["1"],original)
+        final_bytes = app.progress_ledger._state.path.read_bytes()
+        self.assertTrue(final_bytes.startswith(retained))
+        restarted = console.App(self.codex_home,self.config,auto_bridge=mock.Mock())
+        self.assertEqual(restarted.assign_existing_work(payload)["status"],"REPLAY")
+        with self.assertRaises(console.ConsoleError):
+            restarted.assign_existing_work(changed({**evidence,"admission_receipt_digest":"f"*64}))
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(),final_bytes)
+        self.assertEqual(app.auto_bridge.mock_calls,[])
+        self.assertEqual(restarted.auto_bridge.mock_calls,[])
+
+    def test_existing_work_assignment_equivalence_requires_retained_schema2(self):
+        app,payload,_ = self._existing_work_fixture()
+        draft = copy.deepcopy(payload["task_manifest"])
+        identity = self.alpha_root.stat()
+        draft["work_assignment"]["root_equivalence"] = dict(
+            physical_root_digest=console._auto_digest({"device":identity.st_dev,"file_id":identity.st_ino}),
+            canonical_root_digest=payload["root_digest"],
+            admission_receipt_digest=app.progress_ledger.replay()["connector_receipts"]["created-task"]["receipts"][-1]["event_digest"])
+        retained = app.progress_ledger._state.path.read_bytes()
+        with self.assertRaisesRegex(console.ConsoleError,"retained admission"):
+            app.assign_existing_work({**payload,"task_manifest":build_task_manifest(**draft)})
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(),retained)
 
     def test_existing_work_assignment_http_restart_blocked_goal_and_no_transport(self):
         app,payload,original = self._existing_work_fixture()
@@ -146,8 +473,14 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(app.auto_bridge.mock_calls,[])
 
     def test_assigned_work_uses_current_goal_exact_proof_and_restart_acceptance(self):
+        self._assert_assigned_work_completion()
+
+    def test_assigned_work_physical_root_completion_preserves_review_and_goal_gates(self):
+        self._assert_assigned_work_completion(physical=True)
+
+    def _assert_assigned_work_completion(self, *, physical=False):
         from contextlib import contextmanager
-        app, payload, original = self._existing_work_fixture()
+        app, payload, original = self._existing_work_fixture(physical=physical)
         app.assign_existing_work(payload)
         manifest = payload["task_manifest"]
         assignment = manifest["work_assignment"]
@@ -1492,6 +1825,29 @@ class SwarmConsoleTests(unittest.TestCase):
                           stale_row["durable_lifecycle"]["total_blocks"]), ("OPEN", 0, 2))
         self.assertEqual(stale_row["durable_lifecycle"]["manifest_digest"], revised["manifest_digest"])
         self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained)
+        # The footer counts a completed task once, not its two accepted blocks.
+        accepted_at = max(b["observed_at_ms"] for b in restarted.progress_ledger.replay()["blocks"].values())
+        def counter(target, after, before, **scope):
+            return target.usage_history(after_ms=after, before_ms=before, include_verified_yield=False, **scope)["dashboard"]
+        within = counter(restarted, accepted_at - 1, accepted_at, project_id="project:alpha")
+        self.assertEqual(within["counters"]["completed_tasks"], {"value": 1, "state": "KNOWN"})
+        for field, value in (("scope_version", 999), ("latest_event_id", "unrelated-acceptance"), ("flags", ["stale"])):
+            invalid = copy.deepcopy(restarted.progress_ledger.replay())
+            next(iter(invalid["blocks"].values()))[field] = value
+            with mock.patch.object(restarted.progress_ledger, "replay", return_value=invalid):
+                self.assertEqual(counter(restarted, accepted_at - 1, accepted_at)["counters"]["completed_tasks"], {"value": None, "state": "PARTIAL"})
+        self.assertEqual(counter(restarted, accepted_at, accepted_at + 1, project_id="project:alpha")["counters"]["completed_tasks"]["value"], 0)
+        self.assertEqual(counter(restarted, accepted_at - 2, accepted_at - 1)["counters"]["completed_tasks"]["value"], 0)
+        with self.assertRaises(console.ConsoleError):
+            counter(restarted, accepted_at - 1, accepted_at, project_id="project:beta")
+        other_scope = restarted._dashboard_counters({}, [], {"type": "ctrl", "project_id": "project:alpha", "ctrl_id": "another"},
+                                                    {"after_ms": accepted_at - 1, "before_ms": accepted_at})
+        self.assertEqual(other_scope["counters"]["completed_tasks"]["state"], "UNKNOWN")
+        fresh_app = console.App(self.codex_home, self.config)
+        self.assertEqual(counter(fresh_app, accepted_at - 1, accepted_at)["counters"]["completed_tasks"], within["counters"]["completed_tasks"])
+        with mock.patch.object(restarted.progress_ledger, "replay", return_value=ledger_copy):
+            self.assertEqual(counter(restarted, accepted_at - 1, accepted_at)["counters"]["completed_tasks"]["state"], "UNKNOWN", "unadmitted revision cannot inherit completion")
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained)
         block = next(item for item in restarted.progress_ledger.replay()["blocks"].values() if item["block_id"] == "b")
         self.assertEqual((block["lifecycle_state"], block["admitted_proof_weight"], block["latest_event_id"]),
                          ("ACCEPTED", 0, "bound-accepted:host-new:b"))
@@ -1914,10 +2270,25 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(result["binding"]["parent_edge"], {"state":"OPEN", "parent_task_id":None})
         self.assertEqual([r["params"]["threadId"] for r in sent], ["root"])
         self.assertEqual(app.progress_ledger.replay()["blocks"], {})
+        topology = app._topology_projection(app._host_overview())
+        self.assertEqual([row["id"] for row in topology["roots"]], ["root"])
+        self.assertFalse(topology["authority"]["execution_authority"])
+        with self.assertRaises(console.ConsoleError):
+            app._auto_scope("root", "project:alpha")  # Read admission is never execution opt-in.
         before = app.progress_ledger._state.path.read_bytes()
         restarted = console.App(self.codex_home, self.config)
         restarted.auto_bridge.command_session = session
         self.assertEqual(restarted.adopt_existing_task(request)["status"], "REPLAY")
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), before)
+        self.assertEqual(restarted._topology_projection(restarted._host_overview()), topology)
+        # A stale root receipt or lost current host membership must withhold the root.
+        original = restarted.progress_ledger.replay()
+        forged = copy.deepcopy(original)
+        forged["task_creation_bindings"]["adopt-root"]["root_digest"] = "f" * 64
+        with mock.patch.object(restarted.progress_ledger, "replay", return_value=forged):
+            self.assertEqual(restarted._topology_projection(restarted._host_overview())["roots"], [])
+        with mock.patch.object(restarted, "_observed_task_root", side_effect=console.ConsoleError("archived or moved")):
+            self.assertEqual(restarted._topology_projection(restarted._host_overview())["roots"], [])
         self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), before)
 
     def test_existing_owner_admission_http_auth_and_atomic_failures(self) -> None:
@@ -2869,6 +3240,154 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(post(uncertain)._json.call_args.args[1]["status"], "PENDING")
         self.assertEqual(len(sent), calls, "uncertain existing message cannot be mistaken for a historical turn or resent")
         self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+
+    def test_task_message_retains_sanitized_failure_and_reviewed_pre_turn_recovery(self) -> None:
+        from contextlib import contextmanager
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root),))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        root = app._canonical_project_root("project:alpha")
+        instruction = "PRIVATE_INSTRUCTION_MUST_NOT_LEAK"
+        secret = "PRIVATE_HOST_ERROR_PATH_AND_TOKEN"
+        cases = (("initialize", "initialize", -32601, False, ["COMMAND"]),
+                 ("resume", "thread/resume", -32000, False, ["COMMAND"]),
+                 ("turn", "turn/start", 0, False, ["COMMAND", "ACKNOWLEDGED"]),
+                 ("timeout", "turn/start", None, True, ["COMMAND", "ACKNOWLEDGED"]),
+                 ("conflicting", "turn/start", None, True, ["COMMAND", "ACKNOWLEDGED"]))
+        for name, phase, code, uncertain, statuses in cases:
+            with self.subTest(name=name):
+                sent = []
+                @contextmanager
+                def session(cwd, **kwargs):
+                    self.assertEqual(cwd, root)
+                    if name == "initialize":
+                        raise console.CodexRPCFailure("initialize", {"id": 0, "error": {"code": -32601, "message": secret}}, 0)
+                    def receive(predicate):
+                        message = sent[-1]
+                        if message["method"] == "thread/resume" and name != "resume":
+                            return {"id": message["id"], "result": {"thread": {"id": "task", "cwd": str(root), "status": {"type": "idle"}}}}
+                        if name == "timeout":
+                            raise TimeoutError(secret)
+                        response = {"id": message["id"], "error": {"code": -32000 if name == "resume" else 0, "message": secret}}
+                        if name == "conflicting":
+                            response["result"] = {"turn": {"id": "untrusted-turn"}}
+                        return response
+                    yield sent.append, receive
+                app.auto_bridge.command_session = session
+                now = int(time.time() * 1000)
+                envelope = {"command_id": "failure-" + name, "idempotency_key": "failure-" + name, "action": "TASK",
+                    "project_id": "project:alpha", "root_digest": console._auto_digest({"project_id": "project:alpha", "canonical_root": console._normalized_project_path(str(root))}),
+                    "ctrl_id": "", "target_intent": "EXISTING_THREAD", "target_thread_id": "task",
+                    "payload_digest": hashlib.sha256(instruction.encode()).hexdigest(),
+                    "expected_ledger_revision": app.progress_ledger.replay()["cursor"]["event_seq"],
+                    "submitted_at_ms": now, "expires_at_ms": now + 60000}
+                payload = {"acknowledge": True, "instruction": instruction, "envelope": envelope}
+                result = app.message_task(payload)
+                self.assertEqual(result["host_failure"], {"phase": phase, "rpc_error_code": code, "delivery_uncertain": uncertain})
+                self.assertEqual(result["status"], "PENDING")
+                self.assertFalse(result["work_completed"])
+                self.assertNotIn(secret, json.dumps(result))
+                receipts = app.progress_ledger.replay()["connector_receipts"][envelope["idempotency_key"]]["receipts"]
+                self.assertEqual([r["status"] for r in receipts], statuses)
+                before = app.progress_ledger._state.path.read_bytes()
+                self.assertNotIn(secret.encode(), before)
+                self.assertNotIn(instruction.encode(), before)
+                calls = len(sent)
+                app = console.App(self.codex_home, self.config)
+                app.auto_bridge.command_session = session
+                replay = app.message_task(payload)
+                self.assertEqual(replay["status"], "PENDING")
+                self.assertNotIn("host_failure", replay, "a restart cannot reconstruct discarded transport diagnostics")
+                self.assertEqual(len(sent), calls)
+                self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+                if name != "resume":
+                    continue
+                evidence = {key: envelope[key] for key in (
+                    "command_id", "idempotency_key", "payload_digest", "project_id", "root_digest", "target_thread_id")}
+                evidence.update(command_digest=result["command_digest"], phase="BEFORE_TURN_SUBMISSION", turn_submitted=False,
+                                evidence_digest="b" * 64, review_digest="c" * 64)
+                app.auto_bridge.reconcile_task_non_delivery = lambda command, thread: {"non_delivery_evidence": evidence}
+                rejected = app.message_task(payload)
+                self.assertEqual(rejected["attention"], "PRE_TURN_EVIDENCE_REJECTED")
+                self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+                app.auto_bridge.verify_pre_turn_non_delivery = lambda proof, digest: proof == evidence and digest == result["command_digest"]
+                reconciled = app.message_task(payload)
+                self.assertEqual(reconciled["status"], "NOT_DELIVERED")
+                self.assertFalse(reconciled["work_completed"])
+                self.assertEqual((reconciled["thread_id"], reconciled["turn_id"], reconciled["observed_root_digest"]), ("", "", ""))
+                self.assertEqual(len(sent), calls)
+                after = app.progress_ledger._state.path.read_bytes()
+                self.assertTrue(after.startswith(before))
+                app = console.App(self.codex_home, self.config)
+                app.auto_bridge.command_session = session
+                self.assertEqual(app.message_task(payload), reconciled)
+                self.assertEqual(app.progress_ledger._state.path.read_bytes(), after)
+                self.assertEqual(len(sent), calls)
+
+    def test_task_message_injected_app_transport_retains_exact_replay_without_stdio(self) -> None:
+        from runtime.execution_adapters import HQAppTaskObservation
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root),))
+            connection.commit()
+        instruction = "Return one exact app-owned result."
+        sent = []
+        root = self.root.resolve()
+        mode = "pending"
+        def send(*, thread_id, prompt):
+            self.assertEqual((thread_id, prompt), ("task", instruction))
+            sent.append((thread_id, prompt))
+            return {"threadId": thread_id}  # Never promoted to a turn receipt.
+        def observe(envelope):
+            if mode == "pending":
+                return None
+            return HQAppTaskObservation("a" * 64, envelope.digest, envelope.payload_digest,
+                "task", "old-turn", "app-turn", str(root if mode != "wrong-root" else self.codex_home),
+                envelope.submitted_at_ms)
+        transport = SimpleNamespace(send_message_to_thread=send, observe_command=observe,
+            verify_observation=lambda observation, envelope: mode != "unverified")
+        app = console.App(self.codex_home, self.config, task_transport=transport)
+        app.auto_bridge.command_session = mock.Mock(side_effect=AssertionError("stdio fallback forbidden"))
+        now = int(time.time() * 1000)
+        envelope = {"command_id": "app-message", "idempotency_key": "app-message", "action": "TASK",
+            "project_id": "project:alpha", "root_digest": console._auto_digest({"project_id": "project:alpha", "canonical_root": console._normalized_project_path(str(root))}),
+            "ctrl_id": "", "target_intent": "EXISTING_THREAD", "target_thread_id": "task",
+            "payload_digest": hashlib.sha256(instruction.encode()).hexdigest(), "expected_ledger_revision": 0,
+            "submitted_at_ms": now, "expires_at_ms": now + 60000}
+        payload = {"acknowledge": True, "instruction": instruction, "envelope": envelope}
+        bad = copy.deepcopy(payload)
+        bad["instruction"] = "changed input"
+        with self.assertRaises(console.ConsoleError):
+            app.message_task(bad)
+        self.assertEqual(sent, [])
+        self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
+        pending = app.message_task(payload)
+        self.assertEqual(pending["status"], "PENDING")
+        self.assertFalse(pending["work_completed"])
+        before = app.progress_ledger._state.path.read_bytes()
+        self.assertNotIn(instruction.encode(), before)
+        self.assertEqual(len(sent), 1)
+        app = console.App(self.codex_home, self.config, task_transport=transport)
+        app.auto_bridge.command_session = mock.Mock(side_effect=AssertionError("stdio fallback forbidden"))
+        with mock.patch.object(console.time, "time", return_value=(now + 120000) / 1000):
+            self.assertEqual(app.message_task(payload)["status"], "PENDING")
+            for mode in ("wrong-root", "unverified"):
+                self.assertEqual(app.message_task(payload)["status"], "ATTENTION")
+                self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+            mode = "verified"
+            result = app.message_task(payload)
+            self.assertEqual((result["status"], result["thread_id"], result["turn_id"], result["observed_root_digest"]),
+                ("RESULT", "task", "app-turn", envelope["root_digest"]))
+            self.assertFalse(result["work_completed"])
+            after = app.progress_ledger._state.path.read_bytes()
+            self.assertEqual(app.message_task(payload)["status"], "REPLAY")
+            self.assertEqual(app.progress_ledger._state.path.read_bytes(), after)
+        receipts = app.progress_ledger.replay()["connector_receipts"]["app-message"]["receipts"]
+        self.assertEqual([item["status"] for item in receipts], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
+        self.assertEqual(len(sent), 1)
+        app.auto_bridge.command_session.assert_not_called()
 
     def test_task_message_context_is_exact_read_only_preparation(self) -> None:
         with closing(sqlite3.connect(self.database)) as connection:
@@ -4761,6 +5280,8 @@ class SwarmConsoleTests(unittest.TestCase):
                              ("project:alpha", "root", 1))
             self.assertEqual(current["event_cursor"]["event_id"], "work-event-1")
             self.assertTrue(current["manifest_identity"]["manifest_digest"])
+            self.assertEqual(current["measurement"]["percent"], 0.0)
+            self.assertEqual(current["estimate"]["deadline_state"], "UNKNOWN")
             for scope in ("project:alpha", "ctrl:root"):
                 scoped = app._project_view(overview, scope)
                 result = scoped["progress"]["projects"]["project:alpha"]["current_milestone"]
@@ -4897,6 +5418,13 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("progress", app._topology_projection(view)["tasks"][0])
 
     def test_topology_promotes_only_connector_confirmed_task_creation_binding(self) -> None:
+        self._assert_connector_confirmed_topology()
+
+    def test_topology_retains_exact_bound_work_unit_on_restart(self) -> None:
+        self._assert_connector_confirmed_topology({"kind": "LAB", "goal_id": None,
+                                                  "parent_goal_id": None, "parent_unit_task_id": None})
+
+    def _assert_connector_confirmed_topology(self, work_unit=None) -> None:
         self._confirm_root_ctrl()
         app = console.App(self.codex_home, self.config)
         self._append_topology_manifests(app, task_count=0)
@@ -4915,7 +5443,8 @@ class SwarmConsoleTests(unittest.TestCase):
         manifest = build_task_manifest(
             manifest_id="task-manifest:bound-agent", task_id="bound-agent",
             task_name="Topology implementation", project_id="project:alpha", ctrl_id="root",
-            role_scope="DOER_SINGLE",
+            role_scope="LEAD_SINGLE" if work_unit else "DOER_SINGLE",
+            **({"work_unit": work_unit} if work_unit else {}),
             milestones=[{
                 "milestone_id": "bound-milestone", "order": 0, "title": "Implementation",
                 "verification_policy": "source-contract", "supersedes_milestone_id": None,
@@ -4966,10 +5495,14 @@ class SwarmConsoleTests(unittest.TestCase):
         public_node = next(item for item in overview["nodes"] if item["id"] == "bound-agent")
         self.assertEqual(
             (node["profession"], node["structural_role"], node["parent_relation"]["state"]),
-            ("developer", "DOER", "KNOWN"),
+            ("developer", "LEAD" if work_unit else "DOER", "KNOWN"),
         )
         self.assertEqual(node["manifest_identity"]["identity_kind"], "TASK_CREATION_BINDING")
         self.assertEqual(node["creation_binding"]["operation_id"], "create-bound")
+        if work_unit:
+            self.assertEqual(node["work_unit"], manifest["work_unit"])
+        else:
+            self.assertNotIn("work_unit", node)
         self.assertEqual((node["initial_work"]["state"], node["initial_work"]["blocks"][0]["block_id"]), ("KNOWN", "bound-block"))
         self.assertEqual((public_node["artifact"], public_node["worker"]), ("Topology implementation", ""))
         self.assertNotIn("private host title", json.dumps(overview))
@@ -11690,6 +12223,293 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("Spark stays bounded to quick, low-risk work.", app)
         self.assertNotIn("No browser, web lookup, ImageGen", app)
         self.assertNotIn("saveUsageSaver", app)
+
+
+
+class MilestoneBasisContractTests(unittest.TestCase):
+    def fixture(self):
+        manifest = {"project_id": "p", "ctrl_id": "ctrl", "task_id": "task", "blocks": [
+            {"block_id": "done", "milestone_id": "m", "estimate_minutes": 15},
+            {"block_id": "active", "milestone_id": "m", "estimate_minutes": 30},
+            {"block_id": "other", "milestone_id": "other-m", "estimate_minutes": 999}]}
+        def block(identity, milestone, state, weight, admitted):
+            return {"block_id": identity, "milestone_id": milestone, "milestone_title": "Current milestone",
+                "project_id": "p", "ctrl_id": "ctrl", "task_id": "task", "scope_version": 1,
+                "lifecycle_state": state, "measurement_state": "MEASURED", "committed_weight": weight,
+                "admitted_proof_weight": admitted, "observed_at_ms": 100,
+                "event_cursor": {"event_seq": 2, "event_id": identity, "event_digest": "a" * 64}}
+        return manifest, [block("done", "m", "ACCEPTED", 1, 1), block("active", "m", "ACTIVE", 3, 1),
+                          block("other", "other-m", "ACCEPTED", 100, 100)]
+
+    def test_exact_milestone_proof_and_estimate_are_separate(self):
+        manifest, blocks = self.fixture()
+        value = console._milestone_basis(manifest, blocks, "m", 1)
+        self.assertEqual(value["measurement"]["percent"], 50.0)
+        self.assertEqual((value["measurement"]["admitted_proof_weight"], value["measurement"]["committed_weight"]), (2, 4))
+        self.assertEqual((value["estimate"]["minutes"], value["estimate"]["remaining_allocation_minutes"]), (45, 30))
+        self.assertIsNone(value["estimate"]["deadline_ms"])
+        self.assertEqual(value["estimate"]["deadline_state"], "UNKNOWN")
+        self.assertEqual(value, console._milestone_basis(manifest, list(reversed(blocks)), "m", 1))
+        changed = copy.deepcopy(manifest); changed["blocks"][1]["estimate_minutes"] = 60
+        updated = console._milestone_basis(changed, blocks, "m", 1)
+        self.assertEqual(updated["measurement"], value["measurement"])
+        self.assertEqual(updated["estimate"]["minutes"], 75)
+        blocks[1]["lifecycle_state"] = "TOMBSTONED"
+        self.assertEqual(console._milestone_basis(manifest, blocks, "m", 1)["measurement"]["percent"], 100.0)
+
+    def test_missing_unmeasured_cross_scope_and_duplicate_fail_closed(self):
+        manifest, blocks = self.fixture()
+        for field, changed in (("project_id", "foreign"), ("ctrl_id", "foreign"), ("task_id", "foreign"),
+                               ("scope_version", 2), ("milestone_id", "foreign"), ("measurement_state", "UNMEASURED"),
+                               ("committed_weight", None), ("admitted_proof_weight", 9)):
+            hostile = copy.deepcopy(blocks); hostile[1][field] = changed
+            with self.subTest(field=field):
+                result = console._milestone_basis(manifest, hostile, "m", 1)["measurement"]
+                self.assertEqual(result["state"], "UNKNOWN"); self.assertIsNone(result["percent"])
+        self.assertIsNone(console._milestone_basis(manifest, blocks[:1], "m", 1)["measurement"]["percent"])
+        self.assertIsNone(console._milestone_basis(manifest, blocks + [blocks[1]], "m", 1)["measurement"]["percent"])
+        manifest["blocks"][1]["estimate_minutes"] = None
+        result = console._milestone_basis(manifest, blocks, "m", 1)
+        self.assertEqual(result["measurement"]["percent"], 50.0)
+        self.assertEqual(result["estimate"]["state"], "UNKNOWN")
+
+    def test_actual_progress_payload_keeps_bound_basis_and_withholds_stale(self):
+        manifest, blocks = self.fixture()
+        task = {"project_id": "p", "ctrl_id": "ctrl", "task_id": "task", "scope_version": 1,
+                "manifest_identity": {"manifest_version": 1, "manifest_digest": "b" * 64}, "blocks": blocks,
+                "milestone_basis": {"m": console._milestone_basis(manifest, blocks, "m", 1)}}
+        view = {"projects": [{"id": "p"}], "nodes": [], "controllers": [], "heartbeat_minutes": 30,
+                "topology": {"state": "KNOWN", "cursor": {"event_seq": 3, "event_id": "last", "event_digest": "c" * 64},
+                             "tasks": [task], "hidden_tasks": []}}
+        original = copy.deepcopy(view)
+        with mock.patch.object(console.time, "time", return_value=1):
+            result = console.App._progress_payload(view)["projects"]["p"]["current_milestone"]
+        self.assertEqual(result["measurement"]["percent"], 50.0)
+        self.assertEqual((result["project_id"], result["task_id"], result["scope_version"]), ("p", "task", 1))
+        self.assertEqual(result["cursor"], view["topology"]["cursor"])
+        self.assertEqual(result["manifest_identity"], task["manifest_identity"])
+        self.assertEqual((result["freshness"], result["as_of_ms"]), ("CURRENT", 1000))
+        with mock.patch.object(console.time, "time", return_value=100000):
+            stale = console.App._progress_payload(view)["projects"]["p"]["current_milestone"]
+        self.assertEqual(stale["state"], "UNKNOWN"); self.assertNotIn("measurement", stale)
+        self.assertEqual(view, original)
+
+class TicketEstimateContractTests(unittest.TestCase):
+    """Production App + ConsoleStore, real SQLite in memory, retained Ledger resolvers.
+
+    Host/root observation is injected; no native commands, live files or database relocation.
+    """
+
+    def setUp(self):
+        class MemoryConnection(sqlite3.Connection):
+            def close(self):
+                pass
+        self.connection = sqlite3.connect(":memory:", factory=MemoryConnection, check_same_thread=False)
+        self.connection.row_factory = sqlite3.Row
+        self.addCleanup(lambda: sqlite3.Connection.close(self.connection))
+        self.store = console.ConsoleStore.__new__(console.ConsoleStore)
+        self.store._lock = threading.RLock()
+        self.store._connect = lambda: self.connection
+        self.store._initialize()
+        self.root = Path("C:/exact-estimate-fixture")
+        self.root_digest = console._auto_digest({"project_id": "project:alpha",
+            "canonical_root": console._normalized_project_path(str(self.root))})
+        digest = "sha256:" + "a" * 64
+        manifest = {"task_id": "task", "project_id": "project:alpha", "ctrl_id": "ctrl",
+            "manifest_digest": digest, "manifest_version": 1,
+            "blocks": [{"block_id": "block", "estimate_minutes": 30}]}
+        reference = {"reference_id": "ref", "record_id": "ticket", "kind": "task", "root_digest": self.root_digest,
+            "record_digest": "b" * 64, "task_id": "task", "ctrl_id": "ctrl", "block_id": "block",
+            "manifest_digest": digest, "attempt": 1, "membership": "REQUIRED", "operation_id": "create-task",
+            "creation_event_digest": "c" * 64, "admitted_revision": 6, "event_seq": 7, "event_digest": "d" * 64}
+        from runtime.progress_events import BRIEF_TICKET_PREFIX
+        self.projection = {"cursor": {"event_seq": 7, "event_id": "bound-ref", "event_digest": "d" * 64},
+            "ticket_identities": {"project:alpha": {"project_code": "SWRM",
+                "brief_records": {BRIEF_TICKET_PREFIX + "ticket": {"kind": "task", "root_digest": self.root_digest}},
+                "execution_references": {"ref": reference}}},
+            "task_manifests": {"task": {"active_version": "1", "versions": {"1": manifest}}},
+            "task_creation_operations_by_task": {"task": "create-task"},
+            "task_creation_bindings": {"create-task": {"task_id": "task", "project_id": "project:alpha",
+                "root_digest": self.root_digest, "event_digest": "c" * 64,
+                "receipts": {"block_receipts": [{"id": "block", "receipt_id": "created"}]}}},
+            "connector_receipts": {}, "blocks": {}}
+        self.ledger = console.ProgressLedger.__new__(console.ProgressLedger)
+        ledger_lock = threading.RLock()
+        self.ledger._state = SimpleNamespace(locked=lambda: ledger_lock)
+        self.ledger._replay_unlocked = mock.Mock(side_effect=lambda: (copy.deepcopy(self.projection), []))
+        self.app = console.App.__new__(console.App)
+        self.app.store, self.app.progress_ledger = self.store, self.ledger
+        self.app._saved_project_binding = mock.Mock(return_value={"project_id": "project:alpha", "root": self.root,
+            "identities": frozenset({"project:alpha"})})
+        self.app._observed_task_root = mock.Mock(return_value=self.root)
+        self.app.auto_bridge = mock.Mock(side_effect=AssertionError("no host dispatch"))
+        self.read = {"operation": "estimate_read", "project_id": "project:alpha", "record_id": "ticket", "reference_id": "ref"}
+        self.command = {**self.read, "operation": "estimate", "operation_id": "estimate-1", "acknowledge": True,
+            "expected_ledger_revision": 7, "expected_estimate_revision": 0, "actor": "User-provided label",
+            "reason": "User refined the scope", "estimate": {"estimate_minutes": 60, "remaining_minutes": 45,
+            "original_target_ms": 1000}}
+
+    def send(self, command=None):
+        return self.app.project_ticket_execution_command(copy.deepcopy(self.command if command is None else command))
+
+    def count(self):
+        return self.connection.execute("SELECT COUNT(*) FROM eta_forecasts WHERE trigger='user_estimate'").fetchone()[0]
+
+    def test_estimate_history_restart_keeps_original_target_and_no_progress(self):
+        before = copy.deepcopy(self.projection)
+        self.assertIsNone(self.send(self.read)["current"])
+        first = self.send()
+        self.assertEqual(first["status"], "APPENDED")
+        for index, (total, remaining) in enumerate(((90, 70), (45, 20)), 1):
+            command = {**self.command, "operation_id": "revision-" + str(index), "expected_estimate_revision": index,
+                       "estimate": {"estimate_minutes": total, "remaining_minutes": remaining, "original_target_ms": 1000}}
+            self.send(command)
+        # Reopen the serialized DB and projection in memory, not a second persistence implementation.
+        image = self.connection.serialize()
+        self.connection.deserialize(image)
+        self.projection = json.loads(json.dumps(self.projection))
+        self.app.store = console.ConsoleStore.__new__(console.ConsoleStore)
+        self.app.store._lock, self.app.store._connect = threading.RLock(), lambda: self.connection
+        result = self.send(self.read)
+        self.assertEqual([r["estimate_minutes"] for r in result["history"]], [60, 90, 45])
+        self.assertEqual([r["change"] for r in result["history"]], ["INITIAL", "ESTIMATE_INCREASED", "ESTIMATE_REDUCED"])
+        self.assertTrue(all(r["original_target_ms"] == 1000 and r["initial_estimate_minutes"] == 60 for r in result["history"]))
+        self.assertTrue(all(r["reason"] and r["recorded_at_ms"] > 1000 and not r["actor"]["identity_verified"] for r in result["history"]))
+        self.assertEqual(result["binding"]["manifest_estimate_minutes"], 30)
+        self.assertEqual(result["forecast"]["state"], "UNKNOWN")
+        self.assertIsNone(result["forecast"]["eta_end_ms"])
+        self.assertFalse(result["execution"]["completed"])
+        self.assertIsNone(result["observed"]["elapsed_ms"])
+        self.assertIsNone(result["observed"]["actual_finish_ms"])
+        self.assertEqual(self.projection, before)
+        self.assertEqual(self.store.latest_forecasts(), {})
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM task_heartbeats").fetchone()[0], 0)
+        replay = self.send()
+        self.assertEqual(replay["status"], "REPLAY")
+        self.assertEqual(replay["receipt"], first["receipt"])
+        self.assertEqual(replay["current"]["revision"], 3)
+        self.assertEqual(self.count(), 3)
+        self.app.auto_bridge.assert_not_called()
+
+    def test_estimate_host_and_exact_execution_binding_fail_before_write(self):
+        cases = [lambda: self.app._observed_task_root.configure_mock(return_value=Path("C:/foreign")),
+                 lambda: self.app._observed_task_root.configure_mock(side_effect=console.ConsoleError("unobserved host")),
+                 lambda: self.projection["task_creation_bindings"].clear(),
+                 lambda: self.projection["task_manifests"]["task"]["versions"]["1"].update(project_id="foreign"),
+                 lambda: self.projection["ticket_identities"]["project:alpha"]["execution_references"]["ref"].update(root_digest="0" * 64),
+                 lambda: self.projection["ticket_identities"]["project:alpha"]["execution_references"]["ref"].update(ctrl_id="foreign"),
+                 lambda: self.projection["ticket_identities"]["project:alpha"]["execution_references"]["ref"].update(attempt=2)]
+        original = copy.deepcopy(self.projection)
+        for mutate in cases:
+            self.projection = copy.deepcopy(original)
+            self.app._observed_task_root = mock.Mock(return_value=self.root)
+            mutate()
+            with self.subTest(mutate=mutate), self.assertRaises(console.ConsoleError):
+                self.send()
+            self.assertEqual(self.count(), 0)
+        self.projection = original
+        self.app._observed_task_root = mock.Mock(return_value=self.root)
+        saved = self.app._saved_project_binding.return_value
+        self.app._saved_project_binding.side_effect = [saved, {**saved, "root": Path("C:/changed")}]
+        with self.assertRaises(console.ConsoleConflict):
+            self.send()
+        self.assertEqual(self.count(), 0)
+
+    def test_estimate_validation_and_revision_conflicts_do_not_append(self):
+        for change in ({"acknowledge": False}, {"expected_ledger_revision": True}, {"expected_estimate_revision": -1},
+                       {"actor": "untrusted\nlabel"}, {"reason": ""}, {"progress": 100},
+                       {"estimate": {"estimate_minutes": True, "remaining_minutes": 0, "original_target_ms": None}},
+                       {"estimate": {"estimate_minutes": 1, "remaining_minutes": 2, "original_target_ms": None}},
+                       {"estimate": {"estimate_minutes": 1, "remaining_minutes": 1, "original_target_ms": False}},
+                       {"reference_id": "unknown"}, {"record_id": "foreign"}):
+            with self.subTest(change=change), self.assertRaises(console.ConsoleError):
+                self.send({**self.command, **change})
+            self.assertEqual(self.count(), 0)
+        self.send()
+        for change in ({"reason": "conflicting replay"},
+                       {"operation_id": "new", "expected_estimate_revision": 0},
+                       {"operation_id": "new", "expected_estimate_revision": 1, "expected_ledger_revision": 6},
+                       {"operation_id": "new", "expected_estimate_revision": 1,
+                        "estimate": {"estimate_minutes": 90, "remaining_minutes": 30, "original_target_ms": 2000}}):
+            with self.subTest(change=change), self.assertRaises(console.ConsoleConflict):
+                self.send({**self.command, **change})
+            self.assertEqual(self.count(), 1)
+        self.projection["cursor"] = {"event_seq": 8, "event_id": "later", "event_digest": "e" * 64}
+        self.assertEqual(self.send()["status"], "REPLAY")
+        self.assertEqual(self.count(), 1)
+
+    def test_estimate_race_has_one_append_and_one_conflict(self):
+        barrier, results = threading.Barrier(2), []
+        def submit(index):
+            barrier.wait(timeout=3)
+            try:
+                results.append(self.send({**self.command, "operation_id": "race-" + str(index)})["status"])
+            except console.ConsoleConflict:
+                results.append("CONFLICT")
+        threads = [threading.Thread(target=submit, args=(i,)) for i in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+        self.assertCountEqual(results, ["APPENDED", "CONFLICT"])
+        self.assertEqual(self.count(), 1)
+
+    def test_estimate_operation_cannot_cross_reference_and_time_cannot_regress(self):
+        with mock.patch.object(console.time, "time", return_value=2):
+            first = self.send()
+        reference = self.projection["ticket_identities"]["project:alpha"]["execution_references"]["ref"]
+        second = {**reference, "reference_id": "ref-2", "block_id": "block-2"}
+        self.projection["ticket_identities"]["project:alpha"]["execution_references"]["ref-2"] = second
+        self.projection["task_manifests"]["task"]["versions"]["1"]["blocks"].append({"block_id": "block-2", "estimate_minutes": 20})
+        self.projection["task_creation_bindings"]["create-task"]["receipts"]["block_receipts"].append({"id": "block-2", "receipt_id": "created-2"})
+        with self.assertRaises(console.ConsoleConflict):
+            self.send({**self.command, "reference_id": "ref-2"})
+        with mock.patch.object(console.time, "time", return_value=1), self.assertRaises(console.ConsoleConflict):
+            self.send({**self.command, "operation_id": "clock-regression", "expected_estimate_revision": 1})
+        self.assertEqual(self.count(), 1)
+        result = self.send(self.read)
+        self.assertEqual(result["history"], [first["receipt"]])
+        self.assertIsNone(self.send({**self.read, "reference_id": "ref-2"})["current"])
+
+    def test_user_estimates_and_owner_forecasts_are_isolated(self):
+        report = {"receipt_type": "swarm_task_owner_forecast", "source": "owner", "receipt": "report-1",
+            "task_id": "task", "project_id": "project:alpha", "baseline": {"eta_start_ms": 10, "eta_end_ms": 20, "confidence": 50},
+            "current": {"eta_start_ms": 10, "eta_end_ms": 30, "confidence": 50, "status": "in_progress",
+                        "progress_basis": {"receipts": ["observed-proof"]}},
+            "reason_code": "material_progress", "short_reason": "Owner report"}
+        def owner():
+            with self.connection:
+                self.assertTrue(self.store._record_eta_receipt(self.connection, report,
+                    observed_task_id="task", observed_project_id="project:alpha", now_ms=100))
+        # A user row may precede the first owner report; it must not become that report's baseline.
+        self.send()
+        self.assertEqual(self.store.latest_forecasts(), {})
+        owner()
+        prior = self.store.latest_forecasts()["task"]
+        self.send({**self.command, "operation_id": "estimate-2", "expected_estimate_revision": 1})
+        self.assertEqual(self.store.latest_forecasts()["task"], prior)
+        report["current"]["eta_end_ms"] = 40
+        owner()
+        self.assertEqual(self.store.latest_forecasts()["task"]["baseline_eta_end_ms"], 20)
+        self.assertEqual(self.store.latest_forecasts()["task"]["eta_end_ms"], 40)
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM eta_forecasts").fetchone()[0], 4)
+
+    def test_estimate_acceptance_is_separate_and_history_is_bounded(self):
+        for index in range(65):
+            self.send({**self.command, "operation_id": "revision-" + str(index), "expected_estimate_revision": index})
+        result = self.send(self.read)
+        self.assertEqual(len(result["history"]), 64)
+        self.assertTrue(result["history_truncated"])
+        self.assertEqual(self.count(), 65)
+        self.assertEqual(result["current"]["initial_estimate_minutes"], 60)
+        self.projection["blocks"]["retained-block"] = {"project_id": "project:alpha", "task_id": "task", "block_id": "block",
+            "lifecycle_state": "ACCEPTED", "latest_event_id": "bound-accepted:task:block", "observed_at_ms": 1234}
+        accepted = self.send(self.read)
+        self.assertTrue(accepted["execution"]["completed"])
+        self.assertEqual(accepted["observed"]["accepted_at_ms"], 1234)
+        self.assertIsNone(accepted["observed"]["actual_finish_ms"])
+        self.assertEqual(accepted["current"], result["current"])
 
 
 if __name__ == "__main__":

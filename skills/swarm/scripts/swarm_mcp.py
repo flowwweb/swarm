@@ -29,11 +29,12 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "cb5ff3de2a3b4df609cd9529089516fe7b2f918213fa022567bad43b0816a1e4"
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "90755ec9e46e46b8f3153820c77b3a4464fb24b63df0b49a4542c014a338632d", "skills/swarm/assets/ui/swarm-hq-host.css": "3cdb043e87cb1031732a5a15ba0d0b513ba2d2bcd431320a86ca84c323c01eb6", "skills/swarm/assets/swarm-wordmark.png": "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2"}
+HQ_SDK_SHA256 = "68bd345ec06fc43f1642b97473d9350fece26aafd3420c59ec507a5869a12245"
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "68555d817f57949539a4f5b981a2bdaab53191f442a62cf3f495403299327c67", "skills/swarm/assets/ui/swarm-hq-host.css": "a3b1bb7a73d930eb6549cdc02bf4781de77e66926cd453a2c8e17734935df98d"}
 
 
 PROJECTS_SUPPORT_IMAGES = {
+    "__PROFILE_MASCOT__": ("console/static/swarm-mascot-512.png", "image/png", "247fc2a02b5505c13815d78c4cce8765b893f51b70cf9167d1e2d43350209666"),
     "__FLOWWWEB_LOGO__": ("skills/swarm/assets/ui/brand/flowwweb-lockup-v2-light.svg", "image/svg+xml", "57253bfef4d4f26c399dbb1d5fb2f258d663b52d31dd1414ab7c9cfef808d7b3"),
     "__FLOWWWEB_LOGO_DARK__": ("skills/swarm/assets/ui/brand/flowwweb-lockup-v2-dark.svg", "image/svg+xml", "cbc1bb458ab73cf7ac89972e7f087ae93a9a65902b1a4926b05484eaa90e9a11"),
 }
@@ -46,6 +47,12 @@ PROJECTS_COMPACT_BADGE = (
     607876,
 )
 PROJECTS_PUBLIC_IMAGES = {
+    "__WORDMARK__": (
+        "skills/swarm/assets/swarm-wordmark.png",
+        "https://flowwweb.com/brand/swarm/swarm-wordmark.png",
+        "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2",
+        423870,
+    ),
     "__ROADTO1M_COMPACT__": PROJECTS_COMPACT_BADGE,
     "__SUPPORT_PORTRAIT__": (
         "skills/swarm/assets/ui/brand/support-caricature-light.webp",
@@ -59,8 +66,8 @@ PROJECTS_PUBLIC_IMAGES = {
 TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "swarm_role_read", "title": "Read global roles",
-        "description": "Read current validated role definitions and versions. No task assignment or host execution authority.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "description": "Read current validated role definitions; an exact role_id includes admitted canonical artwork for its editor. No task assignment or host execution authority.",
+        "inputSchema": {"type": "object", "properties": {"role_id": {"type": "string"}}, "additionalProperties": False},
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         "_meta": {"ui": {"visibility": ["app"]}},
     },
@@ -80,10 +87,15 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "swarm_project_ticket_execution", "title": "Ticket execution bindings",
-        "description": "Read or explicitly bind an existing host-created block attempt to a reserved project ticket. Never dispatch or complete work.",
+        "description": "Read or bind retained ticket execution, or acknowledge a user estimate revision for an exact retained reference. Estimates are planning only. Never dispatch or complete work.",
         "inputSchema": {"type": "object", "properties": {
-            "operation": {"type": "string", "enum": ["read", "bind"]},
+            "operation": {"type": "string", "enum": ["read", "bind", "estimate_read", "estimate"]},
             "project_id": {"type": "string"}, "record_id": {"type": "string"},
+            "operation_id": {"type": "string"}, "expected_estimate_revision": {"type": "integer"},
+            "actor": {"type": "string"}, "reason": {"type": "string"},
+            "estimate": {"type": "object", "properties": {"estimate_minutes": {"type": "integer"},
+                "remaining_minutes": {"type": "integer"}, "original_target_ms": {"type": ["integer", "null"]}},
+                "required": ["estimate_minutes", "remaining_minutes", "original_target_ms"], "additionalProperties": False},
             "reference_id": {"type": "string"}, "task_id": {"type": "string"},
             "block_id": {"type": "string"}, "manifest_digest": {"type": "string"},
             "attempt": {"type": "integer"}, "membership": {"type": "string", "enum": ["REQUIRED", "SUPPLEMENTAL"]},
@@ -94,9 +106,9 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "swarm_project_tickets", "title": "Project tickets",
-        "description": "Read or explicitly create/edit project planning tickets, or explicitly migrate legacy string milestones into typed records. No host dispatch or completion authority.",
+        "description": "Read or explicitly create/edit project planning tickets, migrate legacy strings into typed records, or allocate retained typed records their existing Ledger display IDs. No host dispatch or completion authority.",
         "inputSchema": {"type": "object", "properties": {
-            "operation": {"type": "string", "enum": ["read", "create", "update", "migrate_legacy"]},
+            "operation": {"type": "string", "enum": ["read", "create", "update", "migrate_legacy", "allocate_ids"]},
             "project_id": {"type": "string"}, "expected_digest": {"type": "string"},
             "acknowledge": {"type": "boolean", "enum": [True]},
             "collection": {"type": "string", "enum": ["goals", "milestones", "tasks", "blocks"]},
@@ -104,6 +116,30 @@ TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["operation", "project_id"], "additionalProperties": False},
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
         "_meta": {"ui": {"visibility": ["model", "app"]}},
+    },
+    {
+        "name": "swarm_unit_prepare", "title": "Prepare a Unit coordinator",
+        "description": "Prepare one Lab or Factory using the existing host-bound task contract. No task is created. The coordinator profession is a current assignment, not a permanent Unit restriction.",
+        "inputSchema": {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["LAB", "FACTORY"]},
+            "template_id": {"type": "string"}, "name": {"type": "string"}, "objective": {"type": "string"},
+            "project_id": {"type": "string"}, "ctrl_id": {"type": "string"},
+            "parent_goal_id": {"type": "string"}, "request_id": {"type": "string"},
+            "coordinator_role": {"type": "object"}},
+            "required": ["kind", "template_id", "name", "objective", "project_id", "ctrl_id", "request_id", "coordinator_role"],
+            "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
+    {
+        "name": "swarm_unit_create", "title": "Create an acknowledged Unit coordinator",
+        "description": "Submit the exact prepared Unit command through the existing connector. Retain the identical submission after uncertainty; replay never creates a replacement. Dispatch and persisted readback do not mean work completed.",
+        "inputSchema": {"type": "object", "properties": {
+            "envelope": {"type": "object"}, "instruction": {"type": "string"},
+            "acknowledge": {"type": "boolean", "enum": [True]}},
+            "required": ["envelope", "instruction", "acknowledge"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+        "_meta": {"ui": {"visibility": ["app"]}},
     },
     {
         "name": "swarm_library_read", "title": "Read Units or Roles",
@@ -254,7 +290,6 @@ class HQApp:
             assets = {name: _projects_asset(name, digest) for name, digest in PROJECTS_ASSETS.items()}
             html = assets["skills/swarm/assets/ui/swarm-hq-projects.html"].decode("utf-8")
             html = html.replace("__CSS__", assets["skills/swarm/assets/ui/swarm-hq-host.css"].decode("utf-8"))
-            html = html.replace("__WORDMARK__", "data:image/png;base64," + base64.b64encode(assets["skills/swarm/assets/swarm-wordmark.png"]).decode("ascii"))
             html = html.replace('<script type="module">__SCRIPT__</script>', '')
             for token, (name, mime_type, digest) in PROJECTS_SUPPORT_IMAGES.items():
                 if token in html:
@@ -303,15 +338,53 @@ def _require_hq_read(params: dict[str, Any], hq_app: HQApp | None) -> HQApp:
     raise MCPError("unknown HQ resource")
 
 
-def _native_roles(projection: dict[str, Any]) -> dict[str, Any]:
-    # Relative HTTP avatar paths are not resources of the native app. Preserve
-    # admitted identity, but never advertise an unavailable transport as a preview.
-    return {"ok": True, "scope": "global-definitions", "cursor": projection["cursor"],
-            "roles": [{**_pick(role, ("id", "name", "source", "active_version", "purpose", "owns",
-                "instructions", "boundaries", "default_skills", "specializations", "accent",
-                "lucide_icon", "avatar_asset_digest")), "avatar": None}
-                for role in projection["roles"] if role["id"].casefold() != "critic"],
-            "claim_limit": "Global definitions only; no host authority. Native avatar preview transport is unavailable."}
+def _native_role_choices(role: dict[str, Any], avatar_assets: dict[str, Any]) -> list[dict[str, Any]]:
+    """Only the same profession's already-admitted canonical image; no URL/path input."""
+    role_id = role["id"]
+    record = avatar_assets.get(role_id)
+    if (record is None or re.fullmatch(r"[a-z0-9_]+", role_id) is None
+            or not isinstance(role.get("active_version"), str) or not role["active_version"]):
+        return []
+    try:
+        source_digest = record["source"]["sha256"]
+        image = record["derivatives"][(256, "webp")]
+        name = f"{role_id}-256.webp"
+        if (re.fullmatch(r"[a-f0-9]{64}", source_digest) is None
+                or re.fullmatch(r"[a-f0-9]{64}", image["sha256"]) is None
+                or image["path"] != name or image["format"] != "webp"
+                or (image["width"], image["height"]) != (256, 256)
+                or type(image["bytes"]) is not int or not 0 < image["bytes"] <= 32768):
+            return []
+        body = _projects_asset("skills/swarm/assets/role-avatars/optimized/" + name,
+                               image["sha256"], exact_size=image["bytes"])
+        return [{"id": "canonical", "label": "Canonical artwork", "state": "AVAILABLE",
+                 "role_id": role_id, "manifest_version": role["active_version"],
+                 "digest": source_digest, "render_digest": image["sha256"],
+                 "media_type": "image/webp", "width": 256, "height": 256,
+                 "url": "data:image/webp;base64," + base64.b64encode(body).decode("ascii")}]
+    except (KeyError, TypeError, OSError, MCPError):
+        return []  # Missing/changed bytes withhold media, not the role definition.
+
+
+def _native_roles(projection: dict[str, Any], avatar_assets: dict[str, Any] | None = None,
+                  role_id: str | None = None) -> dict[str, Any]:
+    selected = projection["roles"]
+    if role_id is not None:
+        selected = [role for role in selected if role["id"] == role_id and role_id.casefold() != "critic"]
+        if len(selected) != 1:
+            raise MCPError("selected role is unavailable or ambiguous")
+    roles = []
+    for role in selected:
+        if role["id"].casefold() == "critic":
+            continue
+        choices = _native_role_choices(role, avatar_assets or {}) if role_id is not None else []
+        avatar = next((item for item in choices if item["digest"] == role.get("avatar_asset_digest")), None)
+        roles.append({**_pick(role, ("id", "name", "source", "active_version", "purpose", "owns",
+            "instructions", "boundaries", "default_skills", "specializations", "accent",
+            "lucide_icon", "avatar_asset_digest", "avatar_variants")), "avatar": avatar,
+            "avatar_choices": [_pick(item, ("id", "label", "role_id", "manifest_version", "digest")) for item in choices]})
+    return {"ok": True, "scope": "global-definitions", "cursor": projection["cursor"], "roles": roles,
+            "claim_limit": "Global definitions only; canonical native media when admitted, no host authority or generation."}
 
 
 class SwarmProjection:
@@ -337,11 +410,48 @@ class SwarmProjection:
             raise MCPError("unknown tool")
         _validate_arguments(spec, arguments)
         app = self._load_app()
+        if name in {"swarm_unit_prepare", "swarm_unit_create"}:
+            from console.server import ConsoleError, ConsoleConflict, _auto_digest, _normalized_project_path
+            try:
+                if name == "swarm_unit_prepare":
+                    return app.prepare_work_unit({"parent_goal_id": None, **arguments})
+                envelope = arguments["envelope"]
+                contract = envelope.get("task_creation")
+                draft = contract.get("task_manifest_draft") if isinstance(contract, dict) else None
+                unit = draft.get("work_unit") if isinstance(draft, dict) else None
+                if not isinstance(unit, dict) or unit.get("kind") not in {"LAB", "FACTORY"}:
+                    raise ConsoleError("Unit creation requires its prepared work-unit contract")
+                result = app.create_bound_task(arguments)
+            except ConsoleConflict:
+                return {"ok": False, "state": "CONFLICT", "message": "Unit scope or role changed. Keep the draft and reload."}
+            except ConsoleError:
+                return {"ok": False, "state": "REJECTED", "message": "Unit command was not confirmed. Preserve its exact identity and reconcile before creating another."}
+            # Read the same retained binding/catalog used by Hive. A failed or
+            # racing readback must not hide a dispatched command or claim a save.
+            readback = {"state": "PENDING", "unit": None, "cursor": None}
+            if result.get("status") in {"RESULT", "REPLAY"}:
+                try:
+                    snapshot = app.progress_ledger.replay()
+                    binding = snapshot["task_creation_bindings"].get(envelope["idempotency_key"], {})
+                    root = app._canonical_project_root(envelope["project_id"])
+                    root_digest = _auto_digest({"project_id": envelope["project_id"], "canonical_root": _normalized_project_path(str(root))})
+                    instances = app.unit_catalog_projection(unit["kind"])["instances"]
+                    retained = next((row for row in instances if row["task_id"] == result.get("thread_id")
+                        and row["project_id"] == envelope["project_id"] and row["ctrl_id"] == envelope["ctrl_id"]), None)
+                    if (retained is not None and binding.get("task_id") == retained["task_id"]
+                            and binding.get("root_digest") == root_digest == envelope["root_digest"]
+                            and app.progress_ledger.replay()["cursor"] == snapshot["cursor"]):
+                        readback = {"state": "KNOWN", "unit": retained, "cursor": snapshot["cursor"],
+                                    "role_manifest_ref": binding["role_manifest_ref"],
+                                    "creation_event": {key: binding[key] for key in ("event_id", "event_seq", "event_digest")}}
+                except (ConsoleError, OSError, ValueError, KeyError):
+                    readback["state"] = "UNAVAILABLE"
+            return {**result, "readback": readback, "work_completed": False}
         if name in {"swarm_role_read", "swarm_role_save"}:
             from console.server import ConsoleConflict, ConsoleError
             try:
                 if name == "swarm_role_read":
-                    return _native_roles(app.role_manifest_projection())
+                    return _native_roles(app.role_manifest_projection(), app.builtin_role_avatar_assets, arguments.get("role_id"))
                 result = app.role_manifest_command({key: value for key, value in arguments.items() if key != "acknowledge"})
                 return {**_native_roles(result["projection"]), "receipt": result["receipt"]}
             except ConsoleConflict:
@@ -370,6 +480,10 @@ class SwarmProjection:
                 return {"ok": False, "state": "CONFLICT", "code": "SOURCE_CONFLICT", "project_id": arguments["project_id"],
                         "message": "The project changed. Keep your draft and reload before saving."}
             except ConsoleError as exc:
+                if arguments["operation"] == "read":
+                    return {"ok": False, "state": "REJECTED", "code": "TICKET_READ_FAILED",
+                            "project_id": arguments["project_id"],
+                            "message": "Tickets could not be read. Your records have not been changed. Check runtime compatibility before retrying."}
                 code = str(exc).split(":", 1)[0]
                 messages = {"PROJECT_CODE_REQUIRED": "Choose a project code of 1–4 letters.",
                             "PROJECT_CODE_INVALID": "Use 1–4 letters for the project code.",
@@ -407,20 +521,24 @@ class SwarmProjection:
             project_id = arguments.get("project_id")
             if project_id is not None and (not isinstance(project_id, str) or not project_id.strip()):
                 raise MCPError("project_id must be non-empty text")
+            app.refresh_native_observation()
             return {**_compact_overview(app.overview(project_id.strip() if project_id else None)),
                     "device": _device_status(self.telemetry_path)}
         if name == "swarm_projects":
+            app.refresh_native_observation()
             return _compact_roster(app.project_roster())
         if name == "swarm_usage":
             hours = arguments.get("hours", 24)
             if type(hours) is not int or hours not in {1, 12, 24, 168, 720}:
                 raise MCPError("hours must be one of 1, 12, 24, 168, or 720")
             if "project_id" not in arguments:
+                app.refresh_native_observation(sample_usage=True)
                 return _compact_usage(app.usage_history(hours=hours, include_verified_yield=False))
             project_id = arguments["project_id"]
             if not isinstance(project_id, str) or not project_id.strip():
                 raise MCPError("project_id must be non-empty text")
             project_id = project_id.strip()
+            app.refresh_native_observation(sample_usage=True, project_id=project_id)
             usage = app.usage_history(project_id=project_id, hours=hours, include_verified_yield=False)
             scope = usage.get("scope") if isinstance(usage, dict) else None
             if not isinstance(scope, dict) or scope.get("type") != "project" or scope.get("project_id") != project_id:
@@ -486,6 +604,7 @@ def _compact_overview(view: dict[str, Any]) -> dict[str, Any]:
         "projects": projects,
         "nodes": nodes,
         "links": links,
+        "hives": _compact_hives(view.get("topology")),
         "overview_metrics": compact_metrics,
         "analytics": compact_analytics,
         "progress": compact_progress,
@@ -494,11 +613,70 @@ def _compact_overview(view: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compact_hives(topology: Any) -> dict[str, Any]:
+    """Expose the existing observed hierarchy, never infer a Hive from host titles."""
+    result = {"state": "UNKNOWN", "cursor": None, "items": [], "read_only": True,
+              "execution_authority": False}
+    if not isinstance(topology, dict) or not isinstance(topology.get("cursor"), dict):
+        return result
+    if not isinstance(topology.get("state", "UNKNOWN"), str):
+        return result
+    result.update(state=topology.get("state", "UNKNOWN"), cursor=topology["cursor"])
+    if result["state"] not in {"KNOWN", "PARTIAL"}:
+        return result
+    nodes = topology.get("nodes", [])
+    edges = topology.get("agent_edges", [])
+    if not isinstance(nodes, list) or not isinstance(edges, list) or len(nodes) > 256 or len(edges) > 512:
+        return {**result, "state": "UNKNOWN", "reason": "INVALID_OR_OVERSIZED_TOPOLOGY"}
+    if (any(not isinstance(node, dict) or not node.get("id")
+            or any(not isinstance(node.get(key, ""), str) for key in
+                   ("id", "project_id", "ctrl_id", "structural_role", "hierarchy_membership"))
+            or not isinstance(node.get("parent_relation", {}), dict) for node in nodes)
+            or any(not isinstance(edge, dict) or any(not isinstance(edge.get(key), str) or not edge[key]
+                   for key in ("id", "source", "target")) for edge in edges)):
+        return {**result, "state": "UNKNOWN", "reason": "INVALID_TOPOLOGY"}
+    by_id = {node["id"]: node for node in nodes if isinstance(node, dict) and isinstance(node.get("id"), str)}
+    if len(by_id) != len(nodes):
+        return {**result, "state": "UNKNOWN", "reason": "AMBIGUOUS_TOPOLOGY"}
+    for root in nodes:
+        project_id, ctrl_id = root.get("project_id"), root.get("ctrl_id")
+        if (not isinstance(project_id, str) or not project_id or root["id"] != ctrl_id or root.get("structural_role") != "CTRL"
+                or root.get("parent_relation", {}).get("state") != "ROOT"
+                or root.get("hierarchy_membership") == "INVALID"):
+            continue
+        eligible = {identity for identity, node in by_id.items()
+                    if node.get("project_id") == project_id and node.get("ctrl_id") == ctrl_id
+                    and node.get("structural_role") in {"CTRL", "LEAD", "DOER"}
+                    and node.get("hierarchy_membership") != "INVALID"}
+        scoped_edges = [edge for edge in edges if isinstance(edge, dict)
+                        and edge.get("source") in eligible and edge.get("target") in eligible]
+        reached = {ctrl_id}
+        while True:
+            children = {edge["target"] for edge in scoped_edges if edge["source"] in reached}
+            if children <= reached:
+                break
+            reached.update(children)
+        agents = [_pick(node, ("id", "project_id", "ctrl_id", "display_name", "title", "profession",
+                    "profession_label", "structural_role", "manifest_identity", "parent_relation",
+                    "activity", "live_projection", "work_unit")) for node in nodes if node["id"] in reached]
+        result["items"].append({"project_id": project_id, "ctrl_id": ctrl_id,
+            "label": root.get("display_name") or ctrl_id, "agents": agents,
+            "agent_edges": [_pick(edge, ("id", "source", "target")) for edge in scoped_edges
+                            if edge["source"] in reached and edge["target"] in reached],
+            "units": [{"task_id": node["id"], "project_id": project_id, "ctrl_id": ctrl_id,
+                       "manifest_identity": node.get("manifest_identity"), "work_unit": node["work_unit"]}
+                      for node in agents if isinstance(node.get("work_unit"), dict)]})
+    if not result["items"] and topology.get("independent_count", 0):
+        result.update(state="UNKNOWN", reason="NO_BOUND_CTRL")
+    return result
+
+
 def _compact_progress_scope(scope: dict[str, Any], *, identity: bool = False) -> dict[str, Any]:
     compact = {key: scope[key] for key in ("scope", "status", "counts", "progress", "progress_display", "current_milestone", "measurement_status", "unmeasured_reason") if key in scope}
     milestone = compact.get("current_milestone")
     if isinstance(milestone, dict):
-        compact["current_milestone"] = {key: milestone[key] for key in ("state", "reason", "name") if key in milestone}
+        compact["current_milestone"] = {key: milestone[key] for key in ("state", "reason", "name", "source", "cursor", "milestone_id", "task_id", "project_id", "ctrl_id",
+            "scope_version", "manifest_identity", "event_cursor", "observed_at_ms", "as_of_ms", "freshness", "measurement", "estimate") if key in milestone}
     tasks = scope.get("tasks", scope.get("task_rows", []))
     if isinstance(tasks, list):
         compact["tasks"] = [_pick(task, ("id", "project_id", "state", "blocked", "blocker", "progress", "progress_display", "latest_proof_receipt") + (("display_id", "label") if identity else ())) for task in tasks[:128] if isinstance(task, dict)]
@@ -757,7 +935,7 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
                     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                     if len(encoded.encode("utf-8")) > 262144:
                         raise MCPError("projection exceeds 262144 bytes; narrow the requested scope")
-                    rejected = name in {"swarm_role_read", "swarm_role_save", "swarm_library_read", "swarm_flow_save", "swarm_flow_assign", "swarm_project_tickets", "swarm_project_ticket_execution"} and value.get("ok") is False
+                    rejected = name in {"swarm_unit_prepare", "swarm_unit_create", "swarm_role_read", "swarm_role_save", "swarm_library_read", "swarm_flow_save", "swarm_flow_assign", "swarm_project_tickets", "swarm_project_ticket_execution"} and value.get("ok") is False
                     _telemetry(telemetry_path, tool=name, started=started, ok=not rejected,
                                result_bytes=len(encoded.encode("utf-8")), error="projection_rejected" if rejected else "")
                     result = {"content": [{"type": "text", "text": encoded}], "structuredContent": value, "isError": rejected}

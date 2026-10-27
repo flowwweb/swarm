@@ -630,6 +630,71 @@ class FlowDefinitionTests(unittest.TestCase):
 class ProjectTicketTests(unittest.TestCase):
     ACCEPTED_TASK = {"id": "t-accepted", "state": "accepted", "acceptance_receipt_ids": ["r-1"], "milestone_id": "m-flat"}
 
+    def test_allocate_legacy_ids_preserves_records_numbers_bytes_and_restart(self):
+        seeded = self.write(self.call({"operation": "read"})["source_digest"], "create", "tasks", "new-task", {"label": "New"})
+        original = self.path.read_bytes()
+        request = {"operation": "allocate_ids", "expected_digest": seeded["source_digest"], "acknowledge": True}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda _: self.call(request), range(4)))
+        rows = results[0]["records"]
+        self.assertTrue(all(row["display_id"] for row in rows))
+        self.assertEqual(len({row["display_id"] for row in rows}), len(rows))
+        self.assertEqual(self.by_id(results[0])["new-task"]["display_id"], "SWRM-1")
+        self.assertEqual(sum(not result["replayed"] for result in results), 1)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual([{k:v for k,v in row.items() if k not in {"display_id", "execution"}} for row in rows],
+                         [{k:v for k,v in row.items() if k not in {"display_id", "execution"}} for row in seeded["records"]])
+        for row in rows:
+            self.assertEqual(row["execution"]["references"], [])
+            self.assertEqual(row["execution"]["required_count"], 0)
+            self.assertFalse(row["execution"]["completed"])
+        retained = self.ticket_ledger._state.path.read_bytes()
+        self.ticket_ledger = server.ProgressLedger(self.root / "ledger")
+        replay = self.call(request)
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["records"], rows)
+        self.assertEqual(self.ticket_ledger._state.path.read_bytes(), retained)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_allocate_legacy_ids_resumes_partial_delivery_without_duplicate_or_false_completion(self):
+        from unittest import mock
+        seeded = self.write(self.call({"operation": "read"})["source_digest"], "create", "tasks", "new-task", {"label": "New"})
+        request = {"operation": "allocate_ids", "expected_digest": seeded["source_digest"], "acknowledge": True}
+        original = self.path.read_bytes()
+        reserve = self.ticket_ledger.reserve_brief_ticket_id
+        count = 0
+        def interrupted(**kwargs):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise OSError("interrupted allocator")
+            return reserve(**kwargs)
+        with mock.patch.object(self.ticket_ledger, "reserve_brief_ticket_id", side_effect=interrupted):
+            with self.assertRaises(server.ConsoleError):
+                self.call(request)
+        partial = self.call({"operation": "read"})
+        retained_ids = {row["id"]: row["display_id"] for row in partial["records"] if row["display_id"]}
+        self.assertEqual(len(retained_ids), 2)
+        self.ticket_ledger = server.ProgressLedger(self.root / "ledger")
+        result = self.call(request)
+        self.assertTrue(all(row["display_id"] for row in result["records"]))
+        for identity, display in retained_ids.items():
+            self.assertEqual(self.by_id(result)[identity]["display_id"], display)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(self.by_id(result)["t-accepted"]["declared_state"], "accepted")
+
+    def test_allocate_legacy_ids_rejects_stale_scope_missing_code_or_ack_before_write(self):
+        digest = self.call({"operation": "read"})["source_digest"]
+        request = {"operation": "allocate_ids", "expected_digest": digest, "acknowledge": True}
+        original = self.path.read_bytes()
+        for changes in ({}, {"expected_digest": "sha256:" + "0" * 64}, {"acknowledge": False}, {"collection": "tasks"}):
+            with self.subTest(changes=changes), self.assertRaises(server.ConsoleError):
+                self.call({**request, **changes})
+            self.assertFalse(self.ticket_ledger._state.path.exists())
+        with self.assertRaises(server.ConsoleError):
+            self.call(request, project="foreign")
+        self.assertEqual(self.path.read_bytes(), original)
+
     def test_concurrent_create_replays_one_identity_and_stale_competitors_do_not_allocate(self):
         request = dict(operation="create", expected_digest=self.call({"operation": "read"})["source_digest"],
                        acknowledge=True, collection="goals", record_id="concurrent", changes={"label": "One"}, project_code="SWRM")

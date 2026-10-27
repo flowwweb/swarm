@@ -97,6 +97,7 @@ from project_model_views import (  # noqa: E402
     validate_flow_assignment,
     mutate_project_brief,
     mutate_project_tickets,
+    allocate_project_ticket_ids,
     migrate_legacy_project_tickets,
     read_project_tickets,
     create_flow_draft,
@@ -472,6 +473,23 @@ def _codex_failure_code(value: object) -> str:
     return "CODEX_HOST_ERROR"
 
 
+def _codex_rpc_error_code(message: dict, request_id: int) -> int | None:
+    error = message.get("error")
+    if (isinstance(error, dict) and type(message.get("id")) is type(request_id)
+            and message.get("id") == request_id and message.get("jsonrpc", "2.0") == "2.0"
+            and set(message) <= {"id", "jsonrpc", "error"} and set(error) <= {"code", "message", "data"}
+            and type(error.get("code")) is int and isinstance(error.get("message"), str) and error.get("data") is None):
+        return error["code"]
+    return None
+
+
+class CodexRPCFailure(OSError):
+    def __init__(self, phase: str, response: dict, request_id: int):
+        super().__init__("CODEX_RPC_FAILURE")
+        self.phase = phase
+        self.rpc_error_code = _codex_rpc_error_code(response, request_id)
+
+
 class CodexStdioBridge:
     """One bounded private Codex App Server JSONL session; no result prose is retained."""
 
@@ -632,13 +650,7 @@ class CodexStdioBridge:
                                         inbox.put(OSError(failure_code))
                                 if retain_turn and turn_request_id is not None:
                                     if message.get("id") == turn_request_id:
-                                        error = message.get("error")
-                                        if (not turn_id and not terminal_pairs and isinstance(error, dict) and
-                                            type(message.get("id")) is type(turn_request_id) and message.get("jsonrpc", "2.0") == "2.0" and
-                                            set(message) <= {"id", "jsonrpc", "error"} and
-                                            set(error) <= {"code", "message", "data"} and
-                                            type(error.get("code")) is int and isinstance(error.get("message"), str) and
-                                            error.get("data") is None):
+                                        if not turn_id and not terminal_pairs and _codex_rpc_error_code(message, turn_request_id) is not None:
                                             turn_rejected = True
                                         try:
                                             returned_thread, returned_turn, _ = UniversalHQConnector._host_binding(message)
@@ -708,7 +720,7 @@ class CodexStdioBridge:
 
             send(self.adapter.initialize_request("swarm-console-auto", request_id=0))
             initialized = receive(lambda item: item.get("id") == 0)
-            if initialized.get("error") is not None: raise OSError("Codex App Server initialize failed")
+            if initialized.get("error") is not None: raise CodexRPCFailure("initialize", initialized, 0)
             send(self.adapter.initialized_notification())
             yield send, receive
         finally:
@@ -3508,7 +3520,7 @@ class ConsoleStore:
             "progress_basis": progress_basis,
         }
         latest = connection.execute(
-            "SELECT * FROM eta_forecasts WHERE task_id = ? ORDER BY revision DESC LIMIT 1", (task_id,)
+            "SELECT * FROM eta_forecasts WHERE task_id = ? AND trigger != 'user_estimate' ORDER BY revision DESC LIMIT 1", (task_id,)
         ).fetchone()
         baseline_start = baseline["eta_start_ms"] if latest is None else latest["baseline_eta_start_ms"]
         baseline_end = baseline["eta_end_ms"] if latest is None else latest["baseline_eta_end_ms"]
@@ -3546,7 +3558,7 @@ class ConsoleStore:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                task_id, project_id, 1 if latest is None else int(latest["revision"]) + 1,
+                task_id, project_id, connection.execute("SELECT COALESCE(MAX(revision),0)+1 FROM eta_forecasts WHERE task_id=?", (task_id,)).fetchone()[0],
                 current["eta_start_ms"], current["eta_end_ms"], current["confidence"], status,
                 short_reason, current.get("last_progress_at_ms"), now_ms, "task_owner_report", signature,
                 baseline_start, baseline_end, baseline_confidence, delta,
@@ -3882,8 +3894,17 @@ class ConsoleStore:
             for row in rows
         }
 
-    def observe_overview(self, overview: dict[str, Any], *, now_ms: int, trigger: str, heartbeat_minutes: int, codex_home: Path | None = None) -> None:
+    def observe_overview(self, overview: dict[str, Any], *, now_ms: int, trigger: str, heartbeat_minutes: int, codex_home: Path | None = None, tokens_only: bool = False) -> int:
         nodes = [node for node in overview.get("nodes", []) if not node.get("virtual")]
+        bucket_ms = now_ms - (now_ms % (TOKEN_SAMPLE_SECONDS * 1000))
+        if tokens_only:
+            # The retained cursor is the sampling clock, including across MCP
+            # restart. Avoid scanning session files again within this bucket.
+            with self._lock, closing(self._connect()) as connection:
+                sampled = connection.execute(
+                    "SELECT 1 FROM token_cursors WHERE sampled_at_ms >= ? LIMIT 1", (bucket_ms,)).fetchone()
+            if sampled or not nodes:
+                return 0
         node_by_id = {str(node["id"]): node for node in nodes}
         # Filesystem discovery and JSONL parsing can be slow on a large sessions
         # tree. Complete one bounded shared scan before taking the SQLite lock so
@@ -3897,7 +3918,12 @@ class ConsoleStore:
         for link in overview.get("links", []):
             dependencies.setdefault(str(link["target"]), []).append(str(link["source"]))
         with self._lock, closing(self._connect()) as connection:
-            bucket_ms = now_ms - (now_ms % (TOKEN_SAMPLE_SECONDS * 1000))
+            connection.execute("BEGIN IMMEDIATE")
+            if tokens_only and connection.execute(
+                "SELECT 1 FROM token_cursors WHERE sampled_at_ms >= ? LIMIT 1", (bucket_ms,)
+            ).fetchone():
+                return 0  # A concurrent sampler completed during the scan.
+            recorded = 0
             for node in nodes:
                 thread_id = _safe_metadata_text(str(node["id"]), "thread id", maximum=256)
                 project_id = str(node.get("project_id") or "").strip()
@@ -3905,10 +3931,12 @@ class ConsoleStore:
                     project_id = _safe_metadata_text(project_id, "project id", maximum=256)
                 sqlite_cumulative = max(0, int(node.get("tokens") or 0))
                 jsonl_cumulative = jsonl_counts.get(thread_id)
+                if tokens_only and type(node.get("tokens")) is not int and jsonl_cumulative is None:
+                    continue  # Missing counters are not observed zero.
                 cumulative = max(sqlite_cumulative, jsonl_cumulative or 0)
                 source = TOKEN_SOURCE_CODEX_JSONL if jsonl_cumulative is not None and jsonl_cumulative >= sqlite_cumulative else TOKEN_SOURCE_SQLITE
                 prior = connection.execute(
-                    "SELECT cumulative_tokens FROM token_cursors WHERE thread_id = ?",
+                    "SELECT cumulative_tokens, sampled_at_ms FROM token_cursors WHERE thread_id = ?",
                     (thread_id,),
                 ).fetchone()
                 previous_high_water = 0 if prior is None else max(0, int(prior["cumulative_tokens"]))
@@ -3925,6 +3953,9 @@ class ConsoleStore:
                     """,
                     (thread_id, project_id, high_water, now_ms),
                 )
+                recorded += 1
+                if tokens_only and prior is None:
+                    continue  # A baseline is not a measured interval or zero usage.
                 connection.execute(
                     """
                     INSERT INTO token_samples(
@@ -3956,7 +3987,8 @@ class ConsoleStore:
                         TOKEN_SOURCE_SQLITE,
                     ),
                 )
-
+                if tokens_only:
+                    continue  # Native usage reads do not emit heartbeat/ETA facts.
                 updated_at = int(node.get("updated_at") or 0) or None
                 status = str(node.get("status") or "quiet")
                 dependency_ids = dependencies.get(thread_id, [])
@@ -3990,13 +4022,86 @@ class ConsoleStore:
                 (self._retention_cutoff(now_ms),),
             )
             connection.commit()
+            return recorded
+
+    def _ticket_estimates(self, binding: dict[str, Any], cursor: dict[str, Any], *, command=None, now_ms: int):
+        """User planning revisions in the existing ETA history; never owner reports or proof.
+
+        Caller holds the Ledger lock and has validated this exact execution reference.
+        SQLite serializes operation replay and optimistic estimate revisions together.
+        """
+        scope_digest = _auto_digest(binding)
+        with self._lock, closing(self._connect()) as connection:
+            if command is not None:
+                connection.execute("BEGIN IMMEDIATE")
+            with connection:
+                rows = connection.execute(
+                    "SELECT current_forecast_json FROM eta_forecasts WHERE task_id=? AND project_id=? "
+                    "AND trigger='user_estimate' AND reason_code=? ORDER BY revision DESC LIMIT 65",
+                    (binding["task_id"], binding["project_id"], scope_digest)).fetchall()
+                history = [json.loads(row[0]) for row in rows]
+                current = history[0] if history else None
+                status, receipt = "READ", None
+                if command is not None:
+                    request_digest = _auto_digest({"binding": binding, "command": command})
+                    prior = connection.execute(
+                        "SELECT signature,current_forecast_json FROM eta_forecasts "
+                        "WHERE trigger='user_estimate' AND receipt_source=?", (command["operation_id"],)).fetchall()
+                    if prior:
+                        if len(prior) != 1 or prior[0]["signature"] != request_digest:
+                            raise ConsoleConflict("estimate operation identity conflicts with retained content")
+                        receipt = json.loads(prior[0]["current_forecast_json"])
+                        status = "REPLAY"
+                    else:
+                        revision = current["revision"] if current else 0
+                        if cursor["event_seq"] != command["expected_ledger_revision"]:
+                            raise ConsoleConflict("progress ledger changed; reload before estimating")
+                        if revision != command["expected_estimate_revision"]:
+                            raise ConsoleConflict("ticket estimate changed; reload before estimating")
+                        estimate = command["estimate"]
+                        if current and estimate["original_target_ms"] != current["original_target_ms"]:
+                            raise ConsoleConflict("original target is immutable; estimate changes cannot move it")
+                        if current and now_ms < current["recorded_at_ms"]:
+                            raise ConsoleConflict("estimate clock regressed; prior history preserved")
+                        delta = None if current is None else estimate["estimate_minutes"] - current["estimate_minutes"]
+                        change = ("INITIAL" if current is None else "ESTIMATE_INCREASED" if delta > 0 else
+                                  "ESTIMATE_REDUCED" if delta < 0 else "ESTIMATE_REVISED")
+                        receipt = {**estimate, "revision": revision + 1, "operation_id": command["operation_id"],
+                            "request_digest": request_digest, "binding": binding, "admitted_cursor": cursor,
+                            "actor": {"label": command["actor"], "identity_verified": False,
+                                      "channel": "acknowledged_local_command"},
+                            "reason": command["reason"], "recorded_at_ms": now_ms, "change": change,
+                            "delta_estimate_minutes": delta,
+                            "initial_estimate_minutes": current["initial_estimate_minutes"] if current else estimate["estimate_minutes"],
+                            "previous": None if current is None else {key: current[key] for key in
+                                ("revision", "estimate_minutes", "remaining_minutes", "original_target_ms")},
+                            "forecast": {"state": "UNKNOWN", "eta_start_ms": None, "eta_end_ms": None,
+                                         "reason": "DEPENDENCY_CAPACITY_EVIDENCE_UNAVAILABLE"}}
+                        store_revision = connection.execute(
+                            "SELECT COALESCE(MAX(revision),0)+1 FROM eta_forecasts WHERE task_id=?",
+                            (binding["task_id"],)).fetchone()[0]
+                        connection.execute(
+                            "INSERT INTO eta_forecasts(task_id,project_id,revision,confidence,status,reason,"
+                            "last_calculated_at_ms,trigger,signature,reason_code,receipt_source,"
+                            "previous_forecast_json,current_forecast_json) VALUES(?,?,?,0,'planned',?,?,'user_estimate',?,?,?,?,?)",
+                            (binding["task_id"], binding["project_id"], store_revision, command["reason"], now_ms,
+                             request_digest, scope_digest, command["operation_id"],
+                             json.dumps(receipt["previous"], sort_keys=True), json.dumps(receipt, sort_keys=True)))
+                        history.insert(0, receipt)
+                        current, status = receipt, "APPENDED"
+        return {"status": status, "binding": binding, "cursor": cursor, "receipt": receipt,
+                "current": current, "history": list(reversed(history[:64])), "history_truncated": len(history) > 64,
+                "forecast": {"state": "UNKNOWN", "eta_start_ms": None, "eta_end_ms": None,
+                             "reason": "DEPENDENCY_CAPACITY_EVIDENCE_UNAVAILABLE"},
+                "claim_limit": "User estimates and author labels are planning input, not verified identity, elapsed time, "
+                               "completion or proof. No forecast or countdown without dependency and capacity evidence."}
 
     def latest_forecasts(self, project_id: str | None = None) -> dict[str, dict[str, Any]]:
         query = """
             SELECT forecast.* FROM eta_forecasts forecast
             JOIN (
                 SELECT task_id, MAX(revision) revision
-                FROM eta_forecasts GROUP BY task_id
+                FROM eta_forecasts WHERE trigger != 'user_estimate' GROUP BY task_id
             ) latest ON latest.task_id = forecast.task_id AND latest.revision = forecast.revision
         """
         args: tuple[Any, ...] = ()
@@ -7510,6 +7615,45 @@ HOST_CTRL_CLASSIFICATION_SOURCES = frozenset({
     "host_thread_spawn_edges.subagent",
 })
 TOPOLOGY_TERMINAL_STATES = frozenset({"ACCEPTED", "TOMBSTONED", "VERIFIED"})
+
+
+def _milestone_basis(manifest: dict[str, Any], blocks: list[dict[str, Any]],
+                     milestone_id: str, scope_version: int) -> dict[str, Any]:
+    """Derived proof weights and planned block allocations, never wall-clock ETA."""
+    declared = {b["block_id"]: b for b in manifest["blocks"] if b["milestone_id"] == milestone_id}
+    observed = [b for b in blocks if b.get("block_id") in declared
+                and b.get("milestone_id") == milestone_id and b.get("scope_version") == scope_version
+                and all(b.get(k) == manifest[k] for k in ("project_id", "ctrl_id", "task_id"))]
+    by_id = {b["block_id"]: b for b in observed}
+    ambiguous = len(observed) != len(by_id)
+    declared = {key: value for key, value in declared.items()
+                if by_id.get(key, {}).get("lifecycle_state") != "TOMBSTONED"}
+    rows = [by_id[key] for key in declared if key in by_id]
+    measured = bool(declared) and not ambiguous and len(rows) == len(declared) and all(
+        b.get("measurement_state") == "MEASURED"
+        and type(b.get("committed_weight")) is int and b["committed_weight"] > 0
+        and type(b.get("admitted_proof_weight")) is int
+        and 0 <= b["admitted_proof_weight"] <= b["committed_weight"] for b in rows)
+    total = sum(b["committed_weight"] for b in rows) if measured else None
+    admitted = sum(b["admitted_proof_weight"] for b in rows) if measured else None
+    estimates = [b.get("estimate_minutes") for b in declared.values()]
+    estimated = bool(estimates) and not ambiguous and all(type(v) is int and v >= 0 for v in estimates)
+    remaining = [b for key, b in declared.items()
+                 if by_id.get(key, {}).get("lifecycle_state") not in TOPOLOGY_TERMINAL_STATES]
+    return {"measurement": {"state": "KNOWN" if measured else "UNKNOWN",
+                "reason": None if measured else "INCOMPLETE_MILESTONE_MEASUREMENT",
+                "source": "ledger:milestone-proof-weights", "block_count": len(declared),
+                "observed_block_count": len(rows), "committed_weight": total,
+                "admitted_proof_weight": admitted,
+                "percent": round(admitted * 100 / total, 2) if measured else None},
+            "estimate": {"state": "KNOWN" if estimated else "UNKNOWN",
+                "source": "task-manifest:estimate_minutes", "unit": "minutes",
+                "minutes": sum(estimates) if estimated else None,
+                "remaining_allocation_minutes": sum(b["estimate_minutes"] for b in remaining) if estimated else None,
+                "basis": "whole_nonterminal_block_allocations_not_elapsed_time",
+                "deadline_ms": None, "deadline_state": "UNKNOWN"}}
+
+
 TOPOLOGY_TIER = {"CTRL": 0, "LEAD": 1, "DOER": 2}
 INDEPENDENT_HOST_PRESENTATION = {
     "manifest_id": "builtin:independent-host-task",
@@ -8236,12 +8380,14 @@ class App:
     def __init__(
         self, codex_home: Path, config_path: Path, state_path: Path | None = None,
         *, auto_bridge: Any | None = None, project_view_resolver: Any | None = None,
+        task_transport: Any | None = None,
     ):
         self.codex_home = codex_home.resolve()
         self.config_path = config_path.resolve()
         self.store = ConsoleStore(state_path or console_state_path(self.codex_home, self.config_path))
         self.progress_ledger = ProgressLedger(self.codex_home)
         self.auto_bridge = auto_bridge or CodexStdioBridge()
+        self.task_transport = task_transport  # Host-owned existing-task capability, never supplied by HTTP.
         self.project_view_resolver = project_view_resolver or self._default_project_view_resolver
         self.builtin_role_avatar_assets = load_builtin_role_avatar_assets(
             SWARM_SKILL_ROOT / "assets" / "role-avatars"
@@ -10543,23 +10689,38 @@ class App:
         except (ValueError, TypeError, KeyError, AttributeError, OSError, ProgressEventError) as exc:
             raise ConsoleError(str(exc)) from exc
 
-    def _work_assignment_scope(self, project_id, manifest, projection, *, accepting=False, replaying=False):
-        """Fresh host/config checks for the current work owner, never its historical creator."""
-        assignment = manifest["work_assignment"]
-        ctrl, subject = assignment["accepting_ctrl_id"], manifest["task_id"]
+    def _retained_accepting_root(self, project_id, ctrl, manifest_digest, projection):
+        """Current admitted scope; never rewrite an existing actor's origin."""
         root = self._canonical_project_root(project_id).resolve(strict=True)
-        for task in (ctrl, subject, assignment["reviewer_thread_id"]):
-            if self._observed_task_root(project_id, task, allow_adopted=True, projection=projection) != root:
-                raise ConsoleError("work assignment owner or reviewer root changed")
+        if self._observed_task_root(project_id, ctrl, allow_adopted=True, projection=projection) != root:
+            raise ConsoleError("current accepting CTRL root changed")
         state = projection["task_manifests"].get(ctrl, {})
         owner = state.get("versions", {}).get(state.get("active_version"), {})
         operation = projection["task_creation_operations_by_task"].get(ctrl)
         binding = projection["task_creation_bindings"].get(operation, {})
         root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
         if (owner.get("ctrl_id") != ctrl or owner.get("role_scope") != "CTRL_BOUNDED"
-                or owner.get("manifest_digest") != assignment["accepting_ctrl_manifest_digest"]
+                or owner.get("manifest_digest") != manifest_digest
                 or binding.get("project_id") != project_id or binding.get("root_digest") != root_digest):
-            raise ConsoleError("work assignment lacks exact retained accepting CTRL authority")
+            raise ConsoleError("scope lacks exact retained accepting CTRL authority")
+        return root
+
+    def _work_assignment_scope(self, project_id, manifest, projection, *, accepting=False, replaying=False):
+        """Fresh host/config checks for the current work owner, never its historical creator."""
+        assignment = manifest["work_assignment"]
+        ctrl, subject = assignment["accepting_ctrl_id"], manifest["task_id"]
+        root = self._retained_accepting_root(project_id, ctrl, assignment["accepting_ctrl_manifest_digest"], projection)
+        for task in (subject, assignment["reviewer_thread_id"]):
+            if self._observed_task_root(project_id, task, allow_adopted=True, projection=projection) != root:
+                raise ConsoleError("work assignment owner or reviewer root changed")
+        root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
+        evidence = assignment.get("root_equivalence")
+        if evidence is not None:
+            identity = root.stat()
+            if (not stat_module.S_ISDIR(identity.st_mode) or not identity.st_dev or not identity.st_ino
+                    or evidence["canonical_root_digest"] != root_digest
+                    or evidence["physical_root_digest"] != _auto_digest({"device": identity.st_dev, "file_id": identity.st_ino})):
+                raise ConsoleError("work assignment physical root changed")
         role = projection["role_assignments"].get(subject, {})
         role_ref = assignment["role_manifest_ref"]
         if role.get("role_id") != role_ref["manifest_id"] or role.get("manifest_version") != role_ref["manifest_version"]:
@@ -10636,8 +10797,8 @@ class App:
         if operation == "read":
             if set(payload) != {"operation", "project_id"}:
                 raise ConsoleError("ticket read requires exact operation and project_id")
-        elif operation in {"create", "update", "migrate_legacy"}:
-            if operation == "migrate_legacy":
+        elif operation in {"create", "update", "migrate_legacy", "allocate_ids"}:
+            if operation in {"migrate_legacy", "allocate_ids"}:
                 write_fields = {"operation", "project_id", "expected_digest", "acknowledge"}
             elif operation == "create" and "project_code" in payload:
                 write_fields.add("project_code")
@@ -10648,7 +10809,7 @@ class App:
             if not isinstance(payload["expected_digest"], str) or re.fullmatch(r"sha256:[0-9a-f]{64}", payload["expected_digest"]) is None:
                 raise ConsoleError("ticket edits require the exact current brief digest")
         else:
-            raise ConsoleError("ticket operation must be read, create, update or migrate_legacy; tickets are never hard-deleted")
+            raise ConsoleError("ticket operation must be read, create, update, migrate_legacy or allocate_ids; tickets are never hard-deleted")
         requested_id = _auto_id(payload["project_id"], "project_id")
         # Root and allowed identities come from one binding snapshot; a native ID is only a proven alias.
         binding = self._saved_project_binding(requested_id)
@@ -10660,14 +10821,17 @@ class App:
             if operation == "read":
                 result = read_project_tickets(path, project_ids=identities)
             else:
-                if operation != "migrate_legacy":
+                if operation not in {"migrate_legacy", "allocate_ids"}:
                     retained = self.progress_ledger.replay()["ticket_identities"].get(project_id, {})
                     if payload["record_id"] in retained.get("assignments", {}):
                         raise ProgressEventError("host-created ticket identity is read-only in planning")
                 if self._saved_project_binding(requested_id) != binding:  # Fresh source recheck before any mutation.
                     raise ConsoleConflict("saved project binding changed; reload before saving")
                 updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                if operation == "migrate_legacy":
+                if operation == "allocate_ids":
+                    result = allocate_project_ticket_ids(path, expected_digest=payload["expected_digest"],
+                        project_ids=identities, registry=self.progress_ledger, project_id=project_id, root_digest=root_digest)
+                elif operation == "migrate_legacy":
                     result = migrate_legacy_project_tickets(
                         path, expected_digest=payload["expected_digest"], updated_at=updated_at, project_ids=identities)
                 else:
@@ -10757,6 +10921,70 @@ class App:
             raise ConsoleError("ticket execution requires one exact brief record")
         return matches[0]
 
+    def _project_ticket_estimate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Explicit planning command for an already retained execution reference; no task mutation."""
+        reading = payload["operation"] == "estimate_read"
+        fields = {"operation", "project_id", "record_id", "reference_id"}
+        if not reading:
+            fields |= {"operation_id", "expected_ledger_revision", "expected_estimate_revision",
+                       "estimate", "actor", "reason", "acknowledge"}
+        if set(payload) != fields:
+            raise ConsoleError("ticket estimate requires exactly its declared fields")
+        for key in ("project_id", "record_id", "reference_id"):
+            _auto_id(payload[key], key)
+        if not reading:
+            _auto_id(payload["operation_id"], "operation_id")
+            if payload["acknowledge"] is not True:
+                raise ConsoleError("estimate requires explicit acknowledgement")
+            for key in ("expected_ledger_revision", "expected_estimate_revision"):
+                if type(payload[key]) is not int or payload[key] < 0:
+                    raise ConsoleError("estimate revision must be a nonnegative integer")
+            for key in ("actor", "reason"):
+                if _safe_metadata_text(payload[key], key, maximum=256) != payload[key]:
+                    raise ConsoleError("estimate author/reason must be canonical text")
+            estimate = payload["estimate"]
+            if not isinstance(estimate, dict) or set(estimate) != {"estimate_minutes", "remaining_minutes", "original_target_ms"}:
+                raise ConsoleError("estimate requires duration, remaining duration and original target")
+            if any(type(estimate[k]) is not int or not 0 <= estimate[k] <= 4294967295
+                   for k in ("estimate_minutes", "remaining_minutes")) or estimate["remaining_minutes"] > estimate["estimate_minutes"]:
+                raise ConsoleError("estimate durations must be bounded integers with remaining no greater than total")
+            target = estimate["original_target_ms"]
+            if target is not None and (type(target) is not int or not 0 < target <= 9007199254740991):
+                raise ConsoleError("original target must be a positive safe timestamp or unknown")
+        saved = self._saved_project_binding(payload["project_id"], "Ticket estimate")
+        _binding_identities(saved)
+        project_id, root = saved["project_id"], Path(saved["root"])
+        root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
+        ledger = self.progress_ledger
+        try:
+            with ledger._state.locked():
+                projection, _ = ledger._replay_unlocked()
+                reference = projection["ticket_identities"].get(project_id, {}).get("execution_references", {}).get(payload["reference_id"])
+                if (reference is None or reference["record_id"] != payload["record_id"]
+                        or reference["root_digest"] != root_digest):
+                    raise ConsoleError("estimate requires an exact retained ticket execution reference at this root")
+                _, manifest, retained = ledger._ticket_execution_context(projection, project_id, reference)
+                for thread_id in (reference["task_id"], reference["ctrl_id"]):
+                    observed = self._observed_task_root(project_id, thread_id, allow_adopted=True, projection=projection)
+                    if _normalized_project_path(str(observed)) != _normalized_project_path(str(root)):
+                        raise ConsoleError("estimate requires the observed task and CTRL at the saved root")
+                if self._saved_project_binding(payload["project_id"], "Ticket estimate") != saved:
+                    raise ConsoleConflict("saved project binding changed; reload before estimating")
+                block = next(item for item in manifest["blocks"] if item["block_id"] == reference["block_id"])
+                binding = {"project_id": project_id, **reference,
+                           "manifest_estimate_minutes": block.get("estimate_minutes")}
+                result = self.store._ticket_estimates(binding, projection["cursor"],
+                    command=None if reading else payload, now_ms=int(time.time() * 1000))
+                execution = ledger.ticket_execution_status(projection, project_id, payload["record_id"])
+                accepted = next(row["accepted"] for row in execution["references"] if row["reference_id"] == payload["reference_id"])
+                return {"ok": True, "operation": payload["operation"], "project_id": project_id, **result,
+                        "execution": execution,
+                        "observed": {"accepted_at_ms": retained["observed_at_ms"] if accepted else None,
+                                     "actual_finish_ms": None, "elapsed_ms": None,
+                                     "claim_limit": "Bound acceptance time is not measured execution finish or elapsed time."}}
+        except ProgressEventError as exc:
+            raise ConsoleError(str(exc)) from exc
+
     def project_ticket_execution_command(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Bind an existing host-created block attempt to a reserved brief ticket, or read derived completion.
 
@@ -10764,6 +10992,8 @@ class App:
         Binding never dispatches, credits progress or completes work; acceptance stays /api/tasks/complete.
         """
         operation = payload.get("operation") if isinstance(payload, dict) else None
+        if operation in {"estimate", "estimate_read"}:
+            return self._project_ticket_estimate(payload)
         bind_fields = {"operation", "project_id", "record_id", "reference_id", "task_id", "block_id", "manifest_digest",
                        "attempt", "membership", "expected_ledger_revision", "acknowledge"}
         if operation == "read":
@@ -10776,7 +11006,7 @@ class App:
                     or payload["membership"] not in {"REQUIRED", "SUPPLEMENTAL"} or not isinstance(payload["manifest_digest"], str)):
                 raise ConsoleError("ticket execution binding fields are invalid")
         else:
-            raise ConsoleError("ticket execution operation must be read or bind")
+            raise ConsoleError("ticket execution operation must be read, bind, estimate_read or estimate")
         requested_id = _auto_id(payload["project_id"], "project_id")
         record_id = _auto_id(payload["record_id"], "record_id")
         binding = self._saved_project_binding(requested_id, "Ticket execution")
@@ -10935,7 +11165,8 @@ class App:
         assignment = manifest.get("work_assignment")
         ctrl_id = assignment["accepting_ctrl_id"] if assignment else manifest["ctrl_id"]
         root_digest = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
-        if creation["root_digest"] != root_digest or self._observed_task_root(project_id, ctrl_id, allow_adopted=True) != root:
+        creation_root = assignment.get("root_equivalence", {}).get("physical_root_digest", root_digest) if assignment else root_digest
+        if creation["root_digest"] != creation_root or self._observed_task_root(project_id, ctrl_id, allow_adopted=True) != root:
             raise ConsoleError("bound task owning CTRL or root changed")
         if reviewer_id in {task_id, ctrl_id}:
             raise ConsoleError("bound task requires an independent reviewer, not its producer or creator")
@@ -11122,6 +11353,8 @@ class App:
             request_id = 0
             host_turn_status = "UNKNOWN"
             busy_before_turn = False
+            host_failure = None
+            turn_send_attempted = False
             def not_dispatched(reason):
                 return {"ok": True, "status": "NOT_DISPATCHED", "definitive_non_dispatch": True,
                         "command_id": envelope.command_id, "idempotency_key": envelope.idempotency_key,
@@ -11129,17 +11362,26 @@ class App:
                         "target_thread_id": envelope.target_thread_id, "root_digest": root_digest,
                         "reason": reason, "work_completed": False}
             def request(method, params):
-                nonlocal channel, request_id, busy_before_turn
+                nonlocal channel, request_id, busy_before_turn, host_failure, turn_send_attempted
                 if method == "turn/start":
                     verify_assigned_work()
-                if channel is None:
-                    channel = stack.enter_context(self.auto_bridge.command_session(root, retain_turn=True, approval_project_id=envelope.project_id))
-                send, receive = channel
-                request_id += 1
-                send({"id": request_id, "method": method, "params": params})
-                response = receive(lambda item: item.get("id") == request_id)
-                if response.get("error") is not None or not isinstance(response.get("result"), dict):
-                    raise OSError(f"Codex App Server {method} failed")
+                phase = "initialize" if channel is None else method
+                try:
+                    if channel is None:
+                        channel = stack.enter_context(self.auto_bridge.command_session(root, retain_turn=True, approval_project_id=envelope.project_id))
+                    send, receive = channel
+                    phase = method
+                    request_id += 1
+                    turn_send_attempted |= method in {"turn/start", "turn/steer"}
+                    send({"id": request_id, "method": method, "params": params})
+                    response = receive(lambda item: type(item.get("id")) is int and item.get("id") == request_id)
+                    if response.get("error") is not None or not isinstance(response.get("result"), dict):
+                        raise CodexRPCFailure(method, response, request_id)
+                except Exception as exc:
+                    code = exc.rpc_error_code if isinstance(exc, CodexRPCFailure) else None
+                    host_failure = {"phase": phase, "rpc_error_code": code,
+                                    "delivery_uncertain": turn_send_attempted and code is None}
+                    raise
                 if action is HQCommandAction.TASK and method == "thread/resume":
                     thread = response["result"].get("thread", {})
                     busy_before_turn = isinstance(thread, dict) and isinstance(thread.get("status"), dict) and thread["status"].get("type") == "active"
@@ -11149,7 +11391,10 @@ class App:
 
             def reconcile(command_id, action, target_thread_id):
                 if action == HQCommandAction.TASK.value:
-                    return None  # A historical turn cannot identify an uncertain new message.
+                    resolver = getattr(self.auto_bridge, "reconcile_task_non_delivery", None)
+                    # Only an injected host capability may return reviewed invocation evidence.
+                    # A historical turn still cannot identify an uncertain new message.
+                    return resolver(command_id, target_thread_id) if callable(resolver) else None
                 if not target_thread_id:
                     return None  # Unknown thread identity cannot be rediscovered by resubmitting.
                 response = request("thread/read", {"threadId": target_thread_id, "includeTurns": True})
@@ -11159,7 +11404,15 @@ class App:
                     return None  # No guess between turns after an uncertain acknowledgement.
                 return {"thread": thread, "turn": turns[0]}
 
-            connector = UniversalHQConnector(CodexAppServerAdapter(transport=SimpleNamespace(request=request, reconcile=reconcile)),
+            def verify_pre_turn_non_delivery(evidence, command_digest):
+                verifier = getattr(self.auto_bridge, "verify_pre_turn_non_delivery", None)
+                return callable(verifier) and verifier(evidence, command_digest) is True
+
+            task_transport = getattr(self, "task_transport", None) if action is HQCommandAction.TASK else None
+            adapter = (CodexAppServerAdapter(task_transport=task_transport) if task_transport is not None else
+                CodexAppServerAdapter(transport=SimpleNamespace(request=request, reconcile=reconcile,
+                    verify_pre_turn_non_delivery=verify_pre_turn_non_delivery)))
+            connector = UniversalHQConnector(adapter,
                 authorization_verifier=SimpleNamespace(verify=lambda receipt, command, now: receipt == auth and command == envelope and now <= auth.expires_at_ms),
                 material_resolver=SimpleNamespace(resolve=lambda command: material),
                 root_verifier=SimpleNamespace(observe=observe, verify=lambda observation, command: observation.canonical_cwd == str(root) and observation.root_digest == command.root_digest))
@@ -11195,7 +11448,8 @@ class App:
                     return not_dispatched("RETAINED_UNSUPPORTED")
         with self.overview_lock:
             self._store_generation += 1
-        return {"ok": True, **asdict(result), "host_turn_status": host_turn_status, "work_completed": False}
+        return {"ok": True, **asdict(result), "host_turn_status": host_turn_status, "work_completed": False,
+                **({"host_failure": host_failure} if host_failure is not None else {})}
 
     def _auto_scope(self, ctrl_id: str, project_id: str) -> dict[str, Any]:
         overview = self._host_overview()
@@ -11577,6 +11831,21 @@ class App:
                 self._overview_revision += 1
                 return overview
 
+    def refresh_native_observation(self, *, sample_usage: bool = False, project_id: str | None = None) -> None:
+        """Refresh native read inputs without starting the console's Auto observer."""
+        overview = self._host_overview(refresh=True)
+        if sample_usage:
+            # Validate scope before any sampling write, but observe the shared
+            # host snapshot so a project filter cannot remove global coverage.
+            self._observed_scope(project_id=project_id)
+            recorded = self.store.observe_overview(
+                overview, now_ms=int(time.time() * 1000), trigger="native_read",
+                heartbeat_minutes=30, codex_home=self.codex_home, tokens_only=True,
+            )
+            if recorded:
+                with self.overview_lock:
+                    self._store_generation += 1
+
     def _ingest_progress_pulses_if_changed(self, overview: dict[str, Any]) -> dict[str, Any]:
         """Import changed bounded sidecars without running token or diagnostic observation."""
         fingerprint = progress_pulse_fingerprint(self.codex_home)
@@ -11900,7 +12169,11 @@ class App:
                                       "scope_version": task["scope_version"],
                                       "manifest_identity": copy.deepcopy(task["manifest_identity"]),
                                       "event_cursor": copy.deepcopy(block["event_cursor"]),
-                                      "observed_at_ms": block["observed_at_ms"]})
+                                      "observed_at_ms": block["observed_at_ms"],
+                                      "as_of_ms": now_ms, "freshness": "CURRENT"})
+                    basis = task.get("milestone_basis", {}).get(block["milestone_id"])
+                    if basis is not None:
+                        milestone.update(copy.deepcopy(basis))
             summary["current_milestone"] = milestone
         return {
             "all_projects": cls._progress_for_nodes(
@@ -12186,6 +12459,76 @@ class App:
             ),
         }
 
+    def _dashboard_counters(self, overview, nodes, scope, window) -> dict[str, Any]:
+        """Read-only footer facts: observed host snapshot, catalog, and bound acceptance in (after,before]."""
+        def metric(value=None, state="UNKNOWN"):
+            return {"value": value, "state": state}
+
+        counters = {name: metric() for name in ("active_agents", "completed_tasks", "projects")}
+        host_rows = sorted(((str(n.get("id") or ""), str(n.get("project_id") or ""),
+                             str(n.get("status") or ""), n.get("updated_at"), bool(n.get("archived"))) for n in nodes),
+                           key=lambda row: row[:3])
+        if (overview.get("generated_at") and all(row[0] for row in host_rows)
+                and len({row[0] for row in host_rows}) == len(host_rows)
+                and all(row[2] in {"active", "idle", "quiet", "stalled", "done", "inactive", "recently_active"} for row in host_rows)):
+            counters["active_agents"] = metric(sum(row[2] == "active" and not row[4] for row in host_rows), "KNOWN")
+        catalog_cursor = ledger_cursor = None
+        try:
+            state, records, catalog_cursor, _ = self._host_project_records()
+            selected = {r["id"] for r in records if scope["type"] == "all-projects" or r["id"] == scope.get("project_id")}
+            if state in {"KNOWN", "PARTIAL"} and catalog_cursor and (selected or scope["type"] == "all-projects"):
+                counters["projects"] = metric(len(selected), state)
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            pass
+        completed = set()
+        try:
+            ledger = self.progress_ledger.replay()
+            ledger_cursor = ledger["cursor"]
+            eligible, partial = 0, bool(ledger.get("topology_conflicts"))
+            for task_id, state in ledger["task_manifests"].items():
+                if task_id not in ledger["task_creation_operations_by_task"]:
+                    continue  # Definitions alone are not host-created tasks.
+                manifest = state["versions"][state["active_version"]]
+                project = manifest["project_id"]
+                if scope["type"] != "all-projects" and project != scope.get("project_id"):
+                    continue
+                if scope["type"] == "ctrl" and manifest["ctrl_id"] != scope["ctrl_id"]:
+                    continue
+                assignment = manifest.get("work_assignment")
+                block_ids = ([assignment["block_id"]] if assignment else [b["block_id"] for b in manifest["blocks"]])
+                if not block_ids:
+                    continue
+                # Resolve through the same exact creation/assignment boundary used for acceptance.
+                try:
+                    retained = [self.progress_ledger._bound_block_context(
+                        ledger, project, task_id, block_id, manifest["manifest_digest"])[-1] for block_id in block_ids]
+                except ProgressEventError:
+                    partial = True
+                    continue
+                eligible += 1
+                if any(b is None or b["lifecycle_state"] != "ACCEPTED" for b in retained):
+                    continue
+                if any(b["latest_event_id"] != f"bound-accepted:{task_id}:{block_id}"
+                       or b["scope_version"] != ledger["scopes"].get(project)
+                       or b.get("flags") or type(b.get("observed_at_ms")) is not int
+                       for block_id, b in zip(block_ids, retained)):
+                    partial = True
+                    continue
+                accepted_at = max(b["observed_at_ms"] for b in retained)
+                if window["after_ms"] < accepted_at <= window["before_ms"]:
+                    completed.add((project, task_id))
+            if eligible:
+                counters["completed_tasks"] = metric(None if partial else len(completed), "PARTIAL" if partial else "KNOWN")
+        except (ProgressEventError, OSError, KeyError, TypeError, ValueError):
+            counters["completed_tasks"] = metric()
+        result = {"scope": copy.deepcopy(scope), "window": {k: window[k] for k in ("after_ms", "before_ms")},
+                  "host_observed_at": overview.get("generated_at"), "counters": counters,
+                  "sources": {"host_digest": _auto_digest(host_rows), "catalog_cursor": catalog_cursor,
+                              "ledger_cursor": ledger_cursor},
+                  "claim_limit": "Active agents means observed active host threads at host_observed_at, not roles or execution authority. Projects are saved catalog entries. Completed tasks are distinct currently bound tasks whose exact required block acceptance completed in (after_ms,before_ms]; missing bound coverage is UNKNOWN. No planning status or token inference."}
+        result["cursor"] = {"type": "dashboard_counters_v1", "digest": _auto_digest(result)}
+        return result
+
     def usage_history(
         self,
         *,
@@ -12225,7 +12568,7 @@ class App:
             or remaining_token_budget < 0
         ):
             raise ConsoleError("remaining_token_budget must be a non-negative integer")
-        _, nodes, thread_ids, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
+        overview, nodes, thread_ids, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
         project_filter = scope.get("project_id") if scope.get("type") == "project" else None
         history = self.store.token_history(project_id=project_filter, thread_ids=thread_ids, **query_window)
         coverage_thread_ids = {str(node["id"]) for node in nodes}
@@ -12362,6 +12705,7 @@ class App:
             "scope": scope,
             "hours": hours,
             "window": window,
+            "dashboard": self._dashboard_counters(overview, nodes, scope, window),
             "items": history,
             "task_usage": task_usage,
             "task_history": {
@@ -13216,6 +13560,15 @@ class App:
                         structural_role = {
                             "CTRL_BOUNDED": "CTRL", "LEAD_SINGLE": "LEAD", "DOER_SINGLE": "DOER",
                         }.get(str(manifest.get("role_scope") or ""))
+                        admitted_root = False
+                        if (binding.get("existing_host") and structural_role == "CTRL" and task_id == ctrl_id
+                                and binding.get("parent_edge") == {"state": "OPEN", "parent_task_id": None}):
+                            try:
+                                root = self._observed_task_root(project_id, task_id, allow_adopted=True, projection=ledger)
+                                admitted_root = binding["root_digest"] == _auto_digest({
+                                    "project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
+                            except (ConsoleError, OSError, sqlite3.Error):
+                                pass
                         exact = (
                             host is not None
                             and str(host.get("project_id") or "") == project_id
@@ -13223,7 +13576,7 @@ class App:
                             and role is not None
                             and role_manifest_reference(role) == role_ref
                             and structural_role in TOPOLOGY_TIER
-                            and (structural_role != "CTRL" or task_id in observed_ctrl_ids)
+                            and (structural_role != "CTRL" or task_id in observed_ctrl_ids or admitted_root)
                             and task_id not in agents
                         )
                         if not exact:
@@ -13282,6 +13635,8 @@ class App:
                             },
                             "detail_target": {"agent_id": task_id, "project_id": project_id, "ctrl_id": ctrl_id},
                         }
+                        if "work_unit" in manifest:
+                            agents[task_id]["work_unit"] = copy.deepcopy(manifest["work_unit"])
                         creation_parent_edges[task_id] = binding["parent_edge"]
                     elif isinstance(manifest, dict) and row.get("binding_state") == "KNOWN":
                         task_manifests.append(manifest)
@@ -13443,15 +13798,15 @@ class App:
                     continue
                 scope_version = int(scope_versions.get(manifest["project_id"], 0) or 0)
                 definitions = {block["block_id"]: block for block in manifest["blocks"]}
-                scope_blocks = [
+                retained_blocks = [
                     block for block in blocks.values()
                     if isinstance(block, dict)
                     and block.get("project_id") == manifest["project_id"]
                     and block.get("ctrl_id") == manifest["ctrl_id"]
                     and block.get("task_id") == task_id
                     and int(block.get("scope_version") or 0) == scope_version
-                    and block.get("lifecycle_state") != "TOMBSTONED"
                 ]
+                scope_blocks = [b for b in retained_blocks if b.get("lifecycle_state") != "TOMBSTONED"]
                 current = [block for block in scope_blocks if block.get("lifecycle_state") not in TOPOLOGY_TERMINAL_STATES]
                 if not current:
                     continue
@@ -13500,6 +13855,8 @@ class App:
                 }
                 milestone_titles = {item["milestone_id"]: item["title"] for item in manifest["milestones"]}
                 task["scope_version"] = scope_version
+                task["milestone_basis"] = {item["milestone_id"]: _milestone_basis(
+                    manifest, retained_blocks, item["milestone_id"], scope_version) for item in manifest["milestones"]}
                 task["blocks"] = []
                 for block in sorted(scope_blocks, key=lambda item: (definitions[item["block_id"]]["order"], item["block_id"])):
                     detail = {key: copy.deepcopy(block[key]) for key in (
@@ -15713,6 +16070,8 @@ class App:
         fields = {"operation", "project_id"}
         if operation == "assign":
             fields |= {"expected_digest", "assignment", "acknowledge"}
+            if "accepting_scope" in payload:
+                fields.add("accepting_scope")
         elif operation == "save":
             fields |= {"expected_digest", "definition", "acknowledge"}
         elif operation == "preview":
@@ -15746,10 +16105,14 @@ class App:
                 record = validate_flow_assignment({**record, "digest": "sha256:" + _auto_digest(record)}, document.get("flow_definitions", []))
                 _require_flow_projection_budget(document.get("flow_definitions", []),
                     [*document.get("flow_assignments", []), record])
-                self._require_flow_assignment_subject(project_id, record)
+                accepting_scope = payload.get("accepting_scope")
+                if "accepting_scope" in payload and accepting_scope is None:
+                    raise ConsoleError("Flow accepting scope must be explicit")
+                verify_scope = lambda: self._require_flow_assignment_subject(project_id, record, accepting_scope=accepting_scope)
+                verify_scope()
                 digest = mutate_project_brief(path, expected_digest=digest, operation="create", collection="flow_assignments",
                     record_id=record["id"], changes={key: value for key, value in record.items() if key != "id"},
-                    updated_at=datetime.now(UTC).isoformat())
+                    updated_at=datetime.now(UTC).isoformat(), verify_current_scope=verify_scope)
                 document, current_digest = parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=root)
                 if current_digest != digest:
                     raise ConsoleConflict("Flow assignment changed after saving; reload to reconcile")
@@ -15800,10 +16163,14 @@ class App:
         except ProjectModelError as exc:
             raise ConsoleError(str(exc)) from exc
 
-    def _require_flow_assignment_subject(self, project_id: str, assignment: dict[str, Any]) -> None:
+    def _require_flow_assignment_subject(self, project_id: str, assignment: dict[str, Any], *, accepting_scope=None) -> None:
         """Validate scope without editing shared roles, task identities or dispatching."""
         ctrl_id = assignment["ctrl_id"]
-        if ctrl_id is not None:
+        if accepting_scope is not None and (assignment["subject_kind"] not in {"LAB", "FACTORY"}
+                or not isinstance(accepting_scope, dict) or set(accepting_scope) != {"ctrl_id", "manifest_digest"}
+                or not isinstance(accepting_scope["ctrl_id"], str) or not isinstance(accepting_scope["manifest_digest"], str)):
+            raise ConsoleError("Flow accepting scope requires an exact current CTRL and manifest for a Unit")
+        if ctrl_id is not None and accepting_scope is None:
             self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
         if assignment["subject_kind"] == "ROLE":
             role = next((item for item in self.role_manifest_projection()["roles"]
@@ -15816,8 +16183,26 @@ class App:
             manifest = state["versions"][state["active_version"]] if state else None
             binding = projection["task_creation_bindings"].get(projection["task_creation_operations_by_task"].get(task_id))
             if (not manifest or not binding or manifest["project_id"] != project_id or manifest["ctrl_id"] != ctrl_id
+                    or binding["project_id"] != project_id
                     or manifest.get("work_unit", {}).get("kind") != assignment["subject_kind"]):
                 raise ConsoleError("Flow assignment requires an exact bound Unit in this project and CTRL")
+            if accepting_scope is not None:
+                root = self._retained_accepting_root(project_id, accepting_scope["ctrl_id"], accepting_scope["manifest_digest"], projection)
+                if self._observed_task_root(project_id, task_id, allow_adopted=True, projection=projection) != root:
+                    raise ConsoleError("Flow Unit root changed")
+                canonical = _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))})
+                if binding["root_digest"] != canonical:
+                    identity = root.stat()
+                    physical = _auto_digest({"device": identity.st_dev, "file_id": identity.st_ino})
+                    receipts = projection["connector_receipts"].get(binding["operation_id"], {}).get("receipts", [])
+                    terminal = receipts[-1] if receipts else {}
+                    admission = terminal.get("admission") or {}
+                    if (not stat_module.S_ISDIR(identity.st_mode) or not identity.st_dev or not identity.st_ino
+                            or terminal.get("schema_version") != 2 or terminal.get("status") != "RESULT"
+                            or terminal.get("thread_id") != task_id or terminal.get("project_id") != project_id
+                            or admission.get("kind") != "CHILD_CREATE" or admission.get("physical_root_digest") != physical
+                            or terminal.get("root_digest") != physical or binding["root_digest"] != physical):
+                        raise ConsoleError("Flow Unit lacks exact retained physical-root admission")
             version = manifest["manifest_digest"]
         if version != assignment["subject_version"]:
             raise ConsoleConflict("Flow assignment subject version is missing or stale; reload")

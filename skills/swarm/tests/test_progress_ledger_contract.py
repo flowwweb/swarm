@@ -45,6 +45,23 @@ from skills.swarm.runtime.core import AcceptanceContract, ArtifactIdentity, Cont
 
 
 class ProgressLedgerContractTests(unittest.TestCase):
+    def test_work_assignment_root_equivalence_is_optional_exact_digest_content(self):
+        from skills.swarm.runtime.progress_events import _validate_work_assignment
+        assignment = dict(operation_id="new-work",accepting_ctrl_id="root",accepting_ctrl_manifest_digest="sha256:"+"a"*64,
+            goal_id="goal",goal_status_at_assignment="active",role_manifest_ref={"manifest_id":"researcher",
+                "manifest_version":"builtin:"+"b"*64,"manifest_digest":"sha256:"+"b"*64},
+            block_id="plan",attempt=1,artifact_path="plan.md",gates=[["proof",["python","proof.py"]]],
+            review_strategy="standard",reviewer_thread_id="reviewer",expected_ledger_revision=2)
+        self.assertEqual(_validate_work_assignment(assignment),assignment)
+        evidence = dict(physical_root_digest="c"*64,canonical_root_digest="d"*64,admission_receipt_digest="e"*64)
+        normalized = _validate_work_assignment({**assignment,"root_equivalence":evidence})
+        self.assertEqual(normalized["root_equivalence"],evidence)
+        self.assertIsNot(normalized["root_equivalence"],evidence)
+        for invalid in (None,{}, {**evidence,"extra":"f"*64}, {**evidence,"physical_root_digest":"C"*64},
+                        {**evidence,"canonical_root_digest":True}, {**evidence,"admission_receipt_digest":"sha256:"+"e"*64}):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ProgressEventError,"root equivalence"):
+                _validate_work_assignment({**assignment,"root_equivalence":invalid})
+
     def test_brief_ticket_shared_sequence_concurrency_restart_and_original_task(self):
         from concurrent.futures import ThreadPoolExecutor
         self.ledger.append(self.event("original-task", "original-block", task_id="original-task"))
@@ -1019,6 +1036,66 @@ class ProgressLedgerContractTests(unittest.TestCase):
         path.write_text(json.dumps(record) + "\n", encoding="utf-8")
         with self.assertRaises(ProgressEventError):
             self.host_ledger(self.root).replay()
+
+    def test_task_pre_turn_non_delivery_is_append_only_and_non_material(self) -> None:
+        command = {"schema_version": 1, "record_type": "CONNECTOR", "command_id": "pre-turn",
+            "idempotency_key": "pre-turn-key", "command_digest": "1" * 64, "payload_digest": "2" * 64,
+            "project_id": "project-alpha", "root_digest": "3" * 64, "action": "TASK",
+            "receipt_id": "pre-turn-command", "receipt_index": 0, "status": "COMMAND",
+            "thread_id": None, "turn_id": None, "observed_root_digest": None, "observed_at_ms": 10}
+        self.ledger.append_connector_receipt(command)
+        before = self.ledger._state.path.read_bytes()
+        progress = self.ledger.project("project-alpha")
+        evidence = {key: command[key] for key in (
+            "command_id", "idempotency_key", "command_digest", "payload_digest", "project_id", "root_digest")}
+        evidence.update(target_thread_id="thread-1", phase="BEFORE_TURN_SUBMISSION", turn_submitted=False,
+                        evidence_digest="4" * 64, review_digest="5" * 64)
+        terminal = {**command, "receipt_id": "pre-turn-not-delivered", "receipt_index": 1,
+            "status": "RECONCILED_NOT_DELIVERED", "observed_at_ms": 11, "non_delivery_evidence": evidence}
+        invalid = [{**terminal, key: value} for key, value in (
+            ("thread_id", "fabricated"), ("turn_id", "fabricated"), ("observed_root_digest", "3" * 64),
+            ("status", "RESULT"), ("action", "REPAIR"), ("observed_at_ms", 9), ("receipt_index", 2))]
+        invalid.append({key: value for key, value in terminal.items() if key != "non_delivery_evidence"})
+        for key, value in (("root_digest", "6" * 64), ("payload_digest", "6" * 64), ("command_id", "other"),
+                           ("turn_submitted", 0), ("turn_submitted", True), ("phase", "POST_SEND"), ("review_digest", "bad")):
+            invalid.append({**terminal, "non_delivery_evidence": {**evidence, key: value}})
+        for event in invalid:
+            with self.subTest(event=event), self.assertRaises(ProgressEventError):
+                self.ledger.append_connector_receipt(event)
+            self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        self.ledger.append_connector_receipt(terminal)
+        after = self.ledger._state.path.read_bytes()
+        self.assertTrue(after.startswith(before))
+        restarted = self.host_ledger(self.root)
+        self.assertEqual(restarted.append_connector_receipt(terminal)["status"], "unchanged")
+        self.assertEqual(restarted._state.path.read_bytes(), after)
+        retained = restarted.replay()["connector_receipts"]["pre-turn-key"]
+        self.assertTrue(retained["terminal"])
+        self.assertEqual(retained["receipts"][-1]["non_delivery_evidence"], evidence)
+        self.assertEqual({k:v for k,v in restarted.project("project-alpha").items() if k != "cursor"},
+                         {k:v for k,v in progress.items() if k != "cursor"})
+        with self.assertRaises(ProgressEventError):
+            restarted.append_connector_receipt({**terminal, "receipt_id": "duplicate-terminal", "receipt_index": 2})
+
+    def test_task_pre_turn_recovery_cannot_race_past_acknowledgement(self) -> None:
+        command = {"schema_version": 1, "record_type": "CONNECTOR", "command_id": "race",
+            "idempotency_key": "race-key", "command_digest": "1" * 64, "payload_digest": "2" * 64,
+            "project_id": "project-alpha", "root_digest": "3" * 64, "action": "TASK",
+            "receipt_id": "race-command", "receipt_index": 0, "status": "COMMAND",
+            "thread_id": None, "turn_id": None, "observed_root_digest": None, "observed_at_ms": 10}
+        self.ledger.append_connector_receipt(command)
+        self.ledger.append_connector_receipt({**command, "receipt_id": "race-ack", "receipt_index": 1,
+            "status": "ACKNOWLEDGED", "thread_id": "thread-1", "observed_root_digest": "3" * 64})
+        evidence = {key: command[key] for key in (
+            "command_id", "idempotency_key", "command_digest", "payload_digest", "project_id", "root_digest")}
+        evidence.update(target_thread_id="thread-1", phase="BEFORE_TURN_SUBMISSION", turn_submitted=False,
+                        evidence_digest="4" * 64, review_digest="5" * 64)
+        before = self.ledger._state.path.read_bytes()
+        for index in (1, 2):
+            with self.assertRaises(ProgressEventError):
+                self.ledger.append_connector_receipt({**command, "receipt_id": "race-recovery", "receipt_index": index,
+                    "status": "RECONCILED_NOT_DELIVERED", "non_delivery_evidence": evidence})
+            self.assertEqual(self.ledger._state.path.read_bytes(), before)
 
     def test_connector_receipt_rejects_unknown_action_and_status(self) -> None:
         base = {

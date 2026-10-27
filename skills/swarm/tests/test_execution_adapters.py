@@ -65,7 +65,7 @@ from skills.swarm.runtime import (
     route_execution,
 )
 from skills.swarm.runtime.progress_events import Ledger, ProgressEventError, build_task_manifest, load_builtin_role_manifests
-from skills.swarm.runtime.execution_adapters import handoff_dispatch_instruction
+from skills.swarm.runtime.execution_adapters import HQAppTaskObservation, handoff_dispatch_instruction
 
 
 class FakeCodexTransport:
@@ -147,6 +147,29 @@ class UnavailableHQMaterialResolver:
     def resolve(self, envelope):
         self.calls.append(envelope.command_id)
         raise AssertionError("transient dispatch material is unavailable after restart")
+
+
+class FakeAppTaskTransport:
+    def __init__(self, envelope, *, uncertain=False):
+        self.trusted = HQAppTaskObservation("d" * 64, envelope.digest, envelope.payload_digest,
+            envelope.target_thread_id, "turn-before", "turn-after", "C:/work/project-a", 2)
+        self.observation = self.trusted
+        self.uncertain = uncertain
+        self.calls = []
+        self.observations = []
+
+    def send_message_to_thread(self, *, thread_id, prompt):
+        self.calls.append({"threadId": thread_id, "prompt": prompt})
+        if self.uncertain:
+            raise TimeoutError("tool delivery uncertain")
+        return {"threadId": thread_id}  # The real send tool does not supply a turn.
+
+    def observe_command(self, envelope):
+        self.observations.append(envelope.digest)
+        return self.observation
+
+    def verify_observation(self, observation, envelope):
+        return observation == self.trusted and observation.command_digest == envelope.digest
 
 
 class ExecutionAdapterTests(unittest.TestCase):
@@ -437,6 +460,152 @@ class ExecutionAdapterTests(unittest.TestCase):
     def explicit(envelope):
         return HQAuthorizationReceipt(f"auth-{envelope.command_id}", envelope.digest, envelope.project_id, envelope.root_digest, envelope.ctrl_id, (envelope.action,), envelope.expires_at_ms)
 
+    def app_task_case(self, *, uncertain=False, enabled=True):
+        material = HQDispatchMaterial("C:/work/project-a", b"Exact app-owned instruction, never a persisted summary.")
+        envelope = HQCommandEnvelope("app-command", "app-key", HQCommandAction.TASK,
+            "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD,
+            "thread-1", material.digest, 0, 1, 3)
+        transport = FakeAppTaskTransport(envelope, uncertain=uncertain)
+        connector = UniversalHQConnector(CodexAppServerAdapter(enabled=enabled, task_transport=transport),
+            authorization_verifier=FakeHQAuthorizationVerifier(), material_resolver=FakeHQMaterialResolver(material),
+            root_verifier=FakeHQRootVerifier())
+        return envelope, material, transport, connector
+
+    def test_app_task_exact_delivery_and_terminal_restart_preserve_identity(self):
+        import tempfile
+        from pathlib import Path
+        envelope, material, transport, connector = self.app_task_case()
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            before = ledger.replay()
+            result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual((result.status, result.thread_id, result.turn_id, result.observed_root_digest),
+                             ("RESULT", "thread-1", "turn-after", "a" * 64))
+            self.assertEqual(transport.calls, [{"threadId": "thread-1", "prompt": material.instruction}])
+            retained = ledger.replay()["connector_receipts"]["app-key"]["receipts"]
+            self.assertEqual([item["status"] for item in retained], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
+            after = ledger.replay()
+            for key in ("scopes", "blocks", "latest_material_signatures", "task_creation_bindings"):
+                self.assertEqual(after[key], before[key])
+            self.assertNotIn(material.instruction, repr(retained))
+            connector.material_resolver = UnavailableHQMaterialResolver()
+            connector.authorization_verifier = FakeHQAuthorizationVerifier(False)
+            transport.observation = None
+            replay = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=100,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual((replay.status, replay.thread_id, replay.turn_id, replay.observed_root_digest, replay.command_digest),
+                             ("REPLAY", result.thread_id, result.turn_id, result.observed_root_digest, envelope.digest))
+            self.assertEqual(len(transport.calls), 1)
+            self.assertEqual(connector.material_resolver.calls, [])
+
+    def test_app_task_thread_only_and_uncertainty_reconcile_without_resend(self):
+        import tempfile
+        from pathlib import Path
+        for uncertain in (False, True):
+            with self.subTest(uncertain=uncertain), tempfile.TemporaryDirectory() as directory:
+                envelope, _, transport, connector = self.app_task_case(uncertain=uncertain)
+                transport.observation = None
+                ledger = Ledger(Path(directory))
+                result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(result.status, "PENDING")
+                self.assertEqual([item["status"] for item in ledger.replay()["connector_receipts"]["app-key"]["receipts"]], ["COMMAND"])
+                connector.material_resolver = UnavailableHQMaterialResolver()
+                connector.authorization_verifier = FakeHQAuthorizationVerifier(False)
+                transport.observation = transport.trusted
+                result = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=100,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual((result.status, result.turn_id), ("RESULT", "turn-after"))
+                self.assertEqual(len(transport.calls), 1)
+                self.assertEqual(connector.material_resolver.calls, [])
+
+    def test_app_task_host_observation_hostile_bindings_never_ack(self):
+        import tempfile
+        from pathlib import Path
+        changes = ({"command_digest": "b" * 64}, {"payload_digest": "b" * 64},
+            {"thread_id": "another-thread"}, {"turn_id": "turn-before"},
+            {"cwd": "C:/work/other"}, {"observed_at_ms": 0}, {"observed_at_ms": 3})
+        for change in changes:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                envelope, _, transport, connector = self.app_task_case()
+                transport.observation = replace(transport.trusted, **change)
+                transport.trusted = transport.observation  # Even host admission cannot relax core bindings.
+                ledger = Ledger(Path(directory))
+                result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual((result.status, result.attention), ("ATTENTION", "APP_TASK_EVIDENCE_REJECTED"))
+                self.assertEqual(len(ledger.replay()["connector_receipts"]["app-key"]["receipts"]), 1)
+        for malformed in ({"threadId": "thread-1"}, "summary-only", False):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as directory:
+                envelope, _, transport, connector = self.app_task_case()
+                transport.observation = malformed
+                ledger = Ledger(Path(directory))
+                self.assertEqual(connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a" * 64).status, "ATTENTION")
+                self.assertEqual(len(ledger.replay()["connector_receipts"]["app-key"]["receipts"]), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            envelope, _, transport, connector = self.app_task_case()
+            transport.observation = replace(transport.trusted, evidence_digest="c" * 64)
+            ledger = Ledger(Path(directory))
+            self.assertEqual(connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a" * 64).status, "ATTENTION")
+            self.assertEqual(len(ledger.replay()["connector_receipts"]["app-key"]["receipts"]), 1)
+
+    def test_app_task_fresh_guards_and_disabled_capability_never_send(self):
+        import tempfile
+        from pathlib import Path
+        for rejection in ("auth", "material", "root", "expired", "revision"):
+            with self.subTest(rejection=rejection), tempfile.TemporaryDirectory() as directory:
+                envelope, _, transport, connector = self.app_task_case()
+                if rejection == "auth": connector.authorization_verifier = FakeHQAuthorizationVerifier(False)
+                if rejection == "material": connector.material_resolver = FakeHQMaterialResolver(HQDispatchMaterial("C:/work/project-a", b"Other input"))
+                if rejection == "root": connector.root_verifier = FakeHQRootVerifier(accepted=False)
+                if rejection == "revision": envelope = replace(envelope, expected_ledger_revision=1)
+                ledger = Ledger(Path(directory))
+                before = ledger.replay()["cursor"]
+                with self.assertRaises(InvariantError):
+                    connector.execute(envelope, self.explicit(envelope), ledger, now_ms=100 if rejection == "expired" else 2,
+                        observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(transport.calls, [])
+                self.assertEqual(ledger.replay()["cursor"], before)
+        for disabled in (True, False):
+            with self.subTest(disabled=disabled), tempfile.TemporaryDirectory() as directory:
+                envelope, _, transport, connector = self.app_task_case(enabled=not disabled)
+                if not disabled: envelope = replace(envelope, action=HQCommandAction.AUTO)
+                result = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(result.status, "UNSUPPORTED")
+                self.assertEqual(transport.calls, [])
+        with self.assertRaisesRegex(InvariantError, "no implicit fallback"):
+            CodexAppServerAdapter(transport=FakeCodexTransport(), task_transport=transport)
+
+    def test_app_task_partial_ack_and_reservation_race_do_not_redispatch(self):
+        import tempfile
+        from pathlib import Path
+        for race in (True, False):
+            with self.subTest(race=race), tempfile.TemporaryDirectory() as directory:
+                envelope, _, transport, connector = self.app_task_case()
+                ledger = Ledger(Path(directory))
+                class InterruptedLedger:
+                    def replay(self): return ledger.replay()
+                    def reserve_connector_command(self, command, *, expected_revision):
+                        if race: ledger.reserve_connector_command(command, expected_revision=expected_revision)
+                        return ledger.reserve_connector_command(command, expected_revision=expected_revision)
+                    def append_connector_receipt(self, receipt):
+                        if receipt["status"] == "RESULT": raise OSError("crash after ACK")
+                        return ledger.append_connector_receipt(receipt)
+                with self.assertRaisesRegex(OSError, "crash after ACK"):
+                    connector.execute(envelope, self.explicit(envelope), InterruptedLedger(), now_ms=2,
+                        observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(len(transport.calls), 0 if race else 1)
+                connector.material_resolver = UnavailableHQMaterialResolver()
+                result = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=100,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(result.status, "RESULT")
+                self.assertEqual(len(transport.calls), 0 if race else 1)
+                self.assertEqual([item["status"] for item in ledger.replay()["connector_receipts"]["app-key"]["receipts"]], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
+
     def test_new_thread_sequence_uses_real_cwd_and_authorized_input(self) -> None:
         import tempfile
         from pathlib import Path
@@ -652,6 +821,88 @@ class ExecutionAdapterTests(unittest.TestCase):
             self.assertEqual((result.status, result.attention), ("PENDING", "HOST_THREAD_OUTCOME_PENDING"))
             self.assertEqual(tuple(call[0] for call in transport.calls), ("thread/start",))
             self.assertEqual([item["status"] for item in ledger.replay()["connector_receipts"]["key-thread-only"]["receipts"]], ["COMMAND"])
+
+    def test_task_pre_turn_reconciliation_requires_exact_reviewed_evidence(self) -> None:
+        import tempfile
+        from pathlib import Path
+        material = HQDispatchMaterial("C:/work/project-a", b"Do not deliver twice.")
+        envelope = HQCommandEnvelope("pre-turn", "pre-turn-key", HQCommandAction.TASK, "project-a", "a" * 64,
+            "", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 100)
+        evidence = {key: getattr(envelope, key) for key in (
+            "command_id", "idempotency_key", "payload_digest", "project_id", "root_digest", "target_thread_id")}
+        evidence.update(command_digest=envelope.digest, phase="BEFORE_TURN_SUBMISSION", turn_submitted=False,
+                        evidence_digest="b" * 64, review_digest="c" * 64)
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            transport = FakeCodexTransport([{"threadId": "thread-1"}])
+            connector = self.connector(transport, material)
+            first = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual(first.attention, "HOST_THREAD_OUTCOME_PENDING")
+            before = ledger._state.path.read_bytes()
+            # Current host-owned verification is mandatory; a source response cannot mint it.
+            for verifier in (None, lambda *_: False):
+                transport.verify_pre_turn_non_delivery = verifier
+                transport.reconciliations.append({"non_delivery_evidence": evidence})
+                result = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=200,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(result.attention, "PRE_TURN_EVIDENCE_REJECTED")
+                self.assertEqual(ledger._state.path.read_bytes(), before)
+            transport.verify_pre_turn_non_delivery = lambda value, digest: value == evidence and digest == envelope.digest
+            for key, value in (("command_id", "foreign"), ("idempotency_key", "foreign"),
+                    ("command_digest", "d" * 64), ("payload_digest", "d" * 64), ("project_id", "foreign"),
+                    ("root_digest", "d" * 64), ("target_thread_id", "foreign"), ("phase", "UNKNOWN"),
+                    ("turn_submitted", True), ("turn_submitted", 0), ("review_digest", "bad"),
+                    ("evidence_digest", "d" * 64)):
+                with self.subTest(key=key, value=value):
+                    transport.reconciliations.append({"non_delivery_evidence": {**evidence, key: value}})
+                    result = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=200,
+                        observed_project_id="project-a", observed_root_digest="a" * 64)
+                    self.assertEqual(result.status, "ATTENTION")
+                    self.assertEqual(ledger._state.path.read_bytes(), before)
+            connector.material_resolver = UnavailableHQMaterialResolver()
+            transport.reconciliations.append({"non_delivery_evidence": evidence})
+            result = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=200,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual((result.status, result.thread_id, result.turn_id, result.observed_root_digest),
+                             ("NOT_DELIVERED", "", "", ""))
+            retained = Ledger(Path(directory)).replay()["connector_receipts"][envelope.idempotency_key]["receipts"]
+            self.assertEqual([item["status"] for item in retained], ["COMMAND", "RECONCILED_NOT_DELIVERED"])
+            self.assertEqual(retained[-1]["non_delivery_evidence"], evidence)
+            self.assertTrue(ledger._state.path.read_bytes().startswith(before))
+            after = ledger._state.path.read_bytes()
+            transport.verify_pre_turn_non_delivery = None
+            replay = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=201,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual(replay, result)
+            self.assertEqual(ledger._state.path.read_bytes(), after)
+            self.assertEqual([call[0] for call in transport.calls], ["thread/resume"])
+
+    def test_task_pre_turn_evidence_cannot_close_post_send_uncertainty(self) -> None:
+        import tempfile
+        from pathlib import Path
+        material = HQDispatchMaterial("C:/work/project-a", b"Unknown delivery remains pending.")
+        envelope = HQCommandEnvelope("post-send", "post-send-key", HQCommandAction.TASK, "project-a", "a" * 64,
+            "", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 100)
+        transport = FakeCodexTransport([{"thread": {"id": "thread-1", "cwd": material.cwd}}, {}])
+        transport.verify_pre_turn_non_delivery = lambda *_: True
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            connector = self.connector(transport, material)
+            result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual(result.attention, "HOST_TURN_OUTCOME_PENDING")
+            before = ledger._state.path.read_bytes()
+            evidence = {key: getattr(envelope, key) for key in (
+                "command_id", "idempotency_key", "payload_digest", "project_id", "root_digest", "target_thread_id")}
+            evidence.update(command_digest=envelope.digest, phase="BEFORE_TURN_SUBMISSION", turn_submitted=False,
+                            evidence_digest="b" * 64, review_digest="c" * 64)
+            transport.reconciliations.append({"non_delivery_evidence": evidence})
+            result = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=3,
+                observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual(result.attention, "PRE_TURN_EVIDENCE_REJECTED")
+            self.assertEqual(ledger._state.path.read_bytes(), before)
+            self.assertEqual([call[0] for call in transport.calls], ["thread/resume", "turn/start"])
 
     def test_existing_task_resumes_then_starts_turn_and_repair_steers(self) -> None:
         import tempfile

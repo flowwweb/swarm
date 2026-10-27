@@ -30,12 +30,378 @@ def call(process: subprocess.Popen[str], request: dict) -> dict:
 
 
 class SwarmMCPTests(unittest.TestCase):
+    def _unit_fixture(self):
+        sys.path.insert(0, str(mcp.REPO_ROOT))
+        from console import server
+        from console.tests.test_console import SwarmConsoleTests
+        fixture = SwarmConsoleTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        projection = mcp.SwarmProjection()
+        projection._app = server.App(fixture.codex_home, fixture.config, auto_bridge=Mock())
+        role = next(r for r in projection._app.builtin_role_manifests if r["id"] == "architect")
+        request = dict(kind="LAB", template_id="research", name="Interface Lab", objective="Resolve a bounded question",
+            project_id="project:alpha", ctrl_id="ctrl-a", request_id="native-unit",
+            coordinator_role={"id": role["id"], "version": role["version"]})
+        return server, fixture, projection, request
+
+    def test_native_unit_prepare_create_readback_restart_uses_existing_connector(self):
+        server, fixture, projection, request = self._unit_fixture()
+        app = projection._app
+        sent = []
+        @contextmanager
+        def session(cwd, **kwargs):
+            responses = [{"thread": {"id": "native-unit-task", "cwd": str(cwd)}}, {"turn": {"id": "unit-turn"}}]
+            yield sent.append, lambda predicate: {"id": sent[-1]["id"], "result": responses.pop(0)}
+        app.auto_bridge.command_session = session
+        with patch.object(app, "_auto_scope"):
+            prepared = projection.call("swarm_unit_prepare", request)
+            competing = projection.call("swarm_unit_prepare", {**request, "request_id": "later-unit"})
+            self.assertEqual(prepared["status"], "PREPARED")
+            self.assertEqual(sent, [])
+            self.assertEqual(app.progress_ledger.replay()["task_creation_bindings"], {})
+            result = projection.call("swarm_unit_create", prepared["submission"])
+            stale = projection.call("swarm_unit_create", competing["submission"])
+        self.assertEqual(stale["status"], "NOT_DISPATCHED")
+        self.assertEqual([r["method"] for r in sent], ["thread/start", "turn/start"])
+        self.assertEqual(result["status"], "RESULT")
+        self.assertEqual(result["command_digest"], prepared["command_digest"])
+        self.assertFalse(result["work_completed"])
+        self.assertEqual(result["readback"]["state"], "KNOWN")
+        self.assertEqual(result["readback"]["role_manifest_ref"]["manifest_id"], request["coordinator_role"]["id"])
+        self.assertEqual(result["readback"]["role_manifest_ref"]["manifest_version"], request["coordinator_role"]["version"])
+        self.assertLessEqual(result["readback"]["creation_event"]["event_seq"], result["readback"]["cursor"]["event_seq"])
+        unit = result["readback"]["unit"]
+        self.assertEqual((unit["task_id"], unit["project_id"], unit["ctrl_id"], unit["work_unit"]["kind"]),
+                         ("native-unit-task", "project:alpha", "ctrl-a", "LAB"))
+        self.assertIsNone(unit["work_unit"]["goal_id"])
+        self.assertEqual(unit["outcome_acceptance"], "UNKNOWN")
+        self.assertEqual(app.unit_catalog_projection("LAB")["instances"], [unit])
+        retained = app.progress_ledger._state.path.read_bytes()
+        restarted = server.App(fixture.codex_home, fixture.config, auto_bridge=Mock())
+        projection._app = restarted
+        replay = projection.call("swarm_unit_create", prepared["submission"])
+        self.assertEqual(replay["status"], "REPLAY")
+        self.assertEqual(replay["readback"], result["readback"])
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), retained)
+        self.assertEqual(restarted.auto_bridge.mock_calls, [])
+        self.assertNotIn(prepared["submission"]["instruction"].encode(), retained)
+        self.assertEqual(len(restarted.progress_ledger.replay()["task_creation_bindings"]), 1)
+        # A later read failure cannot erase the exact retained dispatch receipt.
+        with patch.object(restarted, "unit_catalog_projection", side_effect=server.ConsoleError("private/path")):
+            unreadable = projection.call("swarm_unit_create", prepared["submission"])
+        self.assertEqual(unreadable["status"], "REPLAY")
+        self.assertEqual(unreadable["command_digest"], prepared["command_digest"])
+        self.assertEqual(unreadable["readback"], {"state": "UNAVAILABLE", "unit": None, "cursor": None})
+        self.assertNotIn("private/path", json.dumps(unreadable))
+
+    def test_native_unit_uncertain_creation_replays_without_new_actor(self):
+        server, fixture, projection, request = self._unit_fixture()
+        app = projection._app
+        sent = []
+        @contextmanager
+        def session(cwd, **kwargs):
+            def receive(predicate):
+                raise TimeoutError("unknown thread/start delivery")
+            yield sent.append, receive
+        app.auto_bridge.command_session = session
+        with patch.object(app, "_auto_scope"):
+            prepared = projection.call("swarm_unit_prepare", {**request, "kind": "FACTORY", "template_id": "software"})
+            result = projection.call("swarm_unit_create", prepared["submission"])
+        self.assertEqual(result["status"], "PENDING")
+        self.assertEqual(result["readback"], {"state": "PENDING", "unit": None, "cursor": None})
+        self.assertFalse(result["work_completed"])
+        self.assertEqual([r["method"] for r in sent], ["thread/start"])
+        retained = app.progress_ledger._state.path.read_bytes()
+        projection._app = server.App(fixture.codex_home, fixture.config, auto_bridge=Mock())
+        replay = projection.call("swarm_unit_create", prepared["submission"])
+        self.assertEqual(replay["status"], "PENDING")
+        self.assertIsNone(replay["readback"]["unit"])
+        self.assertEqual(projection._app.progress_ledger._state.path.read_bytes(), retained)
+        self.assertEqual(projection._app.progress_ledger.replay()["task_creation_bindings"], {})
+        self.assertEqual(projection._app.auto_bridge.mock_calls, [])
+
+    def test_native_unit_rejects_unbound_and_stale_inputs_without_dispatch(self):
+        server, fixture, projection, request = self._unit_fixture()
+        app = projection._app
+        with patch.object(app, "_auto_scope", side_effect=server.ConsoleError("missing exact authority")):
+            self.assertEqual(projection.call("swarm_unit_prepare", request)["state"], "REJECTED")
+        with patch.object(app, "_auto_scope"):
+            stale_role = {**request, "coordinator_role": {"id": "architect", "version": "builtin:stale"}}
+            self.assertEqual(projection.call("swarm_unit_prepare", stale_role)["state"], "CONFLICT")
+            prepared = projection.call("swarm_unit_prepare", request)
+        for change in ({"acknowledge": False}, {"acknowledge": 1}, {"path": "elsewhere"}):
+            with self.assertRaises(mcp.MCPError):
+                projection.call("swarm_unit_create", {**prepared["submission"], **change})
+        payload = prepared["submission"]
+        for change in ({"instruction": "different"}, {"envelope": {**payload["envelope"], "root_digest": "f" * 64}},
+                       {"envelope": {**payload["envelope"], "task_creation": None}}):
+            self.assertEqual(projection.call("swarm_unit_create", {**payload, **change})["state"], "REJECTED")
+        with patch.object(server.time, "time", return_value=payload["envelope"]["expires_at_ms"] / 1000 + 1), patch.object(app, "_auto_scope"):
+            stale = projection.call("swarm_unit_create", payload)
+        self.assertEqual(stale["status"], "NOT_DISPATCHED")
+        self.assertIsNone(stale["readback"]["unit"])
+        self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
+        self.assertEqual(app.auto_bridge.mock_calls, [])
+
+    def test_native_unit_tools_wire_rejection_and_visibility(self):
+        server, fixture, projection, request = self._unit_fixture()
+        for name in ("swarm_unit_prepare", "swarm_unit_create"):
+            spec = next(tool for tool in mcp.TOOLS if tool["name"] == name)
+            self.assertEqual(spec["_meta"]["ui"]["visibility"], ["app"])
+            self.assertEqual(spec["annotations"]["readOnlyHint"], name == "swarm_unit_prepare")
+        request["coordinator_role"]["version"] = "builtin:stale"
+        wire = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "swarm_unit_prepare", "arguments": request}}
+        with patch.object(mcp.SwarmProjection, "_load_app", return_value=projection._app), \
+             patch.object(projection._app, "_auto_scope"), \
+             patch.object(sys, "stdin", io.StringIO(json.dumps(wire))), \
+             patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+            mcp.serve(telemetry_path=fixture.root / "unit-wire.jsonl")
+        result = json.loads(output.getvalue())["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["structuredContent"]["state"], "CONFLICT")
+        self.assertNotIn(request["objective"], (fixture.root / "unit-wire.jsonl").read_text())
+
+    def test_ticket_read_failure_is_not_reported_as_failed_save(self):
+        sys.path.insert(0, str(mcp.REPO_ROOT))
+        from console.server import ConsoleError
+        projection = mcp.SwarmProjection()
+        app = Mock()
+        projection._app = app
+        read = {"operation": "read", "project_id": "project:alpha"}
+        for reason in ("work assignment requires its exact acceptance contract", "private/path: malformed record"):
+            with self.subTest(reason=reason):
+                app.project_ticket_command.side_effect = ConsoleError(reason)
+                result = projection.call("swarm_project_tickets", read)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["code"], "TICKET_READ_FAILED")
+                self.assertIn("could not be read", result["message"])
+                self.assertIn("not been changed", result["message"])
+                self.assertNotIn("saved", result["message"])
+                self.assertNotIn(reason, json.dumps(result))
+        write = {**read, "operation": "update", "expected_digest": "sha256:" + "0" * 64,
+                 "acknowledge": True, "collection": "tasks", "record_id": "task-a", "changes": {"label": "Task"}}
+        result = projection.call("swarm_project_tickets", write)
+        self.assertEqual(result["code"], "TICKET_REJECTED")
+        self.assertIn("could not be saved", result["message"])
+
+    def test_current_milestone_compaction_preserves_exact_basis_without_borrowing_project_progress(self):
+        milestone = {"state": "KNOWN", "reason": None, "name": "Milestone", "source": "ledger_active_task_manifest",
+            "cursor": {"event_seq": 3}, "milestone_id": "m", "task_id": "t", "project_id": "p", "ctrl_id": "c",
+            "scope_version": 1, "manifest_identity": {"manifest_digest": "a" * 64}, "event_cursor": {"event_seq": 2},
+            "observed_at_ms": 100, "as_of_ms": 1000, "freshness": "CURRENT",
+            "measurement": {"state": "KNOWN", "percent": 25},
+            "estimate": {"state": "KNOWN", "minutes": 60, "deadline_ms": None}, "private": "not-public"}
+        result = mcp._compact_progress_scope({"scope": {"project_id": "p"}, "progress": 99, "current_milestone": milestone})
+        self.assertEqual(result["current_milestone"], {k: v for k, v in milestone.items() if k != "private"})
+        self.assertEqual(result["current_milestone"]["measurement"]["percent"], 25)
+        unknown = {"state": "UNKNOWN", "reason": "STALE_MILESTONE", "name": None, "cursor": {"event_seq": 3}}
+        result = mcp._compact_progress_scope({"progress": 99, "current_milestone": unknown})
+        self.assertEqual(result["current_milestone"], unknown)
+        self.assertNotIn("measurement", result["current_milestone"])
+
+    def test_native_role_variants_preserve_exact_readback_without_admitting_media(self):
+        variants = [{"id": "command", "asset_digest": "a" * 64, "structural_roles": ["CTRL"]}]
+        role = {"id": "producer", "active_version": "builtin:exact", "avatar_variants": variants,
+                "avatar": {"url": "https://unadmitted.example/private.png"}, "versions": ["private"]}
+        value = mcp._native_roles({"cursor": {"event_seq": 1}, "roles": [role]})
+        self.assertEqual(value["roles"][0]["avatar_variants"], variants)
+        self.assertIsNone(value["roles"][0]["avatar"])
+        self.assertNotIn("private", json.dumps(value))
+
+    def test_native_role_media_uses_exact_canonical_inventory_and_withholds_invalid_bytes(self):
+        import base64
+        import copy
+        sys.path.insert(0, str(ROOT))
+        from runtime.progress_events import load_builtin_role_avatar_assets
+        assets = load_builtin_role_avatar_assets(ROOT / "assets" / "role-avatars")
+        roles = [{"id": role_id, "name": role_id, "active_version": "builtin:fixture",
+                  "avatar_asset_digest": item["source"]["sha256"]} for role_id, item in assets.items()]
+        projection = {"cursor": {"event_seq": 1}, "roles": roles}
+        with patch.object(mcp, "_projects_asset", side_effect=AssertionError("list is icon-only")):
+            roster = mcp._native_roles(projection, assets)
+        self.assertEqual(len(roster["roles"]), 24)
+        self.assertTrue(all(row["avatar"] is None and row["avatar_choices"] == [] for row in roster["roles"]))
+        bridge = mcp.SwarmProjection()
+        bridge._app = Mock(builtin_role_avatar_assets=assets)
+        bridge._app.role_manifest_projection.return_value = projection
+        for selected in roles:
+            value = bridge.call("swarm_role_read", {"role_id": selected["id"]})
+            self.assertEqual(value["cursor"], projection["cursor"])
+            self.assertEqual(len(value["roles"]), 1)
+            role = value["roles"][0]
+            avatar = role["avatar"]
+            self.assertEqual(avatar["digest"], role["avatar_asset_digest"])
+            self.assertEqual(avatar["manifest_version"], role["active_version"])
+            self.assertEqual(avatar["role_id"], role["id"])
+            self.assertEqual((avatar["width"], avatar["height"]), (256, 256))
+            self.assertEqual(avatar["media_type"], "image/webp")
+            self.assertEqual(role["avatar_choices"], [{key: avatar[key] for key in ("id", "label", "role_id", "manifest_version", "digest")}])
+            raw = base64.b64decode(avatar["url"].removeprefix("data:image/webp;base64,"), validate=True)
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), avatar["render_digest"])
+            self.assertEqual(avatar["render_digest"], assets[role["id"]]["derivatives"][(256, "webp")]["sha256"])
+            self.assertLess(len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()), 262144)
+        wires = [{"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": {
+            "name": "swarm_role_read", "arguments": args}} for i, args in enumerate([{}] + [{"role_id": r["id"]} for r in roles])]
+        # The actual serve() size gate must accept the roster and every selected detail.
+        with patch.object(mcp.SwarmProjection, "_load_app", return_value=bridge._app), \
+             patch.object(mcp, "_telemetry"), patch.object(sys, "stdin", io.StringIO("\n".join(map(json.dumps, wires)))), \
+             patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(mcp.serve(), 0)
+        results = [json.loads(line)["result"] for line in output.getvalue().splitlines()]
+        self.assertEqual(len(results), 25)
+        self.assertTrue(all(result["isError"] is False for result in results))
+        self.assertEqual(results[0]["structuredContent"], roster)
+        for result in results[1:]:
+            self.assertEqual(len(result["structuredContent"]["roles"]), 1)
+        selected = roles[0]
+        foreign = {**selected, "avatar_asset_digest": "a" * 64}
+        read = mcp._native_roles({"cursor": {}, "roles": [foreign]}, assets, selected["id"])["roles"][0]
+        self.assertIsNone(read["avatar"], "never display canonical media as a different retained selection")
+        self.assertEqual(read["avatar_choices"][0]["digest"], selected["avatar_asset_digest"])
+        with patch.object(mcp, "_projects_asset", side_effect=mcp.MCPError("changed bytes")):
+            withheld = mcp._native_roles(projection, assets, selected["id"])
+        self.assertTrue(all(row["avatar"] is None and row["avatar_choices"] == [] for row in withheld["roles"]))
+        for change in ({"path": "../../private.webp"}, {"bytes": 32769}, {"format": "svg"}, {"sha256": "unknown"}):
+            bad = copy.deepcopy(assets)
+            bad[selected["id"]]["derivatives"][(256, "webp")].update(change)
+            with patch.object(mcp, "_projects_asset") as reader:
+                self.assertEqual(mcp._native_role_choices(selected, bad), [])
+                reader.assert_not_called()
+        for role_id in ("unadmitted-custom", "../producer", "Producer", "critic"):
+            with self.subTest(role_id=role_id), self.assertRaises(mcp.MCPError):
+                bridge.call("swarm_role_read", {"role_id": role_id})
+            self.assertEqual(mcp._native_role_choices({**selected, "id": role_id}, assets), [])
+        with self.assertRaises(mcp.MCPError):
+            mcp._native_roles({"cursor": {}, "roles": [selected, selected]}, assets, selected["id"])
+        self.assertEqual(bridge._app.role_manifest_command.mock_calls, [])
+
+    def test_native_usage_call_refreshes_samples_and_restarts_through_real_app(self):
+        sys.path.insert(0, str(mcp.REPO_ROOT))
+        from console import server
+        from console.tests.test_console import SwarmConsoleTests
+        fixture = SwarmConsoleTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        bridge = Mock()
+        projection = mcp.SwarmProjection()
+        projection._app = server.App(fixture.codex_home, fixture.config, auto_bridge=bridge)
+        now = int(server.time.time()) // 60 * 60
+        view = {"nodes": [{"id": "a", "title": "Alpha", "project_id": "project:alpha", "tokens": 100},
+                          {"id": "b", "title": "Beta", "project_id": "project:beta", "tokens": 200}], "links": []}
+        with patch.object(server, "build_overview", return_value=view), \
+             patch.object(server, "observation_fingerprint", return_value="baseline") as fingerprint, \
+             patch.object(server, "_codex_jsonl_token_counts", return_value={}) as scan, \
+             patch.object(server.time, "time", return_value=now) as clock, \
+             patch.object(server.App, "observe_once", side_effect=AssertionError("no observer")), \
+             patch.object(server.App, "evaluate_auto_once", side_effect=AssertionError("no Auto")):
+            first = projection.call("swarm_usage", {"project_id": "project:alpha", "hours": 1})
+            self.assertEqual(first["status"], "no_data")
+            self.assertEqual(first["dashboard"]["scope"], first["scope"])
+            self.assertEqual(first["dashboard"]["window"], {k: first["window"][k] for k in ("after_ms", "before_ms")})
+            self.assertEqual(first["dashboard"]["counters"]["active_agents"]["state"], "UNKNOWN", "missing host observation is not zero")
+            self.assertEqual(first["items"], [])
+            projection._app = server.App(fixture.codex_home, fixture.config, auto_bridge=bridge)
+            again = projection.call("swarm_usage", {"hours": 1})
+            self.assertEqual(again["status"], "no_data")
+            self.assertEqual(scan.call_count, 1, "restart reuses the retained bucket")
+            clock.return_value = now + 60
+            fingerprint.return_value = "advanced"
+            view["nodes"][0]["tokens"] = 125
+            view["nodes"][1]["tokens"] = 210
+            alpha = projection.call("swarm_usage", {"project_id": "project:alpha", "hours": 1})
+            total = projection.call("swarm_usage", {"hours": 1})
+            self.assertEqual(alpha["total_tokens"], 25)
+            self.assertEqual(total["total_tokens"], 35, "project reads preserve global sampling coverage")
+            self.assertEqual(scan.call_count, 2)
+            self.assertEqual(alpha["scope"], {"type": "project", "project_id": "project:alpha"})
+            with self.assertRaises(server.ConsoleError):
+                projection.call("swarm_usage", {"project_id": "foreign", "hours": 1})
+            self.assertEqual(scan.call_count, 2)
+            self.assertEqual(bridge.mock_calls, [])
+
+    def test_native_hives_keep_exact_project_ctrl_unit_and_snapshot_identity(self):
+        def agent(identity, project="p", ctrl="ctrl", role="DOER", parent="KNOWN"):
+            return {"id": identity, "project_id": project, "ctrl_id": ctrl, "structural_role": role,
+                "display_name": identity, "parent_relation": {"state": parent},
+                "hierarchy_membership": "BOUND", "manifest_identity": {"manifest_digest": identity},
+                "private_path": "SECRET", "progress": 100}
+        root = agent("ctrl", role="CTRL", parent="ROOT")
+        unit = agent("unit")
+        unit["work_unit"] = {"kind": "LAB", "goal_id": "goal", "parent_goal_id": "parent", "parent_unit_task_id": None}
+        foreign = agent("foreign", project="other")
+        sibling = agent("sibling", ctrl="other-ctrl")
+        orphan = agent("orphan", parent="UNKNOWN")
+        invalid = agent("invalid")
+        invalid["hierarchy_membership"] = "INVALID"
+        independent = {"id": "looks-like-ctrl", "title": "CTRL", "node_kind": "independent_host_task"}
+        nodes = [root, unit, foreign, sibling, orphan, invalid]
+        edges = [{"id": f"e-{node['id']}", "source": "ctrl", "target": node["id"]} for node in [unit, foreign, sibling, invalid]]
+        topology = {"state": "PARTIAL", "cursor": {"digest": "exact", "ledger": {"event_seq": 17}},
+                    "nodes": nodes, "agent_edges": edges, "independent_nodes": [independent]}
+        app = Mock()
+        app.overview.return_value = {"topology": topology}
+        projection = mcp.SwarmProjection()
+        projection._app = app
+        before = json.dumps(topology, sort_keys=True)
+        result = projection.call("swarm_status", {"project_id": "p"})["hives"]
+        app.overview.assert_called_once_with("p")
+        self.assertEqual(result["cursor"], topology["cursor"])
+        self.assertEqual(result["state"], "PARTIAL")
+        self.assertTrue(result["read_only"])
+        self.assertFalse(result["execution_authority"])
+        self.assertEqual(len(result["items"]), 1)
+        hive = result["items"][0]
+        self.assertEqual((hive["project_id"], hive["ctrl_id"]), ("p", "ctrl"))
+        self.assertEqual([row["id"] for row in hive["agents"]], ["ctrl", "unit"])
+        self.assertEqual(hive["units"], [{"task_id": "unit", "project_id": "p", "ctrl_id": "ctrl",
+            "manifest_identity": unit["manifest_identity"], "work_unit": unit["work_unit"]}])
+        self.assertEqual(hive["agent_edges"], [edges[0]])
+        self.assertNotIn("SECRET", json.dumps(result))
+        self.assertNotIn('"progress"', json.dumps(result))
+        self.assertEqual(json.dumps(topology, sort_keys=True), before)
+        self.assertEqual(mcp._compact_hives(json.loads(before)), result)
+
+    def test_native_hives_withhold_missing_ambiguous_or_unbound_topology(self):
+        for value in (None, {}, {"cursor": None}, {"state": "KNOWN", "cursor": {}, "nodes": [{"id": "x"}, {"id": "x"}]},
+                      {"state": "KNOWN", "cursor": {}, "nodes": [{}] * 257}):
+            with self.subTest(value=value):
+                result = mcp._compact_hives(value)
+                self.assertEqual(result["state"], "UNKNOWN")
+                self.assertEqual(result["items"], [])
+        self.assertEqual(mcp._compact_hives({"state": "EMPTY", "cursor": {"digest": "empty"},
+            "nodes": [], "agent_edges": []})["items"], [])
+        observed_only = mcp._compact_hives({"state": "KNOWN", "cursor": {"digest": "observed"},
+            "nodes": [], "agent_edges": [], "independent_count": 3})
+        self.assertEqual((observed_only["state"], observed_only["reason"], observed_only["items"]),
+                         ("UNKNOWN", "NO_BOUND_CTRL", []))
+
+    def test_native_hives_malformed_fields_fail_closed_through_production_status(self):
+        node = {"id": "ctrl", "project_id": "p", "ctrl_id": "ctrl", "structural_role": "CTRL",
+                "parent_relation": {"state": "ROOT"}}
+        cases = [{"state": ["KNOWN"], "nodes": [node]},
+                 {"state": "KNOWN", "nodes": [{**node, "parent_relation": None}]},
+                 {"state": "KNOWN", "nodes": [node], "agent_edges": [{"id": "e", "source": [], "target": "ctrl"}]},
+                 {"state": "KNOWN", "nodes": [{**node, "structural_role": ["CTRL"]}]},
+                 {"state": "KNOWN", "nodes": [{**node, "id": []}]},
+                 {"state": "KNOWN", "nodes": [node], "agent_edges": [None]}]
+        app = Mock()
+        projection = mcp.SwarmProjection()
+        projection._app = app
+        for case in cases:
+            with self.subTest(case=case):
+                app.overview.return_value = {"topology": {"cursor": {"digest": "bound"}, **case}}
+                result = projection.call("swarm_status", {"project_id": "p"})
+                self.assertEqual(result["hives"]["state"], "UNKNOWN")
+                self.assertEqual(result["hives"]["items"], [])
+
     def test_execution_binding_tool_schema_is_closed_and_not_a_dispatch_tool(self):
         specs = [tool for tool in mcp.TOOLS if tool["name"] == "swarm_project_ticket_execution"]
         self.assertEqual(len(specs), 1)
         spec = specs[0]
         self.assertEqual(spec["_meta"]["ui"]["visibility"], ["model", "app"])
-        self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "bind"])
+        self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "bind", "estimate_read", "estimate"])
         self.assertFalse(spec["inputSchema"]["additionalProperties"])
         read = {"operation": "read", "project_id": "project:alpha", "record_id": "ticket-goal"}
         mcp._validate_arguments(spec, read)
@@ -44,6 +410,26 @@ class SwarmMCPTests(unittest.TestCase):
                         {"acknowledge": False}):
             with self.subTest(changes=changes), self.assertRaises(mcp.MCPError):
                 mcp._validate_arguments(spec, {**read, **changes})
+
+    def test_ticket_estimate_schema_and_existing_dispatch_keep_exact_request(self):
+        import threading
+        from types import SimpleNamespace
+        spec = next(t for t in mcp.TOOLS if t["name"] == "swarm_project_ticket_execution")
+        request = {"operation": "estimate", "project_id": "project:alpha", "record_id": "ticket", "reference_id": "ref",
+            "operation_id": "estimate-1", "expected_ledger_revision": 7, "expected_estimate_revision": 0,
+            "acknowledge": True, "actor": "User label", "reason": "Refined scope",
+            "estimate": {"estimate_minutes": 60, "remaining_minutes": 30, "original_target_ms": None}}
+        mcp._validate_arguments(spec, request)
+        for changes in ({"expected_estimate_revision": True}, {"actor": ""}, {"estimate": []}, {"completed": True}):
+            with self.subTest(changes=changes), self.assertRaises(mcp.MCPError):
+                mcp._validate_arguments(spec, {**request, **changes})
+        dispatch = Mock(return_value={"ok": True, "status": "APPENDED", "operation": "estimate"})
+        app = SimpleNamespace(write_lock=threading.RLock(), project_ticket_execution_command=dispatch)
+        projection = mcp.SwarmProjection()
+        with patch.object(projection, "_load_app", return_value=app):
+            result = projection.call("swarm_project_ticket_execution", request)
+        self.assertEqual(result["status"], "APPENDED")
+        dispatch.assert_called_once_with(request)
 
     def test_model_ticket_discovery_and_wire_commands_keep_existing_authority(self):
         sys.path.insert(0, str(mcp.REPO_ROOT))
@@ -73,7 +459,7 @@ class SwarmMCPTests(unittest.TestCase):
         spec = next(t for t in tools if t["name"] == "swarm_project_tickets")
         self.assertEqual(spec["_meta"]["ui"]["visibility"], ["model", "app"])
         self.assertEqual(sum(t["name"] == spec["name"] for t in tools), 1)
-        self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "create", "update", "migrate_legacy"])
+        self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "create", "update", "migrate_legacy", "allocate_ids"])
         for tool in tools:
             if tool["name"] in {"swarm_role_read", "swarm_role_save", "swarm_library_read", "swarm_flow_save", "swarm_flow_assign",
                                 "swarm_settings_read", "swarm_settings_save"}:
@@ -290,15 +676,22 @@ class SwarmMCPTests(unittest.TestCase):
         self.assertEqual(len(current["roles"]), 24)
         self.assertEqual(retained(), before)
         self.assertNotIn("critic", {r["id"] for r in current["roles"]})
-        role = next(r for r in current["roles"] if r["id"] == "producer")
-        # An HTTP-admitted avatar is not automatically native-app renderable.
+        self.assertTrue(all(r["avatar"] is None for r in current["roles"]))
+        detail = projection.call("swarm_role_read", {"role_id": "producer"})
+        self.assertEqual(detail["cursor"], current["cursor"])
+        role = detail["roles"][0]
+        # Native media is independently revalidated and bound to this active role version.
         server_role = next(r for r in projection._app.role_manifest_projection()["roles"] if r["id"] == role["id"])
         self.assertEqual(server_role["avatar"]["state"], "AVAILABLE")
         self.assertEqual(role["avatar_asset_digest"], server_role["avatar_asset_digest"])
-        self.assertIsNone(role["avatar"])
+        self.assertEqual(role.get("avatar_variants"), server_role.get("avatar_variants"))
+        self.assertEqual(role["avatar"]["state"], "AVAILABLE")
+        self.assertEqual(role["avatar"]["digest"], role["avatar_asset_digest"])
+        self.assertEqual(role["avatar"]["manifest_version"], role["active_version"])
+        self.assertTrue(role["avatar"]["url"].startswith("data:image/webp;base64,"))
         self.assertNotIn("versions", role)
         self.assertNotIn("source_event_ids", role)
-        manifest = {k: role[k] for k in ("name", "purpose", "owns", "instructions", "boundaries", "default_skills", "specializations", "avatar_asset_digest", "accent", "lucide_icon") if k in role}
+        manifest = {k: role[k] for k in ("name", "purpose", "owns", "instructions", "boundaries", "default_skills", "specializations", "avatar_asset_digest", "avatar_variants", "accent", "lucide_icon") if k in role}
         manifest["purpose"] = "Produce an independently checked result."
         request = {"command": "ROLE_MANIFEST_REVISE", "role_id": role["id"], "manifest": manifest,
                    "expected_active_version": role["active_version"], "event_id": "native-role-one",
@@ -308,14 +701,21 @@ class SwarmMCPTests(unittest.TestCase):
         self.assertTrue(saved["ok"])
         updated = next(r for r in saved["roles"] if r["id"] == role["id"])
         self.assertEqual(updated["purpose"], manifest["purpose"])
+        self.assertEqual(updated.get("avatar_variants"), manifest.get("avatar_variants"))
         self.assertEqual(updated["active_version"], saved["receipt"]["active_version"])
         self.assertNotEqual(updated["active_version"], role["active_version"])
+        self.assertIsNone(updated["avatar"])
+        preview = projection.call("swarm_role_read", {"role_id": role["id"]})["roles"][0]["avatar"]
+        self.assertEqual(preview["manifest_version"], updated["active_version"])
+        self.assertEqual(preview["render_digest"], role["avatar"]["render_digest"])
         written = retained()
         projection._app = App(fixture.codex_home, fixture.config, auto_bridge=bridge)
         replay = projection.call("swarm_role_save", request)
         self.assertTrue(replay["ok"])
         self.assertEqual(replay["receipt"]["status"], "unchanged")
         self.assertEqual(replay["roles"], saved["roles"])
+        self.assertEqual(retained(), written)
+        self.assertEqual(projection.call("swarm_role_read", {"role_id": role["id"]})["roles"][0]["avatar"], preview)
         self.assertEqual(retained(), written)
         stale = {**request, "event_id": "native-role-two", "dedupe_key": "native-role-two"}
         self.assertEqual(projection.call("swarm_role_save", stale)["state"], "CONFLICT")
@@ -367,7 +767,8 @@ class SwarmMCPTests(unittest.TestCase):
     def test_native_roles_wire_rejects_invalid_arguments_before_loading_authority(self):
         projection = mcp.SwarmProjection()
         with patch.object(projection, "_load_app", side_effect=AssertionError("must not load")):
-            for name, args in [("swarm_role_read", {"path": "private"}), ("swarm_role_save", {}),
+            for name, args in [("swarm_role_read", {"path": "private"}), ("swarm_role_read", {"role_id": None}),
+                               ("swarm_role_read", {"role_id": " "}), ("swarm_role_save", {}),
                                ("swarm_role_save", {"command": "ROLE_MANIFEST_RESET", "acknowledge": True})]:
                 with self.subTest(name=name, args=args), self.assertRaises(mcp.MCPError):
                     projection.call(name, args)
@@ -456,7 +857,7 @@ class SwarmMCPTests(unittest.TestCase):
         """Exercise the real pinned image admission with an isolated template."""
         names = list(mcp.PROJECTS_ASSETS)
         files = {names[0]: ('<!doctype html><style>__CSS__</style><body>' + body + '<script type="module">__SCRIPT__</script></body>').encode(),
-                 names[1]: b'body{color:black}', names[2]: (mcp.REPO_ROOT / names[2]).read_bytes()}
+                 names[1]: b'body{color:black}'}
         for name, _, digest in mcp.PROJECTS_SUPPORT_IMAGES.values():
             files[name] = (mcp.REPO_ROOT / name).read_bytes()
             self.assertEqual(hashlib.sha256(files[name]).hexdigest(), digest)
@@ -473,8 +874,30 @@ class SwarmMCPTests(unittest.TestCase):
         with patch.object(mcp, 'REPO_ROOT', root), patch.dict(mcp.PROJECTS_ASSETS, pins, clear=True):
             yield mcp.HQApp(path, digest, projects=True)
 
+    def test_original_wordmark_uses_existing_public_delivery(self):
+        expected = ("skills/swarm/assets/swarm-wordmark.png",
+                    "https://flowwweb.com/brand/swarm/swarm-wordmark.png",
+                    "306c1549fa5195e0211d9d062fccdfc1b1241de3eda82c97ed8cb42ecdbcf6d2", 423870)
+        self.assertEqual(mcp.PROJECTS_PUBLIC_IMAGES["__WORDMARK__"], expected)
+        self.assertNotIn("__WORDMARK__", mcp.PROJECTS_SUPPORT_IMAGES)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.support_resource(root, '<img alt="SWARM" src="__WORDMARK__">') as app:
+                before = app.path.read_bytes()
+                resource = app.resource()['contents'][0]
+                self.assertIn('<img alt="SWARM" src="' + expected[1] + '">', resource['text'])
+                self.assertNotIn('data:image/webp', resource['text'])
+                self.assertEqual(app.path.read_bytes(), before)
+                self.assertEqual(hashlib.sha256((root / expected[0]).read_bytes()).hexdigest(), expected[2])
+                (root / expected[0]).write_bytes(b'changed')
+                with self.assertRaises(mcp.MCPError):
+                    app.resource()
+
     def test_support_exact_images_admitted_without_snapshot_write(self):
         import base64
+        self.assertEqual(mcp.PROJECTS_SUPPORT_IMAGES["__PROFILE_MASCOT__"],
+                         ("console/static/swarm-mascot-512.png", "image/png",
+                          "247fc2a02b5505c13815d78c4cce8765b893f51b70cf9167d1e2d43350209666"))
         self.assertEqual(mcp.PROJECTS_SUPPORT_IMAGES["__FLOWWWEB_LOGO_DARK__"],
                          ("skills/swarm/assets/ui/brand/flowwweb-lockup-v2-dark.svg", "image/svg+xml",
                           "cbc1bb458ab73cf7ac89972e7f087ae93a9a65902b1a4926b05484eaa90e9a11"))
@@ -597,7 +1020,7 @@ class SwarmMCPTests(unittest.TestCase):
             rendered = app.render()
             self.assertIn('id="all-projects"', rendered)
             self.assertIn('id="settings"', rendered)
-            self.assertIn('data:image/png;base64,', rendered)
+            self.assertIn(mcp.PROJECTS_PUBLIC_IMAGES['__WORDMARK__'][1], rendered)
             self.assertNotIn('__WORDMARK__', rendered)
             self.assertNotIn('__SCRIPT__', rendered)
             self.assertEqual(rendered.count('data-swarm-mcp-sdk='), 1)
@@ -711,8 +1134,8 @@ class SwarmMCPTests(unittest.TestCase):
                 self.assertEqual(mcp.serve(hq_app=app), 0)
             rows = [json.loads(line) for line in output.getvalue().splitlines()]
             self.assertIn("resources", rows[0]["result"]["capabilities"])
-            self.assertEqual(rows[1]["result"]["tools"][:12], list(mcp.TOOLS))
-            self.assertEqual(len(rows[1]["result"]["tools"]), 13)
+            self.assertEqual(rows[1]["result"]["tools"][:14], list(mcp.TOOLS))
+            self.assertEqual(len(rows[1]["result"]["tools"]), 15)
             tool = rows[1]["result"]["tools"][-1]
             self.assertEqual(tool["name"], "swarm_hq_view")
             self.assertEqual(tool["_meta"], {"ui": {"resourceUri": app.uri}, "openai/ui": {"entrypoints": [{"type": "global"}, {"type": "thread"}]}})
@@ -795,9 +1218,13 @@ class SwarmMCPTests(unittest.TestCase):
         self.assertEqual(roster["current_work"]["controllers"], [{"id": "ctrl"}])
         self.assertEqual(projection.call("swarm_usage", {})["coverage"], "local")
         app.usage_history.assert_called_once_with(hours=24, include_verified_yield=False)
+        self.assertEqual(app.refresh_native_observation.call_args_list,
+                         [unittest.mock.call(), unittest.mock.call(), unittest.mock.call(sample_usage=True)])
+        app.refresh_native_observation.reset_mock()
         for name, arguments in [("unknown", {}), ("swarm_status", {"project_id": ""}), ("swarm_status", {"project_id": None}), ("swarm_usage", {"hours": True}), ("swarm_usage", {"hours": 2}), ("swarm_projects", {"unexpected": 1})]:
             with self.subTest(name=name, arguments=arguments), self.assertRaises(mcp.MCPError):
                 projection.call(name, arguments)
+        app.refresh_native_observation.assert_not_called()
 
     def test_compact_roster_preserves_observation_without_paths_or_icon_authority(self):
         row = {"id": "p", "name": "Saved project", "activity_status": "unknown",
@@ -834,7 +1261,7 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertTrue(rows[7]["result"]["isError"])
             self.assertFalse(rows[8]["result"]["isError"])
             self.assertFalse(rows[9]["result"]["isError"])
-            self.assertEqual(len(rows[-1]["result"]["tools"]), 12)
+            self.assertEqual(len(rows[-1]["result"]["tools"]), 14)
             self.assertNotIn("SECRET", output.getvalue() + telemetry.read_text())
 
     def test_output_cap_and_scratch_validation(self) -> None:

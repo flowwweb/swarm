@@ -12,7 +12,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 
@@ -455,6 +455,7 @@ def mutate_project_brief(
     record_id: str,
     changes: Mapping[str, Any],
     updated_at: str,
+    verify_current_scope: Callable[[], Any] | None = None,
 ) -> str:
     """Persist create/update/reopen; a process restart only reparses these bytes."""
     with _brief_update_lock(path):
@@ -466,6 +467,7 @@ def mutate_project_brief(
             record_id=record_id,
             changes=changes,
             updated_at=updated_at,
+            verify_current_scope=verify_current_scope,
         )
 
 
@@ -478,6 +480,7 @@ def _mutate_project_brief(
     record_id: str,
     changes: Mapping[str, Any],
     updated_at: str,
+    verify_current_scope: Callable[[], Any] | None = None,
 ) -> str:
     text, document, _ = _read_brief_for_edit(path, expected_digest)
     if collection in {"flow_definitions", "flow_assignments"}:
@@ -491,6 +494,8 @@ def _mutate_project_brief(
         if definition["version"] != max(versions, default=0) + 1:
             raise ProjectModelError("Flow version must follow the last retained version")
         retained.append(definition)
+        if verify_current_scope is not None:
+            verify_current_scope()
         return _write_project_brief(path, text, document, updated_at)
     if collection not in _LIFECYCLE_COLLECTIONS:
         raise ProjectModelError("project brief collection is not editable")
@@ -781,6 +786,39 @@ def read_project_tickets(path: Path, *, project_ids: Any) -> dict[str, Any]:
     _, document, digest = _read_brief_for_edit(path, "", compare=False)
     _require_ticket_project(document, project_ids)
     return _ticket_result(document, digest)
+
+
+def allocate_project_ticket_ids(path: Path, *, expected_digest: str, project_ids: Any,
+                               registry: Any, project_id: str, root_digest: str) -> dict[str, Any]:
+    """Explicitly number retained typed records without rewriting their source or history."""
+    with _brief_update_lock(path):
+        _, document, digest = _read_brief_for_edit(path, expected_digest)
+        _require_ticket_project(document, project_ids)
+        result = _ticket_result(document, digest)
+        _, records = _ticket_index(document)
+        projection = registry.replay()
+        identity = projection["ticket_identities"].get(project_id)
+        if identity is None:
+            raise ProjectModelError("PROJECT_CODE_REQUIRED: choose a project code")
+        retained = registry.brief_ticket_display_ids(projection, project_id, root_digest)
+        for binding in identity.get("brief_records", {}).values():
+            if binding["record_id"] in records and binding["root_digest"] != root_digest:
+                raise ProjectModelError("retained ticket root conflict")
+        for record_id, (kind, _) in records.items():
+            if record_id in retained and retained[record_id]["kind"] != kind:
+                raise ProjectModelError("retained ticket kind conflict")
+        allocated = []
+        for record_id, (kind, record) in sorted(records.items()):
+            if record_id in retained:
+                continue
+            request_digest = _digest({"operation": "allocate_ids", "project_id": project_id,
+                "root_digest": root_digest, "source_digest": digest, "kind": kind, "record_id": record_id})
+            registry.reserve_brief_ticket_id(project_id=project_id, kind=kind, record_id=record_id,
+                root_digest=root_digest, source_digest=digest, request_digest=request_digest,
+                record_digest=_digest(record))
+            allocated.append(record_id)
+        _read_brief_for_edit(path, digest)  # A foreign writer cannot turn a stale source into success.
+        return {**result, "allocated_ids": allocated, "replayed": not allocated}
 
 
 def mutate_project_tickets(

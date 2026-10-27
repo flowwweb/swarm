@@ -329,6 +329,47 @@ class CodexAppServerTransport(Protocol):
 
     def reconcile(self, command_id: str, action: str, target_thread_id: str) -> Mapping[str, object] | None: ...
 
+    # Optional host-owned admission of independently reviewed invocation evidence,
+    # never a field asserted by an App Server response or an HTTP caller.
+    def verify_pre_turn_non_delivery(self, evidence: Mapping[str, object], command_digest: str) -> bool: ...
+
+
+@dataclass(frozen=True)
+class HQAppTaskObservation:
+    """Safe host evidence, not a caller claim or an App Server wire response."""
+
+    evidence_digest: str
+    command_digest: str
+    payload_digest: str
+    thread_id: str
+    previous_turn_id: str
+    turn_id: str
+    cwd: str
+    observed_at_ms: int
+
+    def __post_init__(self) -> None:
+        for name in ("evidence_digest", "command_digest", "payload_digest"):
+            object.__setattr__(self, name, _digest(getattr(self, name), name))
+        for name in ("thread_id", "previous_turn_id", "turn_id", "cwd"):
+            _text(getattr(self, name), name)
+        if type(self.observed_at_ms) is not int or self.observed_at_ms < 0:
+            raise InvariantError("app task observation requires a host timestamp")
+
+
+class CodexAppTaskTransport(Protocol):
+    """Injected app capability; never launch a standalone process or override settings.
+
+    The verifier must bind retained tool invocation/read evidence to the exact
+    command, original UTF-8 input and pre-send turn. A summary or threadId-only
+    send acknowledgement is insufficient. Observation never resends.
+    """
+
+    def send_message_to_thread(self, *, thread_id: str, prompt: str) -> object: ...
+
+    def observe_command(self, envelope: HQCommandEnvelope) -> HQAppTaskObservation | None: ...
+
+    def verify_observation(self, observation: HQAppTaskObservation, envelope: HQCommandEnvelope) -> bool: ...
+
 
 @dataclass(frozen=True)
 class HQConnectorResult:
@@ -512,6 +553,8 @@ class UniversalHQConnector:
         receipts = self._receipts(command)
         terminal = receipts[-1] if receipts and str(receipts[-1].get("status") or "") in {"RESULT", "RECONCILED_NOT_DELIVERED", "UNSUPPORTED"} else None
         if terminal is not None:
+            if terminal.get("non_delivery_evidence") is not None:
+                return HQConnectorResult("NOT_DELIVERED", str(terminal["command_digest"]), attention="PRE_TURN_NOT_DELIVERED")
             if terminal["status"] == "RESULT" and (envelope.task_creation_contract() is not None or terminal_handoff is not None):
                 completed = self._append_complete(
                     envelope, ledger, now_ms=int(terminal["observed_at_ms"]),
@@ -531,6 +574,9 @@ class UniversalHQConnector:
         unresolved = receipts[-1] if receipts and str(receipts[-1].get("status") or "") == "DISPATCHED_UNRESOLVED" else None
         ack = next((item for item in reversed(receipts) if str(item.get("status") or "") == "ACKNOWLEDGED"), None)
         known_thread = str(ack.get("thread_id") or "") if ack else envelope.target_thread_id
+        if self.adapter.task_transport is not None:
+            return self._observe_app_task(envelope, ledger, now_ms=now_ms,
+                ack=ack, result_index=max(2, len(receipts)), terminal_handoff=terminal_handoff)
         try:
             response = self.adapter.reconcile(envelope, thread_id=known_thread)
         except Exception:
@@ -538,6 +584,31 @@ class UniversalHQConnector:
         if response is None:
             return HQConnectorResult("PENDING", envelope.digest, known_thread, attention="HOST_OUTCOME_PENDING")
         body = response.get("result") if isinstance(response.get("result"), Mapping) else response
+        if isinstance(body, Mapping) and "non_delivery_evidence" in body:
+            evidence = body["non_delivery_evidence"]
+            expected = {key: getattr(envelope, key) for key in (
+                "command_id", "idempotency_key", "payload_digest", "project_id", "root_digest", "target_thread_id")}
+            expected.update(command_digest=envelope.digest, phase="BEFORE_TURN_SUBMISSION", turn_submitted=False)
+            verifier = getattr(self.adapter.transport, "verify_pre_turn_non_delivery", None)
+            try:
+                if (envelope.action is not HQCommandAction.TASK or len(receipts) != 1 or receipts[0]["status"] != "COMMAND"
+                        or set(body) != {"non_delivery_evidence"} or not isinstance(evidence, Mapping)
+                        or set(evidence) != set(expected) | {"evidence_digest", "review_digest"}
+                        or any(evidence[key] != value for key, value in expected.items())
+                        or evidence["turn_submitted"] is not False or not callable(verifier)):
+                    raise InvariantError("pre-turn evidence does not bind the retained command")
+                for key in ("evidence_digest", "review_digest"):
+                    _digest(evidence[key], key)
+                evidence = dict(evidence)
+                if verifier(dict(evidence), envelope.digest) is not True:
+                    raise InvariantError("host did not admit pre-turn evidence")
+            except Exception:
+                return HQConnectorResult("ATTENTION", envelope.digest, attention="PRE_TURN_EVIDENCE_REJECTED")
+            receipt = self._receipt(envelope, receipt_id=f"{envelope.command_id}-not-delivered", index=1,
+                status="RECONCILED_NOT_DELIVERED", observed_at_ms=now_ms)
+            receipt["non_delivery_evidence"] = dict(evidence)
+            ledger.append_connector_receipt(receipt)
+            return HQConnectorResult("NOT_DELIVERED", envelope.digest, attention="PRE_TURN_NOT_DELIVERED")
         if unresolved is not None and isinstance(body, Mapping) and body.get("delivered") is False:
             thread_id, _, verified_root_digest = self._require_root_bound_thread(response, envelope, thread_id=known_thread)
             ledger.append_connector_receipt(self._receipt(
@@ -562,6 +633,36 @@ class UniversalHQConnector:
             observed_root_digest=verified_root_digest, ack_exists=ack is not None,
             result_index=max(2, len(receipts)), terminal_handoff=terminal_handoff,
         )
+
+    def _observe_app_task(self, envelope: HQCommandEnvelope, ledger: object, *, now_ms: int,
+                          ack: Mapping[str, object] | None = None, result_index: int = 2,
+                          terminal_handoff: Mapping[str, object] | None = None) -> HQConnectorResult:
+        transport = self.adapter.task_transport
+        if transport is None or not self.adapter.plan_hq(envelope).ready:
+            return HQConnectorResult("PENDING", envelope.digest, attention="APP_TASK_CAPABILITY_UNAVAILABLE")
+        try:
+            observation = transport.observe_command(envelope)
+            if observation is None:
+                return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
+                                         attention="APP_TASK_EVIDENCE_PENDING")
+            if (not isinstance(observation, HQAppTaskObservation)
+                    or observation.command_digest != envelope.digest
+                    or observation.payload_digest != envelope.payload_digest
+                    or observation.thread_id != envelope.target_thread_id
+                    or observation.turn_id == observation.previous_turn_id
+                    or not envelope.submitted_at_ms <= observation.observed_at_ms <= now_ms
+                    or transport.verify_observation(observation, envelope) is not True):
+                raise InvariantError("app task observation does not bind this submission")
+            verified_root = self._verify_cwd_root(envelope, observation.cwd)
+            if ack is not None and (ack["thread_id"], ack["observed_root_digest"]) != (observation.thread_id, verified_root):
+                raise InvariantError("app task observation conflicts with the retained acknowledgement")
+        except Exception:
+            return HQConnectorResult("ATTENTION", envelope.digest, envelope.target_thread_id,
+                                     attention="APP_TASK_EVIDENCE_REJECTED")
+        return self._append_complete(envelope, ledger, now_ms=now_ms,
+            thread_id=observation.thread_id, turn_id=observation.turn_id,
+            observed_root_digest=verified_root, ack_exists=ack is not None,
+            result_index=result_index, terminal_handoff=terminal_handoff)
 
     def execute(self, envelope: HQCommandEnvelope, authorization: HQAuthorizationReceipt | HQAutoGrant, ledger: object, *, now_ms: int, observed_project_id: str, observed_root_digest: str, terminal_handoff: Mapping[str, object] | None = None) -> HQConnectorResult:
         if not isinstance(envelope, HQCommandEnvelope):
@@ -601,6 +702,16 @@ class UniversalHQConnector:
         if not plan.ready:
             ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-unsupported", index=1, status="UNSUPPORTED", observed_at_ms=now_ms))
             return HQConnectorResult("UNSUPPORTED", envelope.digest)
+        if self.adapter.task_transport is not None:
+            try:
+                # Only APPENDED reaches this call. Its return is NOT a turn receipt.
+                # Omit model/thinking; the app preserves the existing task settings.
+                self.adapter.task_transport.send_message_to_thread(
+                    thread_id=envelope.target_thread_id, prompt=material.instruction)
+            except Exception:
+                return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
+                                         attention="APP_TASK_DELIVERY_UNCERTAIN")
+            return self._observe_app_task(envelope, ledger, now_ms=now_ms, terminal_handoff=terminal_handoff)
         first_capability = "thread.start" if envelope.target_intent is HQTargetIntent.NEW_THREAD else "thread.resume"
         try:
             started = self.adapter.dispatch(envelope, material, first_capability, thread_id=envelope.target_thread_id)
@@ -1434,7 +1545,10 @@ class CodexAppServerAdapter(ExecutionAdapter):
 
     ADAPTER_ID = "codex-app-server"
 
-    def __init__(self, *, enabled: bool = True, transport: CodexAppServerTransport | None = None) -> None:
+    def __init__(self, *, enabled: bool = True, transport: CodexAppServerTransport | None = None,
+                 task_transport: CodexAppTaskTransport | None = None) -> None:
+        if transport is not None and task_transport is not None:
+            raise InvariantError("select exactly one host transport; no implicit fallback")
         docs = "official OpenAI Codex App Server protocol"
         matrix = AdapterCapabilityMatrix(
             adapter_id=self.ADAPTER_ID,
@@ -1456,11 +1570,19 @@ class CodexAppServerAdapter(ExecutionAdapter):
         )
         super().__init__(matrix, entrypoint=(), protocol="json-rpc-2.0-jsonl", enabled=enabled)
         self.transport = transport
+        self.task_transport = task_transport
 
     def plan_hq(self, envelope: HQCommandEnvelope) -> AdapterExecutionPlan:
         if not isinstance(envelope, HQCommandEnvelope):
             raise InvariantError("Codex HQ plan requires a typed envelope")
         capabilities, _ = HQ_ACTION_CAPABILITIES[envelope.action]
+        if self.task_transport is not None:
+            if not self.enabled:
+                return AdapterExecutionPlan(AdapterPlanStatus.DISABLED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="app task capability is disabled")
+            if envelope.action is not HQCommandAction.TASK or any(not callable(getattr(self.task_transport, name, None)) for name in (
+                    "send_message_to_thread", "observe_command", "verify_observation")):
+                return AdapterExecutionPlan(AdapterPlanStatus.BLOCKED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="app task capability supports verified existing-thread TASK only")
+            return AdapterExecutionPlan(AdapterPlanStatus.READY, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), (), "codex-app-task-tool")
         if not self.enabled or self.transport is None:
             return AdapterExecutionPlan(AdapterPlanStatus.DISABLED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="Codex App Server adapter is disabled or unavailable")
         unsupported = tuple(capability for capability in capabilities if capability != "local" and self.matrix.state_for(capability) is not AdapterCapabilityState.NATIVE)
