@@ -9,6 +9,8 @@ const require = createRequire(path.join(repo, 'console/package.json'));
 const {chromium} = require('playwright');
 const source = fs.readFileSync(path.join(repo, 'skills/swarm/assets/ui/swarm-settings.js'), 'utf8');
 const css = fs.readFileSync(path.join(repo, 'skills/swarm/assets/ui/swarm-settings.css'), 'utf8');
+// Use the production host palette without importing unrelated full-page layout.
+const theme = fs.readFileSync(path.join(repo, 'skills/swarm/assets/ui/swarm-hq-host.css'), 'utf8').match(/^:root\{[^}]+\}/)[0];
 const legacy = fs.readFileSync(path.join(repo, 'console/static/app.js'), 'utf8');
 // Reuse the production canonical-text editor without copying another TOML editor.
 const editor = legacy.slice(legacy.indexOf('function configTomlLiteral('), legacy.indexOf('function configWriteRequest('));
@@ -16,11 +18,11 @@ const browser = await chromium.launch({headless: true, executablePath: 'C:/Progr
 const evidence = process.env.SWARM_SETTINGS_EVIDENCE;
 let checks = 0;
 try {
-  const page = await browser.newPage({viewport: {width: 1200, height: 960}});
+  const page = await browser.newPage({viewport: {width: 1440, height: 1000}, colorScheme:'dark', hasTouch:true});
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.route('https://swarm-settings.invalid/**', route => route.fulfill({contentType:'text/html',body:'<style>body{margin:0;background:#07131d}</style><main></main>'}));
   await page.goto('https://swarm-settings.invalid/');
-  await page.addStyleTag({content: css});
+  await page.addStyleTag({content: theme + css});
   await page.addScriptTag({content: editor});
   await page.addScriptTag({type: 'module', content: source + `
     const base = {state:'KNOWN', available:true, scope:{type:'global'}, revision:'a'.repeat(64), editable_text:'[execution]\\nfast_mode = true\\nusage_saver = false\\n[models.medium]\\ntask_model = "observed-model"\\ntask_reasoning = "medium"\\n', write_contract:{method:'POST'}, effective_settings:{execution:{usage_profile:'medium',fast_mode:true,usage_saver:false},models:{medium:{task_model:'observed-model',task_reasoning:'medium'}}}, descriptors:['execution.fast_mode','execution.usage_saver','models.medium.task_model','models.medium.task_reasoning'].map(key=>({key,editable:true}))};
@@ -46,6 +48,38 @@ try {
     await window.settings.ready;window.ready=true;
   `});
   await page.waitForFunction(() => window.ready);
+  const switchProof = [];
+  const fast = page.getByLabel('Fast', {exact:true});
+  for (const [name,width,height] of [['desktop',1440,1000],['tablet',834,1112],['mobile',390,844]]) {
+    await page.setViewportSize({width,height});
+    for (const reducedMotion of ['no-preference','reduce']) {
+      await page.emulateMedia({reducedMotion});
+      const geometry = await fast.evaluate(input => {
+        const box=input.getBoundingClientRect(), track=getComputedStyle(input,'::after'), knob=getComputedStyle(input,'::before');
+        return {width:box.width,height:box.height,track:[track.width,track.height,track.top],knob:[knob.width,knob.height,knob.top],overflow:document.documentElement.scrollWidth>innerWidth};
+      });
+      assert.deepEqual(geometry,{width:48,height:44,track:['48px','28px','8px'],knob:['22px','22px','11px'],overflow:false}); checks++;
+      // Exercise the added top/bottom hit area, not just the old visible track.
+      await fast.click({position:{x:24,y:2}});
+      assert.equal(await fast.isChecked(),false); checks++;
+      await fast.tap({position:{x:24,y:42}});
+      assert.equal(await fast.isChecked(),true); checks++;
+      await fast.focus(); await page.keyboard.press('Space');
+      assert.equal(await fast.isChecked(),false); checks++;
+      assert.equal(await fast.evaluate(input=>input===document.activeElement),true); checks++;
+      await page.keyboard.press('Space');
+      assert.equal(await fast.isChecked(),true); checks++;
+      assert.equal(await page.evaluate(()=>window.calls.length),0); checks++;
+      assert.equal(await page.getByRole('button',{name:'Save changes',exact:true}).isDisabled(),true); checks++;
+      switchProof.push({name,reducedMotion,...geometry});
+    }
+    if(evidence){fs.mkdirSync(evidence,{recursive:true});await page.screenshot({path:path.join(evidence,`switch-${name}.png`),fullPage:true});}
+  }
+  await page.emulateMedia({forcedColors:'active'});
+  assert.equal(await fast.evaluate(input=>getComputedStyle(input,'::after').display),'none');checks++;
+  assert.equal(await fast.evaluate(input=>getComputedStyle(input).appearance),'auto');checks++;
+  await page.emulateMedia({forcedColors:'none',reducedMotion:'no-preference'});
+  if(evidence)fs.writeFileSync(path.join(evidence,'SWITCH-GEOMETRY.json'),JSON.stringify(switchProof,null,2));
   assert.equal(await page.getByLabel('Fast', {exact: true}).isChecked(), true); checks++;
   assert.equal(await page.getByLabel('Minimum model', {exact:true}).isDisabled(), true); checks++;
   assert.equal(await page.getByLabel('Maximum model', {exact:true}).isDisabled(), true); checks++;
