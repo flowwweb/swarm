@@ -945,7 +945,7 @@ def _config_section(dotted_path: str) -> str:
         return "Tasks & handoffs"
     if root in {"roles", "professions", "labels"}:
         return "Roles & agents"
-    if root in {"role_icons", "console", "chat_relay"}:
+    if root in {"role_icons", "task_titles", "console", "chat_relay"}:
         return "Interface"
     if root in {"portfolio", "boost", "turbo", "efficiency"}:
         return "Usage"
@@ -957,6 +957,15 @@ def _config_section(dotted_path: str) -> str:
 
 
 def _config_label_help(dotted_path: str) -> tuple[str, str]:
+    if dotted_path.startswith("task_titles."):
+        category, _, setting = dotted_path.split(".", 1)[1].partition("_")
+        label = {"controller": "Controllers", "unit": "Units", "lead": "Leads", "worker": "Workers"}.get(category, category)
+        if setting == "template":
+            return f"{label} · Title", "Use {project}, {unit}, {role}, {responsibility}, or {created:MMM D}. Applies to new tasks; existing titles stay unchanged."
+        return f"{label} · Show emoji", "Add the project or role emoji to new titles. The global emoji opt-out still applies."
+    if dotted_path in {"lifecycle.pin_created_tasks", "lifecycle.pin_created_units", "lifecycle.pin_created_leads", "lifecycle.pin_created_workers"}:
+        category = {"tasks": "Controllers", "units": "Units", "leads": "Leads", "workers": "Workers"}[dotted_path.rsplit("_", 1)[1]]
+        return f"{category} · Pin new tasks", "Request a pin for this category when creating a task. Host authorization is required; existing pins stay unchanged."
     labels = {
         "telemetry.enabled": ("Share SWARM usage with Flowwweb", "Opt in to automatic usage and failure events, model and token counts, and estimated API costs. No conversation text, source code, paths or personal identifiers. Disable anytime; central events expire after 90 days."),
         "automation.mode": ("Auto mode", "Keep eligible SWARM lifecycle actions automatic or require manual confirmation."),

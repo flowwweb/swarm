@@ -26,6 +26,19 @@ review = "🔎"
 fallback = "📋"
 doer_choices = ["🔨", "💻", "✏️", "🎨", "📚", "📊", "🔌", "🧪", "✅", "📝", "🔀", "🚀"]
 
+[task_titles]
+# New-task presentation only. Existing custom titles and pins remain user-owned.
+# Variables: {project}, {unit}, {role}, {responsibility}, {created:MMM D}.
+# Empty middle-dot segments are omitted. Dates require the retained creation date.
+controller_template = "{project}"
+unit_template = "{project} · {unit} · {responsibility}"
+lead_template = "{project} · {role} · {responsibility}"
+worker_template = "{project} · {role} · {responsibility}"
+controller_show_emoji = true
+unit_show_emoji = true
+lead_show_emoji = true
+worker_show_emoji = true
+
 [execution]
 # Select high, medium, or low. Fast mode requests faster Codex service without changing
 # the selected model or reasoning. Host response metadata is required
@@ -357,6 +370,10 @@ stall_after_updates = 2
 # pinned membership and order before archiving a predecessor; other roles and
 # existing user pins remain untouched.
 pin_created_tasks = false
+# Independent new-category pin preferences; never automatic host mutation.
+pin_created_units = false
+pin_created_leads = false
+pin_created_workers = false
 # One global continuity horizon. Expiry records a due handoff at the next safe
 # immutable checkpoint; it never grants successor-CTRL authority.
 task_lifetime_hours = 4

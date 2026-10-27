@@ -9,8 +9,11 @@ import os
 import shutil
 import sys
 import tomllib
+import unicodedata
 from copy import deepcopy
+from datetime import date
 from pathlib import Path
+from string import Formatter
 from typing import Any
 
 
@@ -42,6 +45,16 @@ DEFAULTS: dict[str, Any] = {
             "🔨", "💻", "✏️", "🎨", "📚", "📊",
             "🔌", "🧪", "✅", "📝", "🔀", "🚀",
         ],
+    },
+    "task_titles": {
+        "controller_template": "{project}",
+        "unit_template": "{project} · {unit} · {responsibility}",
+        "lead_template": "{project} · {role} · {responsibility}",
+        "worker_template": "{project} · {role} · {responsibility}",
+        "controller_show_emoji": True,
+        "unit_show_emoji": True,
+        "lead_show_emoji": True,
+        "worker_show_emoji": True,
     },
     "execution": {
         "usage_profile": "medium",
@@ -215,6 +228,9 @@ DEFAULTS: dict[str, Any] = {
     },
     "lifecycle": {
         "pin_created_tasks": False,
+        "pin_created_units": False,
+        "pin_created_leads": False,
+        "pin_created_workers": False,
         "task_lifetime_hours": 4,
     },
     "hygiene": {"no_review_archive_delay": 0, "low_review_retention": 7, "high_review_retention": 30, "stale_task_archive_delay": 1, "completed_task_retention": 30, "pinned_item_policy": "manual"},
@@ -275,6 +291,80 @@ LEGACY_PORTFOLIO_KEYS = {"title_prefix"}
 
 class ConfigError(Exception):
     pass
+
+
+TITLE_CATEGORIES = ("controller", "unit", "lead", "worker")
+TITLE_VARIABLES = ("{project}", "{unit}", "{role}", "{responsibility}", "{created:MMM D}")
+TITLE_PIN_KEYS = dict(zip(TITLE_CATEGORIES, ("pin_created_tasks", "pin_created_units", "pin_created_leads", "pin_created_workers")))
+
+
+def _title_template_parts(template: Any) -> list[tuple[str, str | None, str | None, str | None]]:
+    if (not isinstance(template, str) or not template.strip() or len(template) > 160
+            or any((unicodedata.category(char).startswith("C") and char != "\u200d")
+                   or unicodedata.category(char) in {"Zl", "Zp"} for char in template)):
+        raise ConfigError("task title template must be bounded single-line text")
+    try:
+        parts = list(Formatter().parse(template))
+    except ValueError as exc:
+        raise ConfigError("task title template has invalid braces") from exc
+    for _, field, spec, conversion in parts:
+        if field is not None and (conversion or (field == "created" and spec != "MMM D")
+                or (field != "created" and (field not in {"project", "unit", "role", "responsibility"} or spec))):
+            raise ConfigError("task title template contains an unsupported variable or format")
+    return parts
+
+
+def resolve_task_presentation(effective: dict[str, Any], category: str, *, project: str,
+                              unit: str = "", role: str = "", responsibility: str = "",
+                              created: str | None = None, emoji: str | None = None,
+                              existing_title: str | None = None, existing_pin: bool | None = None) -> dict[str, Any]:
+    """Preview a new-task title and pin preference; never mutate or authorize host state."""
+    if category not in TITLE_CATEGORIES:
+        raise ConfigError("unknown task title category")
+    if existing_pin is not None and type(existing_pin) is not bool:
+        raise ConfigError("existing pin must be boolean or unknown")
+    values = {"project": project, "unit": unit, "role": role, "responsibility": responsibility}
+    for value in [*values.values(), *([] if emoji is None else [emoji]), *([] if existing_title is None else [existing_title])]:
+        if not isinstance(value, str) or len(value) > 160 or any(
+                (unicodedata.category(c).startswith("C") and c != "\u200d") or unicodedata.category(c) in {"Zl", "Zp"} for c in value):
+            raise ConfigError("task title input must be bounded single-line text")
+    if not project.strip():
+        raise ConfigError("task title requires a project")
+    intent = {"pin_requested": existing_pin if existing_pin is not None else effective["lifecycle"][TITLE_PIN_KEYS[category]],
+              "preserve_title": existing_title is not None, "preserve_pin": existing_pin is not None,
+              "host_mutation_authorized": False}
+    if existing_title is not None:
+        if not existing_title.strip():
+            raise ConfigError("existing task title must be nonempty")
+        return {"title": existing_title, **intent}
+    settings = effective["task_titles"]
+    fragments = []
+    for literal, field, _, _ in _title_template_parts(settings[category + "_template"]):
+        fragments.append(literal)
+        if field == "created":
+            try:
+                day = date.fromisoformat(created or "")
+            except (ValueError, TypeError) as exc:
+                raise ConfigError("created title variable requires the retained ISO creation date") from exc
+            fragments.append(("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()[day.month - 1]) + " " + str(day.day))
+        elif field is not None:
+            fragments.append(values[field].strip())
+    title = " · ".join(segment.strip() for segment in "".join(fragments).split("·") if segment.strip())
+    if not title or len(title) > 160:
+        raise ConfigError("resolved task title must contain 1-160 characters")
+    icons = effective["role_icons"]
+    enabled = icons["enabled"] and settings[category + "_show_emoji"]
+    icon = emoji if emoji is not None else icons[{"controller": "ctrl", "unit": "lead", "lead": "lead", "worker": "fallback"}[category]]
+    if category == "controller" and emoji is None and icon == DEFAULTS["role_icons"]["ctrl"]:
+        icon = icons["fallback"]  # The SWARM factory icon is not evidence of another project's identity.
+    # A literal leading symbol is already a user-selected icon; do not double it.
+    has_icon = unicodedata.category(title[0]) == "So" or (
+        title[0] in "#*0123456789" and (title[1:2] == "\u20e3" or title[1:3] == "\ufe0f\u20e3"))
+    if enabled and icon and not title.startswith(icon) and not has_icon:
+        title = icon + " " + title
+    if len(title) > 160:
+        raise ConfigError("resolved task title exceeds 160 characters")
+    return {"title": title, **intent}
 
 
 def _is_int(value: Any) -> bool:
@@ -414,6 +504,14 @@ def validate(raw: dict[str, Any], *, partial: bool = False) -> None:
     for key in ("ctrl", "lead", "review", "fallback"):
         _short_text(role_icons, key, "role_icons")
     _short_text_list(role_icons, "doer_choices", "role_icons")
+
+    titles = _expect_table(raw, "task_titles")
+    _expect_keys(titles, set(DEFAULTS["task_titles"]), "task_titles")
+    for category in ("controller", "unit", "lead", "worker"):
+        key = category + "_template"
+        if key in titles:
+            _title_template_parts(titles[key])
+        _boolean(titles, category + "_show_emoji", "task_titles")
 
     execution = _expect_table(raw, "execution")
     _expect_keys(execution, set(DEFAULTS["execution"]), "execution")
@@ -725,6 +823,8 @@ def validate(raw: dict[str, Any], *, partial: bool = False) -> None:
     lifecycle = _expect_table(raw, "lifecycle")
     _expect_keys(lifecycle, set(DEFAULTS["lifecycle"]), "lifecycle")
     _boolean(lifecycle, "pin_created_tasks", "lifecycle")
+    for key in ("pin_created_units", "pin_created_leads", "pin_created_workers"):
+        _boolean(lifecycle, key, "lifecycle")
     _bounded_int(lifecycle, "task_lifetime_hours", 1, 720, "lifecycle")
 
     hygiene = _expect_table(raw, "hygiene")
@@ -1329,6 +1429,14 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("path", help="print the global config path")
     show = subparsers.add_parser("show", help="print effective settings")
     show.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    title = subparsers.add_parser("title-preview", help="preview new-task naming and pin intent without host mutation")
+    title.add_argument("--category", choices=TITLE_CATEGORIES, required=True)
+    title.add_argument("--project", required=True)
+    title.add_argument("--unit", default="")
+    title.add_argument("--role", default="")
+    title.add_argument("--responsibility", default="")
+    title.add_argument("--created")
+    title.add_argument("--emoji")
     feedback = subparsers.add_parser("feedback", help="print privacy-safe feedback diagnostics")
     feedback.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     resolve = subparsers.add_parser("resolve", help="resolve one role model and reasoning pair")
@@ -1399,6 +1507,11 @@ def main() -> int:
             return 0
 
         effective, exists = load(path)
+        if args.command == "title-preview":
+            print(json.dumps(resolve_task_presentation(effective, args.category, project=args.project,
+                unit=args.unit, role=args.role, responsibility=args.responsibility,
+                created=args.created, emoji=args.emoji), ensure_ascii=False, indent=2))
+            return 0
         if args.command == "validate":
             source = "file" if exists else "built-in defaults (file missing)"
             print(f"SWARM config valid: {path} [{source}]")

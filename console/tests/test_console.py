@@ -47,6 +47,35 @@ from runtime import (  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
+    def test_naming_descriptors_follow_canonical_config_and_scoped_validation(self):
+        module = console.load_config_module()
+        effective = module.merge({"role_icons": {"enabled": False}})
+        overlay = {"task_titles": {"unit_template": "{project} · {unit}"}, "lifecycle": {"pin_created_workers": True}}
+        module.validate(overlay, partial=True)
+        scoped = console._config_merge_overlay(effective, overlay)
+        rows = console._config_descriptor_rows(module, module.DEFAULTS, scoped,
+            global_raw={"role_icons": {"enabled": False}}, overlay_raw=overlay,
+            revision="a" * 64, scope_type="project", values_known=True)
+        by_key = {row["key"]: row for row in rows}
+        for category in module.TITLE_CATEGORIES:
+            template = by_key[f"task_titles.{category}_template"]
+            emoji = by_key[f"task_titles.{category}_show_emoji"]
+            pin = by_key["lifecycle." + module.TITLE_PIN_KEYS[category]]
+            self.assertEqual(template["type"], "string")
+            self.assertEqual(emoji["type"], "boolean")
+            self.assertEqual(pin["type"], "boolean")
+            self.assertTrue(all(row["editable"] and row["advanced"] for row in (template, emoji, pin)))
+            self.assertEqual(template["scope"], "global_or_project")
+            self.assertIn("{created:MMM D}", template["help"])
+        self.assertEqual(by_key["task_titles.unit_template"]["source"], "project_override")
+        self.assertEqual(by_key["task_titles.controller_template"]["default"], "{project}")
+        self.assertEqual(by_key["task_titles.unit_template"]["default"], "{project} · {unit} · {responsibility}")
+        result = module.resolve_task_presentation(scoped, "unit", project="Garden", unit="Studio")
+        self.assertEqual(result["title"], "Garden · Studio")
+        self.assertFalse(result["host_mutation_authorized"])
+        with self.assertRaises(module.ConfigError):
+            module.validate({"task_titles": {"unit_template": "{private.path}"}}, partial=True)
+
     def test_dashboard_counters_use_host_catalog_not_roles_or_brief_fanout(self):
         app = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
         with closing(sqlite3.connect(self.database)) as db:

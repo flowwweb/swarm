@@ -19,6 +19,84 @@ SPEC.loader.exec_module(config)
 
 
 class SwarmConfigTests(unittest.TestCase):
+    def test_task_title_defaults_and_category_preferences_preserve_custody(self):
+        effective = config.merge({})
+        before = deepcopy(effective)
+        facts = dict(project="Garden", unit="Studio", role="Designer", responsibility="UI", emoji="🌱")
+        expected = {"controller": "🌱 Garden", "unit": "🌱 Garden · Studio · UI",
+                    "lead": "🌱 Garden · Designer · UI", "worker": "🌱 Garden · Designer · UI"}
+        for category, title in expected.items():
+            with self.subTest(category=category):
+                result = config.resolve_task_presentation(effective, category, **facts)
+                self.assertEqual(result["title"], title)
+                self.assertFalse(result["pin_requested"])
+                self.assertFalse(result["host_mutation_authorized"])
+                custom = config.resolve_task_presentation(effective, category, **facts,
+                    existing_title="My own title", existing_pin=True)
+                self.assertEqual(custom["title"], "My own title")
+                self.assertTrue(custom["pin_requested"])
+                self.assertTrue(custom["preserve_title"] and custom["preserve_pin"])
+        self.assertEqual(effective, before)
+        self.assertEqual(config.resolve_task_presentation(effective, "controller", project="Garden")["title"], "📋 Garden")
+        for category in expected:
+            settings = config.merge({"task_titles": {category + "_show_emoji": False},
+                                     "lifecycle": {config.TITLE_PIN_KEYS[category]: True}})
+            for other in expected:
+                result = config.resolve_task_presentation(settings, other, **facts)
+                self.assertEqual(result["pin_requested"], other == category)
+                self.assertEqual(result["title"].startswith("🌱"), other != category)
+        legacy = config.merge({"role_icons": {"enabled": False}, "lifecycle": {"pin_created_tasks": True}})
+        self.assertEqual(config.resolve_task_presentation(legacy, "controller", **facts)["title"], "Garden")
+        self.assertFalse(config.resolve_task_presentation(legacy, "worker", **facts)["pin_requested"])
+
+    def test_task_title_template_validation_date_and_empty_segments(self):
+        settings = config.merge({"task_titles": {"worker_template": "{project} · {role} · {responsibility} · {created:MMM D}"}})
+        result = config.resolve_task_presentation(settings, "worker", project="Garden", created="2026-10-27", emoji="🌱")
+        self.assertEqual(result["title"], "🌱 Garden · Oct 27")
+        self.assertEqual(result, config.resolve_task_presentation(deepcopy(settings), "worker", project="Garden", created="2026-10-27", emoji="🌱"))
+        with self.assertRaises(config.ConfigError):
+            config.resolve_task_presentation(settings, "worker", project="Garden")
+        self.assertEqual(config.resolve_task_presentation(settings, "worker", project="Garden",
+            existing_title="Keep my title", existing_pin=False)["title"], "Keep my title")
+        for template in ("", "x" * 161, "{unknown}", "{project.__class__}", "{project[0]}",
+                         "{project!r}", "{project:>99}", "{created}", "{created:%Y}", "{", "a\nb"):
+            with self.subTest(template=template), self.assertRaises(config.ConfigError):
+                config.validate({"task_titles": {"controller_template": template}}, partial=True)
+        for key in ("controller_show_emoji", "unit_show_emoji", "lead_show_emoji", "worker_show_emoji"):
+            with self.assertRaises(config.ConfigError):
+                config.validate({"task_titles": {key: "false"}}, partial=True)
+        literal = config.merge({"task_titles": {"controller_template": "🚀 {project}"}})
+        self.assertEqual(config.resolve_task_presentation(literal, "controller", project="Garden", emoji="🌱")["title"], "🚀 Garden")
+        for icon in ("1️⃣", "1⃣", "#️⃣", "*⃣", "👩‍💻", "🇯🇵"):
+            literal = config.merge({"task_titles": {"controller_template": icon + " {project}"}})
+            self.assertEqual(config.resolve_task_presentation(literal, "controller", project="Garden", emoji="🌱")["title"], icon + " Garden")
+        for separator in ("\u2028", "\u2029", "\n", "\r", "\u0085"):
+            with self.subTest(separator=repr(separator)):
+                with self.assertRaises(config.ConfigError):
+                    config.validate({"task_titles": {"controller_template": "{project}" + separator + "{role}"}}, partial=True)
+                for key in ("project", "unit", "role", "responsibility", "emoji", "existing_title"):
+                    values = {"project": "Garden", key: "before" + separator + "after"}
+                    with self.assertRaises(config.ConfigError):
+                        config.resolve_task_presentation(config.merge({}), "controller", **values)
+        self.assertEqual(config.resolve_task_presentation(config.merge({}), "controller", project="1 Garden", emoji="🌱")["title"], "🌱 1 Garden")
+        self.assertEqual(config.resolve_task_presentation(config.merge({}), "worker", project="Garden", responsibility="", role="", emoji="")["title"], "Garden")
+        with self.assertRaises(config.ConfigError):
+            config.resolve_task_presentation(config.merge({}), "TASK", project="Garden")
+
+    def test_task_title_template_and_cli_use_one_config_authority(self):
+        settings, _ = config.load(config.TEMPLATE_PATH)
+        self.assertEqual(settings["task_titles"], config.DEFAULTS["task_titles"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            original = '[task_titles]\ncontroller_show_emoji=false\n'
+            path.write_text(original, encoding="utf-8")
+            run = subprocess.run([sys.executable, "-B", str(SCRIPT), "--path", str(path),
+                "title-preview", "--category", "controller", "--project", "Garden"],
+                text=True, capture_output=True, check=True)
+            self.assertEqual(json.loads(run.stdout)["title"], "Garden")
+            self.assertFalse(json.loads(run.stdout)["host_mutation_authorized"])
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+
     def test_model_policy_preserves_explicit_profile_pair_and_conflicts(self) -> None:
         policy = {"model_order": ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"],
                   "min_model": "gpt-6-luna", "default_model": "gpt-6-sol", "max_model": "gpt-6-astra"}
