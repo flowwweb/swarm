@@ -207,6 +207,51 @@ def installed_file_hashes(root: Path) -> dict[str, str]:
     return _file_hashes(root, _installed_included)
 
 
+def _desktop_dependency_pins(read_bytes: Callable[[str], bytes]) -> dict[str, str]:
+    # Read declared pins without importing or executing candidate code.
+    pins: dict[str, str] = {}
+    for module, constant in (("swarm_desktop.py", "ASSETS"), ("swarm_mcp.py", "PROJECTS_ASSETS")):
+        try:
+            statements = ast.parse(read_bytes("skills/swarm/scripts/" + module).decode("utf-8")).body
+            values = {target.id: statement.value for statement in statements if isinstance(statement, ast.Assign)
+                      for target in statement.targets if isinstance(target, ast.Name)}
+            declared = ast.literal_eval(values[constant])
+            if not isinstance(declared, dict) or not declared:
+                raise ValueError("empty asset pins")
+            if module == "swarm_mcp.py":
+                sdk = values["HQ_SDK_PATH"]
+                if not (isinstance(sdk, ast.BinOp) and isinstance(sdk.op, ast.Div)
+                        and isinstance(sdk.left, ast.Name) and sdk.left.id == "SWARM_SKILL_ROOT"):
+                    raise ValueError("unsupported SDK path")
+                bundle_relative = normalise_relative_path("skills/swarm/" + ast.literal_eval(sdk.right))
+                declared[bundle_relative] = ast.literal_eval(values["HQ_SDK_SHA256"])
+                if bundle_relative == "skills/swarm/assets/ui/swarm-hq-mcp-app.js":
+                    raw = read_bytes(bundle_relative)
+                    header = raw.split(b"\n", 1)[0]
+                    prefix = b"// swarm-hq-inputs:"
+                    if not header.startswith(prefix) or len(header) > 65536:
+                        raise ValueError("compiled HQ source identity is missing")
+                    inputs = json.loads(header[len(prefix):])
+                    if (not isinstance(inputs, dict) or not 2 <= len(inputs) <= 64
+                            or not {"console/static/app.js", "skills/swarm/assets/ui/swarm-hq-bootstrap.mjs"} <= inputs.keys()
+                            or any(not isinstance(key, str) or not isinstance(value, str)
+                                   or re.fullmatch(r"[a-f0-9]{64}", value) is None for key, value in inputs.items())):
+                        raise ValueError("compiled HQ source identity is invalid")
+                    for key, value in inputs.items():
+                        if key in declared and declared[key] != value:
+                            raise ValueError("compiled HQ source identity conflicts")
+                        declared[key] = value
+            for relative, digest in declared.items():
+                if not isinstance(relative, str) or not isinstance(digest, str):
+                    raise ValueError("invalid asset pin types")
+                if relative in pins and pins[relative] != digest:
+                    raise ValueError("conflicting asset pins")
+                pins[relative] = digest
+        except (KeyError, TypeError, ValueError, SyntaxError, OSError) as error:
+            raise ValueError("invalid desktop dependency pins") from error
+    return pins
+
+
 def validate_plugin_manifest(root: Path, files: dict[str, str] | None = None) -> dict[str, object]:
     """Require a usable manifest and declared skills tree on a product surface."""
     root = root.resolve()
@@ -278,47 +323,7 @@ def validate_plugin_manifest(root: Path, files: dict[str, str] | None = None) ->
                 if (relative not in surface or not target.is_file() or _is_reparse_path(target)
                         or not target.resolve().is_relative_to(root)):
                     raise ValueError(f"plugin desktop component is not a confined shipped file: {relative}")
-            # Read declared pins without importing or executing candidate code.
-            pins: dict[str, str] = {}
-            for module, constant in (("swarm_desktop.py", "ASSETS"), ("swarm_mcp.py", "PROJECTS_ASSETS")):
-                try:
-                    statements = ast.parse((root / "skills/swarm/scripts" / module).read_text(encoding="utf-8")).body
-                    values = {target.id: statement.value for statement in statements if isinstance(statement, ast.Assign)
-                              for target in statement.targets if isinstance(target, ast.Name)}
-                    declared = ast.literal_eval(values[constant])
-                    if not isinstance(declared, dict) or not declared:
-                        raise ValueError("empty asset pins")
-                    if module == "swarm_mcp.py":
-                        sdk = values["HQ_SDK_PATH"]
-                        if not (isinstance(sdk, ast.BinOp) and isinstance(sdk.op, ast.Div)
-                                and isinstance(sdk.left, ast.Name) and sdk.left.id == "SWARM_SKILL_ROOT"):
-                            raise ValueError("unsupported SDK path")
-                        bundle_relative = "skills/swarm/" + ast.literal_eval(sdk.right)
-                        declared[bundle_relative] = ast.literal_eval(values["HQ_SDK_SHA256"])
-                        if bundle_relative == "skills/swarm/assets/ui/swarm-hq-mcp-app.js":
-                            raw = (root / bundle_relative).read_bytes()
-                            header = raw.split(b"\n", 1)[0]
-                            prefix = b"// swarm-hq-inputs:"
-                            if not header.startswith(prefix) or len(header) > 65536:
-                                raise ValueError("compiled HQ source identity is missing")
-                            inputs = json.loads(header[len(prefix):])
-                            if (not isinstance(inputs, dict) or not 2 <= len(inputs) <= 64
-                                    or not {"console/static/app.js", "skills/swarm/assets/ui/swarm-hq-bootstrap.mjs"} <= inputs.keys()
-                                    or any(not isinstance(key, str) or not isinstance(value, str)
-                                           or re.fullmatch(r"[a-f0-9]{64}", value) is None for key, value in inputs.items())):
-                                raise ValueError("compiled HQ source identity is invalid")
-                            for key, value in inputs.items():
-                                if key in declared and declared[key] != value:
-                                    raise ValueError("compiled HQ source identity conflicts")
-                                declared[key] = value
-                    for relative, digest in declared.items():
-                        if not isinstance(relative, str) or not isinstance(digest, str):
-                            raise ValueError("invalid asset pin types")
-                        if relative in pins and pins[relative] != digest:
-                            raise ValueError("conflicting asset pins")
-                        pins[relative] = digest
-                except (KeyError, TypeError, ValueError, SyntaxError, OSError) as error:
-                    raise ValueError("invalid desktop dependency pins") from error
+            pins = _desktop_dependency_pins(lambda relative: (root / relative).read_bytes())
             for relative, digest in pins.items():
                 relative = normalise_relative_path(relative)
                 target = root / relative
@@ -432,6 +437,17 @@ def _snapshot_manifest(blobs: dict[str, bytes], files: dict[str, str]) -> str:
     skills_path = normalise_relative_path(Path(skills)).rstrip("/") + "/"
     if not any(path.startswith(skills_path) for path in files):
         raise ValueError(f"captured plugin manifest skills path has no shipped files: {skills}")
+    if manifest.get("mcpServers") == "./.mcp.json":
+        try:
+            declaration = json.loads(blobs[".mcp.json"].decode("utf-8"))
+            entry = declaration.get("mcpServers", {}).get("swarm", {})
+            if entry.get("args") == ["-B", "skills/swarm/scripts/swarm_desktop.py"]:
+                for relative, digest in _desktop_dependency_pins(blobs.__getitem__).items():
+                    relative = normalise_relative_path(relative)
+                    if files.get(relative) != digest:
+                        raise ValueError(f"captured desktop dependency differs from its pin: {relative}")
+        except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("invalid captured desktop dependencies") from error
     return version
 
 

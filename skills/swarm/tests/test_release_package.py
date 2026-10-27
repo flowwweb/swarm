@@ -181,7 +181,7 @@ class ReleasePackageTests(unittest.TestCase):
             manifest['mcpServers'] = './.mcp.json'
             manifest_path.write_text(json.dumps(manifest))
             inputs = {'console/static/app.js': b'config editor',
-                      'skills/swarm/assets/ui/swarm-hq-bootstrap.mjs': b'entry',
+                      'skills/swarm/assets/ui/swarm-hq-bootstrap.mjs': b'entry\r\n',
                       'skills/swarm/assets/ui/swarm-projects.mjs': b'durable lifecycle'}
             pins = {key: hashlib.sha256(value).hexdigest() for key, value in inputs.items()}
             for key, value in inputs.items():
@@ -204,6 +204,20 @@ class ReleasePackageTests(unittest.TestCase):
                 package_builder.validate_plugin_manifest(root)
             write_bundle(b'// swarm-hq-inputs:' + json.dumps(pins).encode())
             package_builder.validate_plugin_manifest(root)
+            # The filesystem pins can pass while Git normalizes CRLF in the
+            # captured product. Validate the exact immutable bytes before ZIP output.
+            files = installed_file_hashes(root)
+            blobs = {name: (root / name).read_bytes() for name in files}
+            self.assertEqual(package_builder._snapshot_manifest(blobs, files), "1.2.3")
+            key = "skills/swarm/assets/ui/swarm-hq-bootstrap.mjs"
+            normalized = blobs[key].replace(b"\r\n", b"\n")
+            self.assertNotEqual(normalized, blobs[key])
+            changed_blobs = {**blobs, key: normalized}
+            changed_files = {**files, key: hashlib.sha256(normalized).hexdigest()}
+            with self.assertRaisesRegex(ValueError, "captured desktop dependency"):
+                package_builder._snapshot_manifest(changed_blobs, changed_files)
+            with self.assertRaisesRegex(ValueError, "captured desktop dependency"):
+                package_builder._snapshot_manifest(blobs, {k: v for k, v in files.items() if k != key})
             source = root / 'skills/swarm/assets/ui/swarm-projects.mjs'
             source.write_bytes(b'changed durable lifecycle')
             with self.assertRaisesRegex(ValueError, 'desktop dependency'):

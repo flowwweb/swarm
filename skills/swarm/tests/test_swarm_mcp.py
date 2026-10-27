@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -27,6 +28,18 @@ def call(process: subprocess.Popen[str], request: dict) -> dict:
     process.stdin.write(json.dumps(request) + "\n")
     process.stdin.flush()
     return json.loads(process.stdout.readline())
+
+
+def image_sources(markup: str) -> list[str | None]:
+    """Read actual image elements; bundled JavaScript strings are not images."""
+    sources = []
+    class Images(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag == "img":
+                sources.append(dict(attrs).get("src"))
+    parser = Images()
+    parser.feed(markup)
+    return sources
 
 
 class SwarmMCPTests(unittest.TestCase):
@@ -886,7 +899,7 @@ class SwarmMCPTests(unittest.TestCase):
                 before = app.path.read_bytes()
                 resource = app.resource()['contents'][0]
                 self.assertIn('<img alt="SWARM" src="' + expected[1] + '">', resource['text'])
-                self.assertNotIn('data:image/webp', resource['text'])
+                self.assertEqual(image_sources(resource['text']), [expected[1]])
                 self.assertEqual(app.path.read_bytes(), before)
                 self.assertEqual(hashlib.sha256((root / expected[0]).read_bytes()).hexdigest(), expected[2])
                 (root / expected[0]).write_bytes(b'changed')
@@ -987,7 +1000,7 @@ class SwarmMCPTests(unittest.TestCase):
                     else:
                         resource = app.resource()['contents'][0]
                         self.assertIn('<img src="' + url + '" alt="Portrait unavailable">', resource['text'])
-                        self.assertNotIn('data:image/webp;base64,', resource['text'])
+                        self.assertEqual(image_sources(resource['text']), [url])
                         self.assertEqual(resource['_meta']['ui']['csp'],
                                          {'connectDomains': [], 'resourceDomains': ['https://flowwweb.com']})
                         self.assertEqual(before, target.read_bytes())

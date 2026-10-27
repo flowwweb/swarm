@@ -29,8 +29,8 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "68bd345ec06fc43f1642b97473d9350fece26aafd3420c59ec507a5869a12245"
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "68555d817f57949539a4f5b981a2bdaab53191f442a62cf3f495403299327c67", "skills/swarm/assets/ui/swarm-hq-host.css": "a3b1bb7a73d930eb6549cdc02bf4781de77e66926cd453a2c8e17734935df98d"}
+HQ_SDK_SHA256 = "865169c815bf62855dd30d037a94d982d52a6a09152af336cc87e4a8346cf7f5"
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "b0f262a07126fbd5a7180d344849188ec8e28e5cd6595d68f170f0b8ae3b05da", "skills/swarm/assets/ui/swarm-hq-host.css": "36b32b28869faacf7b020c963585c2966432780ac01e374e0289ce1dfb95114b"}
 
 
 PROJECTS_SUPPORT_IMAGES = {
