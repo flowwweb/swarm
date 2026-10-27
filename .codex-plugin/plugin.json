@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "1.0.31+codex.20261027.reviewed-ui",
+  "version": "1.0.32+codex.20261027.settings-integration",
   "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",
