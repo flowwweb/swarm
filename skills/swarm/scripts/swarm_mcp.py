@@ -29,8 +29,8 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "865169c815bf62855dd30d037a94d982d52a6a09152af336cc87e4a8346cf7f5"
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "b0f262a07126fbd5a7180d344849188ec8e28e5cd6595d68f170f0b8ae3b05da", "skills/swarm/assets/ui/swarm-hq-host.css": "36b32b28869faacf7b020c963585c2966432780ac01e374e0289ce1dfb95114b"}
+HQ_SDK_SHA256 = "9078597a7a53d6c26ad305e848d52135d208d76cbb6e9f5cbea0e8bb627d38d7"
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "b0f262a07126fbd5a7180d344849188ec8e28e5cd6595d68f170f0b8ae3b05da", "skills/swarm/assets/ui/swarm-hq-host.css": "36b32b28869faacf7b020c963585c2966432780ac01e374e0289ce1dfb95114b", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250"}
 
 
 PROJECTS_SUPPORT_IMAGES = {
@@ -284,10 +284,15 @@ class HQApp:
         sdk = raw.decode("utf-8")
         if re.search(r"</script", sdk, re.IGNORECASE):
             raise MCPError("HQ SDK cannot be embedded")
-        script = '\n<script type="module" data-swarm-mcp-sdk="' + HQ_SDK_SHA256 + '">' + sdk + '</script>\n'
+        settings_name = "skills/swarm/assets/ui/swarm-settings.css"
+        settings_css = _projects_asset(settings_name, PROJECTS_ASSETS[settings_name]).decode("utf-8")
+        if re.search(r"</style", settings_css, re.IGNORECASE):
+            raise MCPError("HQ Settings stylesheet cannot be embedded")
+        script = '\n<style data-swarm-settings-css="' + PROJECTS_ASSETS[settings_name] + '">' + settings_css + '</style>\n'
+        script += '<script type="module" data-swarm-mcp-sdk="' + HQ_SDK_SHA256 + '">' + sdk + '</script>\n'
         html = value["html"]
         if self.projects:
-            assets = {name: _projects_asset(name, digest) for name, digest in PROJECTS_ASSETS.items()}
+            assets = {name: _projects_asset(name, digest) for name, digest in PROJECTS_ASSETS.items() if name != settings_name}
             html = assets["skills/swarm/assets/ui/swarm-hq-projects.html"].decode("utf-8")
             html = html.replace("__CSS__", assets["skills/swarm/assets/ui/swarm-hq-host.css"].decode("utf-8"))
             html = html.replace('<script type="module">__SCRIPT__</script>', '')

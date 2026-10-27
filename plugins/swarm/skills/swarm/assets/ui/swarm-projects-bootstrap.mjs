@@ -1,6 +1,5 @@
 import {mountSettings} from './swarm-settings.js';
 import {configTextWithChanges} from '@swarm/config-editor';
-import settingsCSS from './swarm-settings.css';
 import {App,applyDocumentTheme,applyHostStyleVariables} from '@swarm/sdk';
 import {usageView,readProjectUsage,latestRequest} from './swarm-usage.mjs';
 import {rosterView,projectDetail,metricView} from './swarm-projects.mjs';
@@ -547,7 +546,6 @@ $('#clear-filter').onclick=reset;$('#all-projects').onclick=()=>{reset();$('#mai
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{view=b.dataset.view;render();});
 function coverage(){showDialog('Observation coverage',`<p>Registered project identities and activity come from the host\u2019s saved-project inventory. Activity does not grant a role, execution permission or completion credit.</p><p>Milestones, next actions, favorites and updated timestamps are not included in this roster. Open a project for its separately scoped details.</p><p>The human action inbox is not available here. Observed waits do not include every approval or review.</p><code>${escape(JSON.stringify(metrics?.cursor||roster?.cursor||'Unavailable'))}</code>`);}
 $('#attention-details').onclick=coverage;
-const settingsStyle=document.createElement('style');settingsStyle.textContent=settingsCSS;document.head.append(settingsStyle);
 const settingsPage=document.createElement('main');settingsPage.id='settings-page';settingsPage.hidden=true;
 const closeSettings=document.createElement('button');closeSettings.textContent='\u00d7';closeSettings.className='icon-action';closeSettings.setAttribute('aria-label','Close settings');closeSettings.title='Close settings';
 const settingsPanel=document.createElement('section');settingsPage.append(closeSettings,settingsPanel);

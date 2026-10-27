@@ -870,7 +870,7 @@ class SwarmMCPTests(unittest.TestCase):
         """Exercise the real pinned image admission with an isolated template."""
         names = list(mcp.PROJECTS_ASSETS)
         files = {names[0]: ('<!doctype html><style>__CSS__</style><body>' + body + '<script type="module">__SCRIPT__</script></body>').encode(),
-                 names[1]: b'body{color:black}'}
+                 names[1]: b'body{color:black}', names[2]: b'.swarm-settings{color:white}'}
         for name, _, digest in mcp.PROJECTS_SUPPORT_IMAGES.values():
             files[name] = (mcp.REPO_ROOT / name).read_bytes()
             self.assertEqual(hashlib.sha256(files[name]).hexdigest(), digest)
@@ -1133,6 +1133,23 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertEqual(mcp.serve(), 0)
         self.assertEqual(json.loads(output.getvalue())["error"], {"code": -32602, "message": "unknown HQ resource"})
 
+    def test_hq_settings_style_requires_exact_safe_asset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, digest, _ = self.hq_export(root)
+            name = "skills/swarm/assets/ui/swarm-settings.css"
+            css = root / name
+            css.parent.mkdir(parents=True)
+            css.write_text(".swarm-settings{color:white}", encoding="utf-8")
+            with patch.object(mcp, "REPO_ROOT", root), patch.dict(mcp.PROJECTS_ASSETS, {name: "0" * 64}):
+                with self.assertRaisesRegex(mcp.MCPError, "identity mismatch"):
+                    mcp.HQApp(path, digest)
+            payload = b".swarm-settings{color:white}</style><script>alert(1)</script>"
+            css.write_bytes(payload)
+            with patch.object(mcp, "REPO_ROOT", root), patch.dict(mcp.PROJECTS_ASSETS, {name: hashlib.sha256(payload).hexdigest()}):
+                with self.assertRaisesRegex(mcp.MCPError, "stylesheet cannot be embedded"):
+                    mcp.HQApp(path, digest)
+
     def test_hq_resource_uses_exact_export_without_host_access_or_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             path, digest, value = self.hq_export(Path(directory))
@@ -1156,6 +1173,11 @@ class SwarmMCPTests(unittest.TestCase):
             resource = rows[3]["result"]["contents"][0]
             self.assertTrue(resource["text"].startswith(value["html"]))
             self.assertIn('data-swarm-mcp-sdk="' + mcp.HQ_SDK_SHA256, resource["text"])
+            settings_name = "skills/swarm/assets/ui/swarm-settings.css"
+            css = (mcp.REPO_ROOT / settings_name).read_text(encoding="utf-8")
+            self.assertEqual(resource["text"].count('data-swarm-settings-css="'), 1)
+            self.assertIn('<style data-swarm-settings-css="' + mcp.PROJECTS_ASSETS[settings_name] + '">' + css + '</style>', resource["text"])
+            self.assertLess(resource["text"].index('data-swarm-settings-css='), resource["text"].index('data-swarm-mcp-sdk='))
             served_digest = hashlib.sha256(resource["text"].encode()).hexdigest()
             self.assertEqual(app.uri, f"ui://swarm/hq/{served_digest}.html")
             # The Page/export cap remains 256 KiB; the separate adapted MCP resource is bounded at 1 MiB.

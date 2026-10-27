@@ -1,7 +1,6 @@
 import { App } from '@swarm/sdk';
 import { mountSettings } from './swarm-settings.js';
 import { configTextWithChanges } from '@swarm/config-editor';
-import settingsCSS from './swarm-settings.css';
 import {mountProjects} from './swarm-projects-bootstrap.mjs';
 if (document.querySelector('#all-projects')) { await mountProjects(); } else {
 
@@ -11,16 +10,6 @@ const baseline = document.querySelector('.space-baseline');
 if (baseline) baseline.append(' · Saved snapshot, not live');
 const app = new App({name: 'SWARM HQ', version: '1.0.0'}, {}, {autoResize: false});
 root.dataset.swarmHost = 'connecting';
-const style = document.createElement('style');
-style.textContent = settingsCSS + `
-.swarm-settings-dialog{box-sizing:border-box;width:min(800px,calc(100vw - 24px));height:90dvh;max-height:90dvh;padding:12px;background:#07131d;color:#eef4f8;border:1px solid #456;border-radius:16px;overflow:hidden}
-.swarm-settings-dialog[open]{display:grid;grid-template-rows:44px minmax(0,1fr);gap:8px}
-.swarm-settings-dialog>button{justify-self:end;min-height:44px;padding:8px 16px;border:1px solid #385060;border-radius:8px;background:#13232e;color:inherit;font:15px system-ui}
-.swarm-settings-dialog>.swarm-settings{width:100%;height:100%;min-height:0;overflow:auto;margin:0}
-.swarm-settings-dialog::backdrop{background:#0009}
-.swarm-settings-dialog :focus-visible{outline:2px solid #ff7a18;outline-offset:2px}
-`;
-document.head.append(style);
 const opener = document.createElement('button');
 opener.type = 'button'; opener.textContent = 'Settings'; opener.disabled = true;
 opener.dataset.swarmSettings = '';

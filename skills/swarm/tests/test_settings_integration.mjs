@@ -136,6 +136,17 @@ try {
   assert.equal(await frame.locator('#settings-page').isVisible(),true);checks++;
   assert.equal(await frame.locator('#settings').getAttribute('aria-current'),'page');
   assert.equal(await frame.locator('#all-projects').evaluate(el=>el.classList.contains('selected')),false);checks++;
+  assert.equal(await frame.locator('style[data-swarm-settings-css]').count(),1);checks++;
+  await frame.getByRole('button',{name:'Advanced',exact:true}).click();
+  assert.equal(await frame.getByText('Task naming and Auto-pin are unavailable until host support is verified.').isVisible(),true);checks++;
+  for (const category of ['Controllers','Units','Leads','Workers']) {
+    assert.equal(await frame.getByLabel(`${category} Title template`,{exact:true}).isDisabled(),true);
+    const pin=frame.getByLabel(`${category} Auto-pin`,{exact:true});
+    assert.equal(await pin.isDisabled(),true);
+    assert.ok((await pin.boundingBox()).height>=44);
+  }
+  checks++;
+  await frame.getByRole('button',{name:'Essentials',exact:true}).click();
   await frame.getByLabel('Model order',{exact:true}).fill('gpt-6-luna, gpt-6-sol, gpt-6-astra');
   await frame.getByLabel('Model order',{exact:true}).blur();
   await frame.getByLabel('Minimum model',{exact:true}).selectOption('gpt-6-astra');
