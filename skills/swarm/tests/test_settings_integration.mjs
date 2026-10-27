@@ -47,11 +47,12 @@ try {
     const css=fs.readFileSync(path.join(repo,'skills/swarm/assets/ui/swarm-settings.css'),'utf8');
     const legacy=fs.readFileSync(path.join(repo,'console/static/app.js'),'utf8');
     const editor=legacy.slice(legacy.indexOf('function configTomlLiteral('),legacy.indexOf('function configWriteRequest('));
-    const shell=fs.readFileSync(path.join(scratch,'rendered.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'');
+    const shell=await page.evaluate(html=>{const parsed=new DOMParser().parseFromString(html,'text/html');parsed.querySelectorAll('script').forEach(script=>script.remove());return '<!doctype html>'+parsed.documentElement.outerHTML;},fs.readFileSync(path.join(scratch,'rendered.html'),'utf8'));
     const hostState=()=>execFileSync(python,['-B','-c',`import sqlite3,json,sys;from pathlib import Path;p=next(Path(sys.argv[1]).rglob('state_*.sqlite'));c=sqlite3.connect(p);print(json.dumps(c.execute('select * from threads order by id').fetchall()))`,scratch],{cwd:repo,encoding:'utf8'});
     const beforeHost=hostState();
     await page.route('https://swarm-integration.invalid/**',route=>route.fulfill({contentType:'text/html',body:shell}));
     await page.goto('https://swarm-integration.invalid/');
+    assert.equal(await page.locator('script').count(),0);
     await page.addStyleTag({content:css});
     await page.addScriptTag({content:editor});
     await page.addScriptTag({type:'module',content:source+`
