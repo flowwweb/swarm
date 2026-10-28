@@ -596,6 +596,101 @@ class ExecutionAdapterTests(unittest.TestCase):
                 observed_project_id="project-a", observed_root_digest="a"*64).status, "REPLAY")
             self.assertEqual(tools.calls, calls)
 
+    def test_native_admission_scope_wraps_only_reservation_and_replay_skips_it(self):
+        import tempfile
+        from contextlib import contextmanager
+        from pathlib import Path
+        tools = NativeTaskTools(busy=True)
+        envelope, _, base = self.native_task_connector(tools)
+        events, held = [], {"scope": False}
+        request = base.adapter.task_transport.request
+        def outside(method, params):
+            self.assertFalse(held["scope"], "host tools must not run in the brief scope")
+            events.append(method)
+            return request(method, params)
+        base.adapter.task_transport.request = outside
+        verify = base.authorization_verifier.verify
+        def authorize(*args):
+            self.assertFalse(held["scope"], "host authorization must not run in the brief scope")
+            return verify(*args)
+        base.authorization_verifier.verify = authorize
+        @contextmanager
+        def scope():
+            events.append("scope-enter"); held["scope"] = True
+            try:
+                yield
+            finally:
+                held["scope"] = False; events.append("scope-exit")
+        def admit():
+            self.assertTrue(held["scope"])
+            events.append("admit")
+            return True
+        connector = UniversalHQConnector(base.adapter, authorization_verifier=base.authorization_verifier,
+            material_resolver=base.material_resolver, root_verifier=base.root_verifier,
+            admission_guard=admit, admission_scope=scope)
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a"*64)
+            self.assertEqual(result.status, "RESULT")
+            self.assertEqual(events, ["read_thread", "wait_threads", "read_thread", "scope-enter", "admit",
+                                      "scope-exit", "send_message_to_thread", "read_thread"])
+            before = ledger._state.path.read_bytes()
+            connector.admission_scope = lambda: (_ for _ in ()).throw(AssertionError("replay does not require brief"))
+            connector.admission_guard = lambda: (_ for _ in ()).throw(AssertionError("replay does not read current source"))
+            connector.material_resolver = UnavailableHQMaterialResolver()
+            connector.authorization_verifier = FakeHQAuthorizationVerifier(False)
+            calls = list(tools.calls)
+            replay = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=100,
+                observed_project_id="project-a", observed_root_digest="a"*64)
+            self.assertEqual(replay.status, "REPLAY")
+            self.assertEqual(tools.calls, calls)
+            self.assertEqual(ledger._state.path.read_bytes(), before)
+
+    def test_native_admission_scope_failure_writes_nothing_and_never_sends(self):
+        import tempfile
+        from pathlib import Path
+        tools = NativeTaskTools()
+        envelope, _, base = self.native_task_connector(tools)
+        def unavailable():
+            raise OSError("brief scope unavailable")
+        connector = UniversalHQConnector(base.adapter, authorization_verifier=base.authorization_verifier,
+            material_resolver=base.material_resolver, root_verifier=base.root_verifier, admission_scope=unavailable)
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            before = ledger.replay()
+            with self.assertRaisesRegex(OSError, "brief scope unavailable"):
+                connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a"*64)
+            self.assertEqual(ledger.replay(), before)
+            self.assertFalse(any(method == "send_message_to_thread" for method, _ in tools.calls))
+
+    def test_native_admission_scope_racing_command_replays_without_false_ack(self):
+        import tempfile
+        from contextlib import contextmanager
+        from pathlib import Path
+        tools = NativeTaskTools()
+        envelope, _, base = self.native_task_connector(tools)
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            command = UniversalHQConnector._receipt(envelope, receipt_id=envelope.command_id+"-command",
+                index=0, status="COMMAND", observed_at_ms=envelope.submitted_at_ms)
+            @contextmanager
+            def competing_scope():
+                self.assertEqual(ledger.reserve_connector_command(command,
+                    expected_revision=envelope.expected_ledger_revision)["status"], "APPENDED")
+                raise OSError("brief changed during scope acquisition")
+                yield
+            connector = UniversalHQConnector(base.adapter, authorization_verifier=base.authorization_verifier,
+                material_resolver=base.material_resolver, root_verifier=base.root_verifier,
+                admission_scope=competing_scope)
+            result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a"*64)
+            self.assertEqual(result.status, "PENDING")
+            self.assertEqual(result.attention, "APP_TASK_EVIDENCE_PENDING")
+            self.assertEqual([r["status"] for r in ledger.replay()["connector_receipts"][envelope.idempotency_key]["receipts"]], ["COMMAND"])
+            self.assertFalse(any(method == "send_message_to_thread" for method, _ in tools.calls))
+
     def test_native_capture_restart_after_uncertain_send_needs_no_prompt_or_resend(self):
         import tempfile
         from pathlib import Path

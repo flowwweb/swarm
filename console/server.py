@@ -69,6 +69,7 @@ from runtime.progress_events import (  # noqa: E402
     task_creation_binding_event,
     validate_task_manifest,
     validate_progress_pulse,
+    _bound_evidence_digest,
 )
 from runtime.execution_adapters import (  # noqa: E402
     HQAuthorizationReceipt,
@@ -102,6 +103,7 @@ from project_model_views import (  # noqa: E402
     migrate_legacy_project_tickets,
     read_project_tickets,
     create_flow_draft,
+    _brief_update_lock,
 )
 
 INSTANCE_ID = hashlib.sha256(str(CONSOLE_ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:16]
@@ -11579,8 +11581,281 @@ class App:
         )
         return {"ok": True, **result}
 
+    def _configured_auto_recipe(self, recipe):
+        fields = {"run_id", "project_id", "root_digest", "ctrl_id", "goal_id", "ctrl_manifest_digest",
+                  "brief_digest", "flow_id", "flow_version", "flow_digest", "assignment_id",
+                  "assignment_version", "assignment_digest", "iterations", "operation_bound", "expires_at_ms", "bindings", "digest"}
+        binding_fields = {"iteration", "node_id", "task_id", "manifest_digest", "block_id", "attempt",
+                          "role_manifest_ref", "output_id", "artifact_path"}
+        if not isinstance(recipe, dict) or set(recipe) != fields or len(self.store._auto_payload(recipe)[0]) > MAX_BODY_BYTES:
+            raise ConsoleError("configured Auto requires one bounded exact run recipe")
+        if recipe["digest"] != _auto_digest({k: v for k, v in recipe.items() if k != "digest"}):
+            raise ConsoleError("configured Auto run digest conflicts")
+        for key in ("run_id", "project_id", "ctrl_id", "goal_id", "flow_id", "assignment_id"):
+            _auto_id(recipe[key], key)
+        if any(type(recipe[k]) is not int or recipe[k] < 1 for k in
+               ("iterations", "operation_bound", "expires_at_ms", "flow_version", "assignment_version")):
+            raise ConsoleError("configured Auto bounds and versions require positive integers")
+        if (not isinstance(recipe["bindings"], list) or not recipe["bindings"]
+                or any(not isinstance(b, dict) or set(b) != binding_fields for b in recipe["bindings"])):
+            raise ConsoleError("configured Auto block binding fields conflict")
+        identities, blocks = set(), set()
+        for binding in recipe["bindings"]:
+            if (type(binding["iteration"]) is not int or not 1 <= binding["iteration"] <= recipe["iterations"]
+                    or type(binding["attempt"]) is not int or binding["attempt"] != 1):
+                raise ConsoleError("configured Auto iteration or attempt conflicts")
+            for key in ("node_id", "task_id", "block_id", "output_id"):
+                _auto_id(binding[key], key)
+            identity = (binding["iteration"], binding["node_id"])
+            if identity in identities or binding["block_id"] in blocks:
+                raise ConsoleError("configured Auto block and step identities must be distinct")
+            identities.add(identity); blocks.add(binding["block_id"])
+            path = binding["artifact_path"]
+            if (not isinstance(path, str) or not path or "\\" in path or ":" in path or path.startswith("/")
+                    or any(part in {"", ".", ".."} for part in path.split("/"))):
+                raise ConsoleError("configured Auto output path is not canonical and root confined")
+        if len(identities) != recipe["iterations"] * len({node for _, node in identities}) or len(identities) > recipe["operation_bound"]:
+            raise ConsoleError("configured Auto requires complete bindings within the shared operation bound")
+
+    def _configured_auto_completed(self, recipe, projection, accepted_events):
+        """Terminal audit facts do not depend on today's brief, goal or file bytes."""
+        self._configured_auto_recipe(recipe)
+        for binding in recipe["bindings"]:
+            operation, manifest, _, created, _ = ProgressLedger._bound_block_context(projection, recipe["project_id"],
+                binding["task_id"], binding["block_id"], binding["manifest_digest"])
+            work = manifest.get("work_assignment")
+            pinned_role = work["role_manifest_ref"] if work else projection["task_creation_bindings"][operation]["role_manifest_ref"]
+            if binding["role_manifest_ref"] != pinned_role:
+                raise ConsoleError("configured Auto historical Role binding conflicts")
+            identity = f"bound-accepted:{binding['task_id']}:{binding['block_id']}"
+            record = accepted_events.get(identity)
+            if record is None:
+                return False
+            event = record["event"]
+            if (projection["events"].get(identity) != record["event_digest"]
+                    or event["project_id"] != recipe["project_id"] or event["task_id"] != binding["task_id"]
+                    or event["block_id"] != binding["block_id"] or event["ctrl_id"] != recipe["ctrl_id"]
+                    or event["source"] != "swarm_runtime" or event["provenance"] != f"bound-task-lifecycle:{operation}"
+                    or event["custody"] != {"surface":"ledger:bound-task-lifecycle", "receipt_id":created}
+                    or event["rework"]["attempt"] != binding["attempt"]):
+                raise ConsoleError("configured Auto historical acceptance binding conflicts")
+            proofs = event["proof"]["receipt_ids"]
+            shas = [p.removeprefix("sha256:") for p in proofs if p.startswith("sha256:")]
+            if len(shas) != 1 or re.fullmatch(r"[0-9a-f]{64}", shas[0]) is None:
+                raise ConsoleError("configured Auto historical acceptance lacks exact SHA")
+            path = binding["artifact_path"]
+            artifact = ArtifactIdentity(f"{recipe['project_id']}:{binding['task_id']}", binding["manifest_digest"],
+                f"bound-block:{binding['block_id']}", observables=((path, "file:" + shas[0]),), observed_paths=(path,))
+            if f"runtime-artifact:{artifact.content_address()}" not in proofs:
+                raise ConsoleError("configured Auto historical acceptance lacks exact artifact identity")
+        return True
+
+    def _configured_auto_step(self, state: dict[str, Any], recipe: dict[str, Any], projection: dict[str, Any]):
+        """Resolve one explicit run against current source and admitted block evidence."""
+        self._configured_auto_recipe(recipe)
+        if any(recipe[key] != state[key] for key in ("project_id", "ctrl_id")):
+            raise ConsoleError("configured Auto run scope conflicts")
+        root = self._retained_accepting_root(recipe["project_id"], recipe["ctrl_id"], recipe["ctrl_manifest_digest"], projection)
+        if recipe["root_digest"] != _auto_digest({"project_id": recipe["project_id"], "canonical_root": _normalized_project_path(str(root))}):
+            raise ConsoleError("configured Auto root changed")
+        with closing(_readonly_connection(goals_database(self.codex_home))) as connection:
+            goals = connection.execute("SELECT goal_id,status FROM thread_goals WHERE thread_id=?", (recipe["ctrl_id"],)).fetchall()
+        if len(goals) != 1 or goals[0]["goal_id"] != recipe["goal_id"] or goals[0]["status"] != "active":
+            raise ConsoleError("configured Auto goal is not the exact active host goal")
+        path = root / "SWARM.md"
+        if _is_reparse_point(root) or _is_reparse_point(path) or not path.is_file() or path.stat().st_size > 512 * 1024:
+            raise ConsoleError("configured Auto brief is unavailable")
+        document, digest = parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=root)
+        if digest != recipe["brief_digest"] or document["project"]["id"] not in self._canonical_project_identities(recipe["project_id"]):
+            raise ConsoleError("configured Auto brief changed")
+        flow = next((d for d in document.get("flow_definitions", []) if
+                     (d["id"], d["version"], d["digest"]) == (recipe["flow_id"], recipe["flow_version"], recipe["flow_digest"])), None)
+        assignment = next((d for d in document.get("flow_assignments", []) if
+                           (d["id"], d["version"], d["digest"]) == (recipe["assignment_id"], recipe["assignment_version"], recipe["assignment_digest"])), None)
+        if flow is None or assignment is None:
+            raise ConsoleError("configured Auto Flow or assignment is missing")
+        validate_flow_definition(flow)
+        validate_flow_assignment(assignment, document.get("flow_definitions", []))
+        if ((assignment["flow_id"], assignment["flow_version"], assignment["flow_digest"]) != (flow["id"], flow["version"], flow["digest"])
+                or assignment["ctrl_id"] not in {None, recipe["ctrl_id"]} or recipe["iterations"] > assignment["repeat_count"]):
+            raise ConsoleError("configured Auto assignment or finite bound conflicts")
+        nodes = {node["id"]: node for node in flow["nodes"]}
+        bindings = recipe["bindings"]
+        if (not isinstance(bindings, list) or len(bindings) != recipe["iterations"] * len(nodes)
+                or len(bindings) > recipe["operation_bound"] or not bindings):
+            raise ConsoleError("configured Auto requires complete bindings within the shared operation bound")
+        indexed, accepted, roles, waiting = {}, {}, {}, set()
+        for binding in bindings:
+            iteration, node_id = binding["iteration"], binding["node_id"]
+            if node_id not in nodes:
+                raise ConsoleError("configured Auto node conflicts")
+            key = (iteration, node_id)
+            indexed[key] = binding
+            node = nodes[node_id]
+            if len(node["outputs"]) != 1 or binding["output_id"] != node["outputs"][0] or binding["task_id"] != node["owner_id"]:
+                raise ConsoleError("configured Auto requires exactly one named output and exact node owner")
+            _, manifest, _, _, block = ProgressLedger._bound_block_context(projection, recipe["project_id"],
+                binding["task_id"], binding["block_id"], binding["manifest_digest"])
+            if projection["task_manifests"][binding["task_id"]]["active_digest"] != binding["manifest_digest"]:
+                raise ConsoleError("configured Auto task work changed")
+            if manifest.get("work_assignment"):
+                if self._work_assignment_scope(recipe["project_id"], manifest, projection, accepting=True) != root:
+                    raise ConsoleError("configured Auto accepting root changed")
+                work = manifest["work_assignment"]
+                if (work["accepting_ctrl_id"], work["goal_id"], work["artifact_path"]) != (recipe["ctrl_id"], recipe["goal_id"], binding["artifact_path"]):
+                    raise ConsoleError("configured Auto work contract conflicts")
+            elif manifest["ctrl_id"] != recipe["ctrl_id"]:
+                raise ConsoleError("configured Auto task owner changed")
+            if self._observed_task_root(recipe["project_id"], binding["task_id"], allow_adopted=True, projection=projection) != root:
+                raise ConsoleError("configured Auto actor root changed")
+            role_ref = binding["role_manifest_ref"]
+            role_binding = projection["role_assignments"].get(binding["task_id"], {})
+            role = projection["role_manifests"].get(role_binding.get("role_id"), {}).get("versions", {}).get(role_binding.get("manifest_version"))
+            if not role or role_manifest_reference(role) != role_ref:
+                raise ConsoleError("configured Auto pinned Role changed")
+            roles[key] = role
+            if assignment["subject_kind"] == "ROLE":
+                if (assignment["subject_id"], assignment["subject_version"]) != (role["id"], role["version"]):
+                    raise ConsoleError("configured Auto assignment Role conflicts")
+            else:
+                self._require_flow_assignment_subject(recipe["project_id"], assignment, accepting_scope={
+                    "ctrl_id": recipe["ctrl_id"], "manifest_digest": recipe["ctrl_manifest_digest"]}, _projection=projection)
+            relative = binding["artifact_path"]
+            target = root
+            for part in relative.split("/"):
+                target = target / part
+                try:
+                    target.lstat()
+                except FileNotFoundError:
+                    continue  # A declared, not-yet-produced output is not accepted evidence.
+                if _is_reparse_point(target):
+                    raise ConsoleError("configured Auto output cannot traverse a link")
+            if target.exists() and not target.is_file():
+                raise ConsoleError("configured Auto output requires a file, never a directory")
+            if block is None:
+                continue
+            if block["attempt"] != 1:
+                raise ConsoleError("configured Auto block attempt changed")
+            event_id = f"bound-accepted:{binding['task_id']}:{binding['block_id']}"
+            if block["lifecycle_state"] != "ACCEPTED" or block["latest_event_id"] != event_id:
+                if block["lifecycle_state"] not in {"PLANNED", "READY"}:
+                    waiting.add(key)
+                continue
+            sha = _bound_evidence_digest(target)
+            artifact = ArtifactIdentity.capture(f"{recipe['project_id']}:{binding['task_id']}", binding["manifest_digest"],
+                f"bound-block:{binding['block_id']}", root=str(root), paths=(relative,))
+            proofs = block["proof_receipt_ids"]
+            if f"sha256:{sha}" not in proofs or f"runtime-artifact:{artifact.content_address()}" not in proofs:
+                raise ConsoleError("configured Auto output lacks exact accepted artifact identity")
+            if artifact.observables != ((relative, "file:" + sha),):
+                raise ConsoleError("configured Auto output changed during capture")
+            accepted[key] = {**binding, "accepted_event_id": event_id, "accepted_event_digest": block["latest_event_digest"],
+                             "sha256": sha, "artifact_digest": artifact.content_address()}
+        if len(accepted) == len(bindings):
+            return None, True
+        if int(time.time() * 1000) >= recipe["expires_at_ms"]:
+            raise ConsoleError("configured Auto run expired")
+        for key in sorted(indexed):
+            if key in accepted or key in waiting:
+                continue
+            iteration, node_id = key
+            node = nodes[node_id]
+            previous = [(i, n) for i, n in indexed if i < iteration]
+            required = previous + [(iteration, parent) for parent in node["dependencies"]]
+            if any(item not in accepted for item in required):
+                continue
+            # Every previous iteration output remains a pinned input; current DAG inputs are explicit.
+            input_keys = sorted(set(previous + [(iteration, ref["node_id"]) for ref in node["inputs"]]))
+            inputs = [accepted[item] for item in input_keys]
+            step = indexed[key]
+            meta = {"recipe": recipe, "step": step, "inputs": inputs, "selection_cursor": dict(projection["cursor"])}
+            decision = _auto_digest({"run_digest": recipe["digest"], "step": step, "inputs": inputs})
+            candidate = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"], "goal_id": recipe["goal_id"],
+                "task_id": step["task_id"], "owner_id": step["task_id"], "request_id": recipe["run_id"],
+                "observed_turn_id": f"flow:{iteration}:{node_id}", "decision_digest": decision,
+                "route_digest": _auto_digest([recipe["flow_digest"], node_id]), "configured": meta,
+                "disposition": {"disposition": "CONTINUE", "next_operation": f"FLOW:{iteration}:{node_id}",
+                    "next_owner": step["task_id"], "next_route": node["capability"], "release_condition": "", "responsible_authority": ""}}
+            candidate["instruction"] = self._configured_auto_instruction(meta, roles[key], node)
+            candidate["instruction_digest"] = hashlib.sha256(candidate["instruction"].encode("utf-8")).hexdigest()
+            return candidate, False
+        return None, False
+
     @staticmethod
-    def _auto_instruction(candidate: dict[str, Any]) -> str:
+    def _configured_auto_instruction(meta, role, node):
+        return "SWARM configured Flow step. Verify every input path and SHA before use; stop on mismatch. " + json.dumps({
+            "run_digest": meta["recipe"]["digest"], "step": meta["step"], "inputs": meta["inputs"],
+            "role": {key: role[key] for key in ("id", "version", "purpose", "owns", "default_skills", "instructions", "boundaries")},
+            "node": node, "claim_limit": "Return material proof for independent acceptance. Host completion is not acceptance."},
+            ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    def _configured_auto_candidate(self, state, projection):
+        if not isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport):
+            return False, None
+        # Fold the existing preparation journal, never a second run queue or persisted counter.
+        with self.store._lock, closing(self.store._connect()) as connection:
+            rows = connection.execute("SELECT payload_json,payload_digest FROM execution_event_receipts "
+                "WHERE event_kind='AUTO_DECISION' AND identity LIKE 'connector:%' "
+                "AND json_extract(payload_json,'$.ctrl_id')=? AND json_extract(payload_json,'$.project_id')=?",
+                (state["ctrl_id"], state["project_id"])).fetchall()
+        recipes = {}
+        for row in rows:
+            packet = json.loads(row["payload_json"])
+            if self.store._auto_payload(packet)[1] != row["payload_digest"]:
+                raise ConsoleError("configured Auto retained packet conflicts")
+            recipe = packet.get("instruction_meta", {}).get("configured", {}).get("recipe")
+            if recipe is not None:
+                recipes[recipe["digest"]] = recipe
+        unfinished = []
+        def select_current(recipe):
+            # Only current run preconditions are scoped waits. Journal integrity
+            # and verified Ledger/history failures stay outside this boundary.
+            try:
+                return self._configured_auto_step(state, recipe, projection)
+            except (ConsoleError, ProgressEventError, ProjectModelError, OSError, sqlite3.Error) as error:
+                raise ConsoleConflict(str(error)) from error
+        accepted_events = {}
+        if recipes:
+            # The same verified Ledger replay exposes immutable acceptance records.
+            # Do not revalidate a terminal audit run against a later mutable brief.
+            with self.progress_ledger._state.locked():
+                retained, records = self.progress_ledger._replay_unlocked()
+            if retained["cursor"] != projection["cursor"]:
+                raise ConsoleError("configured Auto history cursor changed; revalidate selection")
+            accepted_events = {r["event"]["event_id"]: r for r in records
+                               if r["event"].get("event_kind") == "ACCEPTED" and r["event"].get("lifecycle_state") == "ACCEPTED"}
+        for recipe in recipes.values():
+            if any(recipe[key] != state[key] for key in ("project_id", "ctrl_id")):
+                raise ConsoleError("configured Auto retained run scope conflicts")
+            if self._configured_auto_completed(recipe, projection, accepted_events):
+                continue
+            candidate, complete = select_current(recipe)
+            if not complete:
+                unfinished.append((recipe, candidate))
+        provider = getattr(getattr(self, "auto_authorization", None), "configured_run", None)
+        requested = provider(dict(state)) if callable(provider) else None
+        if requested is not None:
+            try:
+                self._configured_auto_recipe(requested)
+            except ConsoleError as error:
+                raise ConsoleConflict(str(error)) from error
+            if any(r["run_id"] == requested.get("run_id") and r != requested for r in recipes.values()):
+                raise ConsoleConflict("configured Auto run identity conflicts")
+            if requested not in recipes.values():
+                candidate, complete = select_current(requested)
+                if not complete:
+                    unfinished.append((requested, candidate))
+        if len(unfinished) > 1:
+            raise ConsoleConflict("multiple unfinished configured Auto runs fail closed")
+        return (True, unfinished[0][1]) if unfinished else (False, None)
+
+    def _auto_instruction(self, candidate: dict[str, Any]) -> str:
+        if "configured" in candidate:
+            meta = candidate["configured"]
+            selected, _ = self._configured_auto_step(meta["recipe"], meta["recipe"], self.progress_ledger.replay())
+            if selected is None or selected["configured"] != meta:
+                raise ConsoleError("configured Auto selection changed before admission")
+            return selected["instruction"]
         return (
             "SWARM Auto continuation. Inspect the durable objective and admitted evidence for "
             f"goal {candidate['goal_id']} and task {candidate['task_id']}. Advance exactly one "
@@ -11796,7 +12071,10 @@ class App:
         if fresh:
             if not callable(getattr(authority, "grant", None)) or not callable(getattr(authority, "verify", None)):
                 return {"dispatched": False, "reason": "AUTO_HOST_AUTHORIZATION_UNAVAILABLE", "state": state}
-            grant = authority.grant(dict(state), root_digest)
+            context = dict(state)
+            if "configured" in candidate:
+                context["configured_run_digest"] = candidate["configured"]["recipe"]["digest"]
+            grant = authority.grant(context, root_digest)
             if not isinstance(grant, HQAutoGrant):
                 raise ConsoleError("native Auto requires a host-owned scoped AUTO grant")
             identity = self.store.auto_dispatch_identity(candidate)
@@ -11804,8 +12082,10 @@ class App:
             envelope = HQCommandEnvelope(reservation_id, identity, HQCommandAction.AUTO,
                 state["project_id"], root_digest, state["ctrl_id"], HQTargetIntent.EXISTING_THREAD,
                 candidate["disposition"]["next_owner"], candidate["instruction_digest"],
-                projection["cursor"]["event_seq"], now, grant.expires_at_ms)
+                candidate.get("configured", {}).get("selection_cursor", projection["cursor"])["event_seq"], now, grant.expires_at_ms)
             meta = {key: candidate[key] for key in ("goal_id", "task_id", "disposition")}
+            if "configured" in candidate:
+                meta["configured"] = candidate["configured"]
         else:
             reservation_id = state["reservation_id"]
             retained = projection["connector_receipts"].get(reservation_id.removeprefix("auto-"))
@@ -11840,7 +12120,14 @@ class App:
             # No COMMAND exists: renew preparation, never an admitted/submitted command.
             if not callable(getattr(authority, "grant", None)) or not callable(getattr(authority, "verify", None)):
                 return {"dispatched": False, "reason": "AUTO_HOST_AUTHORIZATION_UNAVAILABLE", "state": state}
-            grant = authority.grant(dict(state), root_digest)
+            context = dict(state)
+            if "configured" in meta:
+                selected, _ = self._configured_auto_step(state, meta["configured"]["recipe"], projection)
+                if selected is None or self.store.auto_dispatch_identity(selected) != envelope.idempotency_key:
+                    raise ConsoleError("configured Auto preparation no longer selects the retained step")
+                meta = {key: selected[key] for key in ("goal_id", "task_id", "disposition", "configured")}
+                context["configured_run_digest"] = meta["configured"]["recipe"]["digest"]
+            grant = authority.grant(context, root_digest)
             if not isinstance(grant, HQAutoGrant):
                 raise ConsoleError("native Auto requires a host-owned scoped AUTO grant")
             envelope = replace(envelope, submitted_at_ms=now, expires_at_ms=grant.expires_at_ms,
@@ -11872,6 +12159,11 @@ class App:
             # Deny-only local state check inside the Ledger lock; host capability
             # verification already ran before admission, never call it under that lock.
             current = self.store.auto_status(state["ctrl_id"], state["project_id"])
+            if "configured" in meta:
+                selected_projection, _ = self.progress_ledger._replay_unlocked()
+                selected, _ = self._configured_auto_step(state, meta["configured"]["recipe"], selected_projection)
+                if selected is None or selected["configured"] != meta["configured"]:
+                    return False
             return (current["enabled"] and not current["stop_after_turn"]
                 and current["revision"] == state["revision"]
                 and current["reservation_id"] == envelope.command_id
@@ -11882,7 +12174,8 @@ class App:
             material_resolver=SimpleNamespace(resolve=resolve_material),
             root_verifier=SimpleNamespace(observe=observe,
                 verify=lambda observation, command: observation.canonical_cwd == str(root) and observation.root_digest == command.root_digest),
-            admission_guard=admit)
+            admission_guard=admit,
+            admission_scope=(lambda: _brief_update_lock(root / "SWARM.md")) if "configured" in meta else None)
         if fresh or preparing:
             connector._validate_authorization(envelope, grant, now)
             fields = {key: value for key, value in asdict(envelope).items() if key not in {"digest", "_task_creation_json"}}
@@ -11890,6 +12183,13 @@ class App:
                 "reservation_id": reservation_id, "decision_digest": candidate["decision_digest"] if fresh else packet["decision_digest"],
                 "envelope": fields, "grant": asdict(grant), "instruction_meta": meta}
         if fresh:
+            if "configured" in meta:
+                # Validate the original selection again before allocating a lease;
+                # the connector repeats this under brief -> Ledger admission locks.
+                with _brief_update_lock(root / "SWARM.md"):
+                    selected, _ = self._configured_auto_step(state, meta["configured"]["recipe"], self.progress_ledger.replay())
+                    if selected is None or selected["configured"] != meta["configured"]:
+                        raise ConsoleError("configured Auto selected cursor changed before lease")
             decision = {key: candidate[key] for key in ("ctrl_id", "project_id", "goal_id", "task_id", "owner_id",
                 "request_id", "observed_turn_id", "decision_digest", "route_digest", "instruction_digest")}
             decision.update(next_operation=candidate["disposition"]["next_operation"],
@@ -11942,23 +12242,42 @@ class App:
                 "state": completed, "work_completed": False, "bridge_ok": ok}
 
     def evaluate_auto_once(self, overview: dict[str, Any] | None = None) -> dict[str, Any]:
-        states = self.store.enabled_auto_states()
+        states = sorted(self.store.enabled_auto_states(), key=lambda state: not state["in_flight"])
         if not states:
             return {"dispatched": False, "reason": "AUTO_CLOSED"}
         overview = overview or self._host_overview()
         projection = self.progress_ledger.replay()
         waiting = None
+        rejections = []
+        def observed(result):
+            return {**result, "scope_rejections": list(rejections)} if rejections else result
         for state in states:
             if isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport):
-                self._native_auto_scope(state["ctrl_id"], state["project_id"])
+                try:
+                    self._native_auto_scope(state["ctrl_id"], state["project_id"])
+                except ConsoleError as error:
+                    if state["in_flight"]:
+                        raise  # An admitted global lease must not be bypassed.
+                    rejections.append({"ctrl_id": state["ctrl_id"], "project_id": state["project_id"], "reason": str(error)})
+                    waiting = waiting or {"dispatched": False, "reason": "AUTO_SCOPE_REJECTED", "work_completed": False}
+                    continue
             else:
                 self._auto_scope(state["ctrl_id"], state["project_id"])
             if state["in_flight"]:
-                return self._native_auto_dispatch(state, None)
+                return observed(self._native_auto_dispatch(state, None))
             if not state["enabled"] or state["stop_after_turn"]:
                 continue
-            candidate = self._auto_candidate(state, overview, projection)
+            try:
+                configured, candidate = self._configured_auto_candidate(state, projection)
+            except ConsoleConflict as error:
+                rejections.append({"ctrl_id": state["ctrl_id"], "project_id": state["project_id"], "reason": str(error)})
+                waiting = waiting or {"dispatched": False, "reason": "CONFIGURED_SCOPE_REJECTED", "work_completed": False}
+                continue  # No ordinary fallback for this rejected configured scope.
+            if not configured:
+                candidate = self._auto_candidate(state, overview, projection)
             if candidate is None:
+                if configured:
+                    waiting = waiting or {"dispatched": False, "reason": "CONFIGURED_ACCEPTANCE_OR_BOUND", "work_completed": False}
                 continue
             if candidate["disposition"]["disposition"] in {"WAIT_USER", "TERMINAL_BLOCKED"}:
                 payload = {"ctrl_id": candidate["ctrl_id"], "project_id": candidate["project_id"],
@@ -11973,8 +12292,8 @@ class App:
             if not result["dispatched"] and result.get("reason") == "REPLAY":
                 waiting = waiting or result
                 continue
-            return result
-        return waiting or {"dispatched": False, "reason": "NO_DUE_DECISION"}
+            return observed(result)
+        return observed(waiting or {"dispatched": False, "reason": "NO_DUE_DECISION"})
 
     def _host_overview(self, *, refresh: bool = False) -> dict[str, Any]:
         with self.overview_lock:
@@ -16325,7 +16644,7 @@ class App:
         except ProjectModelError as exc:
             raise ConsoleError(str(exc)) from exc
 
-    def _require_flow_assignment_subject(self, project_id: str, assignment: dict[str, Any], *, accepting_scope=None) -> None:
+    def _require_flow_assignment_subject(self, project_id: str, assignment: dict[str, Any], *, accepting_scope=None, _projection=None) -> None:
         """Validate scope without editing shared roles, task identities or dispatching."""
         ctrl_id = assignment["ctrl_id"]
         if accepting_scope is not None and (assignment["subject_kind"] not in {"LAB", "FACTORY"}
@@ -16339,7 +16658,7 @@ class App:
                          if item["id"] == assignment["subject_id"] and item["id"].casefold() != "critic"), None)
             version = role["active_version"] if role else None
         else:
-            projection = self.progress_ledger.replay()
+            projection = self.progress_ledger.replay() if _projection is None else _projection
             task_id = assignment["subject_id"]
             state = projection["task_manifests"].get(task_id)
             manifest = state["versions"][state["active_version"]] if state else None

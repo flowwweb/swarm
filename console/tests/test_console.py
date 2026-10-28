@@ -182,7 +182,7 @@ class SwarmConsoleTests(unittest.TestCase):
                 self.assertTrue(sample.call_args.kwargs["tokens_only"])
             self.assertEqual(app.auto_bridge.mock_calls, [])
 
-    def _existing_work_fixture(self, *, physical=False, unit=False):
+    def _existing_work_fixture(self, *, physical=False, unit=False, configured=False):
         app = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
         root_digest = console._auto_digest({"project_id":"project:alpha", "canonical_root":console._normalized_project_path(str(self.alpha_root))})
         def seed(task_id, ctrl_id, role_scope):
@@ -196,8 +196,10 @@ class SwarmConsoleTests(unittest.TestCase):
                 **({"work_unit": dict(kind="LAB", goal_id=None, parent_goal_id=None, parent_unit_task_id=None)}
                    if unit and task_id != ctrl_id else {}),
                 milestones=[dict(milestone_id=task_id + "-milestone", order=0, title="Retained milestone", verification_policy="source", supersedes_milestone_id=None)],
-                blocks=[dict(block_id=task_id + "-old", milestone_id=task_id + "-milestone", order=0, title="Historical work",
-                    verification_policy="source", estimate_minutes=1, weight=None, supersedes_block_id=None)])
+                blocks=[dict(block_id=block, milestone_id=task_id + "-milestone", order=i, title="Historical work",
+                    verification_policy="source", estimate_minutes=1, weight=None, supersedes_block_id=None)
+                    for i, block in enumerate(([f"flow-{i}-{n}" for i in range(1, (configured if type(configured) is int else 2) + 1) for n in ("draft", "check")]
+                        if configured and task_id == "task" else [task_id + "-old"]))])
             base = dict(schema_version=1, record_type="CONNECTOR", command_id=operation, idempotency_key=operation,
                 command_digest=hashlib.sha256(operation.encode()).hexdigest(), project_id="project:alpha", root_digest=creation_root,
                 action="MANUAL_AGENT", thread_id=None, turn_id=None, observed_root_digest=None)
@@ -237,7 +239,7 @@ class SwarmConsoleTests(unittest.TestCase):
                 ctrl_id=ctrl_id, task_id=task_id, role_manifest=role, task_manifest=manifest, parent_task_id=None if task_id == ctrl_id else ctrl_id,
                 topology_manifest_receipt_id=operation + "-topology", task_receipt_id=operation + "-task",
                 milestone_receipts=[dict(id=manifest["milestones"][0]["milestone_id"],receipt_id=operation + "-milestone")],
-                block_receipts=[dict(id=manifest["blocks"][0]["block_id"],receipt_id=operation + "-block")],
+                block_receipts=[dict(id=b["block_id"],receipt_id=operation + "-block" + ("-" + str(i) if configured else "")) for i,b in enumerate(manifest["blocks"])],
                 explicit_empty_work_receipt_id=None,host_result_receipt_id=result["receipt_id"],observed_at_ms=4)
             if legacy:
                 app.progress_ledger.append(event)
@@ -245,8 +247,8 @@ class SwarmConsoleTests(unittest.TestCase):
                 app.progress_ledger.append_connector_result_with_task_creation(result,event)
             return manifest, role_manifest_reference(role)
         ctrl,_ = seed("root","root","CTRL_BOUNDED")
-        original,role = seed("task","historical-ctrl","LEAD_SINGLE" if unit else "DOER_SINGLE")
-        if unit:
+        original,role = seed("task","root" if configured else "historical-ctrl","LEAD_SINGLE" if unit else "DOER_SINGLE")
+        if unit or configured:
             return app, {"ctrl_id": "root", "manifest_digest": ctrl["manifest_digest"]}, original
         with closing(sqlite3.connect(console.goals_database(self.codex_home))) as connection:
             connection.execute("CREATE TABLE thread_goals(thread_id TEXT PRIMARY KEY,goal_id TEXT,status TEXT)")
@@ -10975,6 +10977,610 @@ class SwarmConsoleTests(unittest.TestCase):
         app.progress_ledger = LedgerFixture(retained)
         app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "native-enable"})
         return app, host, facts, retained, authority, transport
+
+    def _configured_auto_case(self, *, terminal=True, uncertain=False, reserve_later_run=False):
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        _, scope, manifest = self._existing_work_fixture(configured=4 if reserve_later_run else True)
+        app, host, _, ledger, authority, transport = self._native_auto_case(terminal=terminal, uncertain=uncertain)
+        app.progress_ledger = ledger  # All material facts are actual retained Ledger events.
+        now = int(time.time() * 1000)
+        with closing(sqlite3.connect(console.goals_database(self.codex_home))) as connection:
+            connection.execute("CREATE TABLE thread_goals(thread_id TEXT PRIMARY KEY,goal_id TEXT,status TEXT)")
+            connection.execute("INSERT INTO thread_goals VALUES ('root','flow-goal','active')")
+            connection.commit()
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        current = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        nodes = []
+        for name in ("draft", "check"):
+            nodes.append(dict(id=name, objective="Produce " + name, owner_id="task", capability="local-source",
+                dependencies=["draft"] if name == "check" else [],
+                inputs=[dict(node_id="draft", output_id="report")] if name == "check" else [],
+                outputs=["report"], completion="Return an exact verified file", proof_classes=["SOURCE_STATIC"]))
+        current = app.project_flow_command(dict(operation="save", project_id="project:alpha", expected_digest=current["source_digest"],
+            acknowledge=True, definition=dict(id="bounded", version=1, objective="Produce and check", nodes=nodes)))
+        flow = current["definitions"][0]
+        role_ref = ledger.replay()["task_creation_bindings"]["created-task"]["role_manifest_ref"]
+        current = app.project_flow_command(dict(operation="assign", project_id="project:alpha", expected_digest=current["source_digest"], acknowledge=True,
+            assignment=dict(version=1, subject_kind="ROLE", subject_id="developer", subject_version=role_ref["manifest_version"], ctrl_id="root",
+                flow_id=flow["id"], flow_version=1, flow_digest=flow["digest"], label="Finite test", notes="Not dispatch authority", repeat_count=2)))
+        assignment = current["assignments"][0]
+        recipe = dict(run_id="explicit-flow-run", project_id="project:alpha", ctrl_id="root", goal_id="flow-goal",
+            ctrl_manifest_digest=scope["manifest_digest"], root_digest=console._auto_digest({"project_id":"project:alpha",
+                "canonical_root":console._normalized_project_path(str(self.alpha_root))}), brief_digest=current["source_digest"],
+            flow_id=flow["id"], flow_version=1, flow_digest=flow["digest"], assignment_id=assignment["id"],
+            assignment_version=1, assignment_digest=assignment["digest"], iterations=2, operation_bound=4, expires_at_ms=now + 600000,
+            bindings=[dict(iteration=i, node_id=n, task_id="task", manifest_digest=manifest["manifest_digest"],
+                block_id=f"flow-{i}-{n}", attempt=1, role_manifest_ref=role_ref, output_id="report", artifact_path=f"{i}-{n}.txt")
+                for i in (1,2) for n in ("draft", "check")])
+        recipe["digest"] = console._auto_digest(recipe)
+        authority.configured_run = lambda state: copy.deepcopy(recipe)
+        grant = authority.grant
+        authority.grant = lambda state, digest: (self.assertEqual(state["configured_run_digest"], recipe["digest"]) or grant(state, digest))
+        request = transport.request
+        host["consumed"] = []
+        def consume(method, params):
+            if method == "send_message_to_thread":
+                data = json.loads(params["prompt"][params["prompt"].index("{"):])
+                for ref in data["inputs"]:
+                    content = (self.alpha_root / ref["artifact_path"]).read_bytes()
+                    self.assertEqual(hashlib.sha256(content).hexdigest(), ref["sha256"])
+                    host["consumed"].append((ref["iteration"], ref["node_id"], ref["artifact_path"], ref["sha256"]))
+            return request(method, params)
+        transport.request = consume
+        return app, host, ledger, authority, transport, recipe
+
+    def _accept_configured_output(self, app, recipe, index):
+        from contextlib import contextmanager
+        step = recipe["bindings"][index]
+        content = ("Verified " + step["block_id"]).encode()
+        path = self.alpha_root / step["artifact_path"]
+        path.write_bytes(content)
+        sha = hashlib.sha256(content).hexdigest()
+        gates = [["exact-output", [sys.executable, "-c", "from pathlib import Path; import hashlib; assert hashlib.sha256(Path(" +
+            repr(step["artifact_path"]) + ").read_bytes()).hexdigest() == " + repr(sha)]]]
+        with closing(sqlite3.connect(self.database)) as connection:
+            columns = [r[1] for r in connection.execute("PRAGMA table_info(threads)")]
+            row = list(connection.execute("SELECT * FROM threads WHERE id='task'").fetchone())
+            row[columns.index("id")] = "flow-review"
+            connection.execute("INSERT OR IGNORE INTO threads VALUES (" + ",".join("?" for _ in row) + ")", row)
+            connection.commit()
+        binding = console.bound_task_acceptance_binding(project_id=recipe["project_id"], task_id=step["task_id"], block_id=step["block_id"],
+            manifest_digest=step["manifest_digest"], goal_id=recipe["goal_id"], artifact_path=step["artifact_path"], artifact_sha256=sha,
+            gates=gates, review_strategy="light", ctrl_id=recipe["ctrl_id"], root_digest=recipe["root_digest"], role_manifest_ref=step["role_manifest_ref"])
+        verdict = json.dumps(dict(schema=console.BOUND_TASK_REVIEW_SCHEMA, verdict="ACCEPT", binding=binding))
+        turn = "review-" + step["block_id"]
+        @contextmanager
+        def session(cwd, **kwargs):
+            messages = []
+            def receive(predicate):
+                message = messages[-1]
+                self.assertEqual(message["method"], "thread/read")
+                return {"id":message["id"], "result":{"thread":{"id":"flow-review", "cwd":str(self.alpha_root), "turns":[
+                    {"id":turn, "status":"completed", "items":[{"type":"userMessage", "content":[{"type":"text", "text":"Review exact output"}]},
+                        {"type":"agentMessage", "text":verdict}]}]}}}
+            yield messages.append, receive
+        app.auto_bridge.command_session = session
+        result = app.complete_bound_task(dict(project_id=recipe["project_id"], task_id=step["task_id"], block_id=step["block_id"],
+            manifest_digest=step["manifest_digest"], expected_ledger_revision=app.progress_ledger.replay()["cursor"]["event_seq"],
+            artifact_path=step["artifact_path"], artifact_sha256=sha, gates=gates, review_strategy="light",
+            host_review=dict(reviewer_thread_id="flow-review",reviewer_turn_id=turn), acknowledge=True))
+        self.assertEqual(result["status"], "ACCEPTED")
+        return sha
+
+    def test_configured_auto_real_acceptance_dependencies_two_iterations_and_bound(self):
+        app, host, ledger, authority, transport, recipe = self._configured_auto_case()
+        for index, step in enumerate(recipe["bindings"]):
+            result = app.evaluate_auto_once()
+            self.assertTrue(result["dispatched"], result)
+            packet = json.loads(host["sent"][-1]["prompt"][host["sent"][-1]["prompt"].index("{"):])
+            self.assertEqual(packet["step"], step)
+            role = ledger.replay()["role_manifests"]["developer"]["versions"][step["role_manifest_ref"]["manifest_version"]]
+            self.assertEqual((packet["role"]["version"],packet["role"]["instructions"]), (role["version"],role["instructions"]))
+            self.assertFalse(result["work_completed"])
+            before = ledger._state.path.read_bytes()
+            self.assertEqual(app.evaluate_auto_once()["reason"], "REPLAY", "host completion cannot advance configured work")
+            self.assertEqual(before, ledger._state.path.read_bytes())
+            self._accept_configured_output(app, recipe, index)
+        with mock.patch.object(app, "_auto_candidate", wraps=app._auto_candidate) as recovery:
+            self.assertEqual(app.evaluate_auto_once()["reason"], "NO_DUE_DECISION")
+            recovery.assert_called_once()
+        self.assertEqual(len(host["sent"]), 4)
+        self.assertEqual(len(host["consumed"]), 6)
+        auto = [c for c in ledger.replay()["connector_receipts"].values() if c["receipts"][0]["action"] == "AUTO"]
+        self.assertEqual(len(auto), 4)
+        self.assertEqual(len({c["receipts"][0]["command_id"] for c in auto}), 4)
+        self.assertTrue(all(b["lifecycle_state"] == "ACCEPTED" for b in ledger.replay()["blocks"].values()))
+
+    def test_configured_auto_completed_history_does_not_capture_recovery_or_later_flow_after_restart(self):
+        app, host, ledger, authority, transport, recipe = self._configured_auto_case(reserve_later_run=True)
+        for index in range(4):
+            self.assertTrue(app.evaluate_auto_once()["dispatched"])
+            self._accept_configured_output(app, recipe, index)
+        before = ledger._state.path.read_bytes()
+        old_commands = {k:copy.deepcopy(c) for k,c in ledger.replay()["connector_receipts"].items() if c["receipts"][0]["action"] == "AUTO"}
+        self.assertEqual(len(old_commands), 4)
+        authority.configured_run = lambda state: None
+        with mock.patch.object(app, "_auto_candidate", return_value=None) as recovery:
+            self.assertEqual(app.evaluate_auto_once()["reason"], "NO_DUE_DECISION")
+            recovery.assert_called_once()
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        # Supported future source edits and retired old output bytes cannot reopen a terminal run.
+        current = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        flow = {k:copy.deepcopy(v) for k,v in current["definitions"][0].items() if k != "digest"}
+        flow.update(version=2, objective="Later independent run")
+        current = app.project_flow_command(dict(operation="save", project_id="project:alpha", expected_digest=current["source_digest"],
+            definition=flow, acknowledge=True))
+        definition = current["definitions"][-1]
+        assignment = {k:v for k,v in current["assignments"][0].items() if k not in {"id", "digest"}}
+        assignment.update(version=2, flow_version=2, flow_digest=definition["digest"])
+        current = app.project_flow_command(dict(operation="assign", project_id="project:alpha", expected_digest=current["source_digest"],
+            assignment=assignment, acknowledge=True))
+        for step in recipe["bindings"]: (self.alpha_root / step["artifact_path"]).unlink()
+        native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+        with mock.patch.object(restarted, "_auto_candidate", return_value=None) as recovery:
+            self.assertEqual(restarted.evaluate_auto_once()["reason"], "NO_DUE_DECISION")
+            recovery.assert_called_once()
+        self.assertEqual(before, restarted.progress_ledger._state.path.read_bytes())
+        self.assertEqual(len(host["sent"]), 4)
+        later = copy.deepcopy(recipe)
+        later.update(run_id="later-flow-run", brief_digest=current["source_digest"], flow_version=2, flow_digest=definition["digest"],
+            assignment_version=2, assignment_digest=current["assignments"][-1]["digest"])
+        for step in later["bindings"]:
+            actual_iteration = step["iteration"] + 2
+            step.update(block_id=f"flow-{actual_iteration}-{step['node_id']}", artifact_path=f"{actual_iteration}-{step['node_id']}.txt")
+        later["digest"] = console._auto_digest({k:v for k,v in later.items() if k != "digest"})
+        authority.configured_run = lambda state: copy.deepcopy(later)
+        grant = authority.grant
+        # The fixture's original exact-run verifier must explicitly observe the new run context.
+        authority.grant = lambda state,digest: console.HQAutoGrant("later-grant",state["project_id"],digest,state["ctrl_id"],
+            (console.HQCommandAction.AUTO,),int(time.time()*1000)+60000) if state["configured_run_digest"] == later["digest"] else grant(state,digest)
+        self.assertTrue(restarted.evaluate_auto_once()["dispatched"])
+        self.assertEqual(len(host["sent"]), 5)
+        packet = json.loads(host["sent"][-1]["prompt"][host["sent"][-1]["prompt"].index("{"):])
+        self.assertEqual(packet["step"]["block_id"], "flow-3-draft")
+        retained = restarted.progress_ledger.replay()["connector_receipts"]
+        for key,value in old_commands.items(): self.assertEqual(retained[key], value)
+        self.assertEqual(len([c for c in retained.values() if c["receipts"][0]["action"] == "AUTO"]),5)
+        self.assertEqual(restarted.evaluate_auto_once()["reason"], "REPLAY")
+        self.assertEqual(len(host["sent"]),5)
+
+    def test_configured_auto_restart_without_transient_material_or_expired_grant_then_fresh_step(self):
+        app, host, ledger, authority, transport, recipe = self._configured_auto_case(terminal=False, uncertain=True)
+        first = app.evaluate_auto_once()
+        self.assertEqual(first["reason"], "APP_TASK_DELIVERY_UNCERTAIN")
+        self.assertEqual(len(host["sent"]), 1)
+        native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=native)
+        self.assertIsNot(restarted.progress_ledger, ledger)
+        restarted._auto_instruction = mock.Mock(side_effect=AssertionError("replay never reconstructs input"))
+        host["uncertain"] = False
+        from itertools import count
+        clock = count(time.time() + 120, 0.001)
+        with mock.patch.object(console.time, "time", side_effect=lambda: next(clock)):
+            self.assertEqual(restarted.evaluate_auto_once()["reason"], "IN_FLIGHT")
+            host["turns"][0]["status"] = "completed"
+            self.assertEqual(restarted.evaluate_auto_once()["reason"], "RECONCILED")
+        self.assertEqual(len(host["sent"]), 1)
+        restarted._auto_instruction.assert_not_called()
+        del restarted._auto_instruction
+        self._accept_configured_output(restarted, recipe, 0)
+        # No new run request is needed: recover reference-only recipe from the same journal.
+        authority.configured_run = lambda state: None
+        restarted.auto_authorization = authority
+        host["terminal"] = True
+        self.assertTrue(restarted.evaluate_auto_once()["dispatched"])
+        self.assertEqual(len(host["sent"]), 2)
+        self.assertEqual(len([c for c in ledger.replay()["connector_receipts"].values() if c["receipts"][0]["action"] == "AUTO"]), 2)
+
+    def _expect_configured_selection_rejection(self, app, reason="."):
+        with mock.patch.object(app, "_auto_candidate", side_effect=AssertionError("rejected scope must never fall back")) as fallback:
+            result = app.evaluate_auto_once()
+        self.assertEqual((result["dispatched"], result["reason"], result["work_completed"]), (False, "CONFIGURED_SCOPE_REJECTED", False))
+        self.assertEqual(len(result["scope_rejections"]), 1)
+        rejection = result["scope_rejections"][0]
+        self.assertEqual((rejection["ctrl_id"], rejection["project_id"]), ("root", "project:alpha"))
+        self.assertRegex(rejection["reason"], reason)
+        fallback.assert_not_called()
+        return result
+
+    def test_configured_auto_invalid_scope_binding_bounds_and_authority_leave_no_lease(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        variants = []
+        for key, value in (("root_digest", "0"*64), ("ctrl_id", "other"), ("project_id", "project:beta"),
+                           ("goal_id", "invented"), ("brief_digest", "0"*64), ("flow_digest", "sha256:" + "0"*64),
+                           ("assignment_digest", "sha256:" + "0"*64), ("iterations", True), ("iterations", 3),
+                           ("operation_bound", 3), ("expires_at_ms", 1)):
+            value_recipe = copy.deepcopy(recipe); value_recipe[key] = value; variants.append(value_recipe)
+        for key, value in (("task_id", "root"), ("block_id", "not-retained"), ("output_id", "invented"),
+                           ("manifest_digest", "sha256:" + "0"*64), ("attempt", 2), ("artifact_path", "../outside.txt"),
+                           ("role_manifest_ref", dict(recipe["bindings"][0]["role_manifest_ref"], manifest_version="missing"))):
+            value_recipe = copy.deepcopy(recipe); value_recipe["bindings"][0][key] = value; variants.append(value_recipe)
+        duplicate = copy.deepcopy(recipe); duplicate["bindings"][1] = duplicate["bindings"][0]; variants.append(duplicate)
+        (self.alpha_root / "output-directory").mkdir()
+        directory = copy.deepcopy(recipe); directory["bindings"][0]["artifact_path"] = "output-directory"; variants.append(directory)
+        for index, invalid in enumerate(variants):
+            with self.subTest(variant=index):
+                invalid["digest"] = console._auto_digest({k:v for k,v in invalid.items() if k != "digest"})
+                authority.configured_run = lambda state: invalid
+                before = ledger._state.path.read_bytes()
+                self._expect_configured_selection_rejection(app)
+                self.assertEqual(before, ledger._state.path.read_bytes())
+                self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+                self.assertEqual(host["sent"], [])
+        authority.configured_run = lambda state: recipe
+        host["deny"] = True
+        with self.assertRaises((ValueError, console.ConsoleError)): app.evaluate_auto_once()
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(host["sent"], [])
+        authority.grant = None
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_HOST_AUTHORIZATION_UNAVAILABLE")
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+
+    def test_configured_auto_stale_selection_from_grant_and_before_admission(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        original = authority.grant
+        brief = self.alpha_root / "SWARM.md"
+        source = brief.read_bytes()
+        def changed(state, digest):
+            result = original(state, digest)
+            brief.write_bytes(source.replace(b"Produce and check", b"Changed objective"))
+            return result
+        authority.grant = changed
+        before = ledger._state.path.read_bytes()
+        with self.assertRaises((ValueError, console.ConsoleError)): app.evaluate_auto_once()
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        brief.write_bytes(source); authority.grant = original
+        # A material append between selection and grant return must not be blessed by a new cursor.
+        def append_material(state, digest):
+            result = original(state, digest)
+            ledger.append_bound_block_evidence(project_id="project:alpha", task_id="task", block_id="flow-1-draft",
+                manifest_digest=recipe["bindings"][0]["manifest_digest"], expected_event_seq=ledger.replay()["cursor"]["event_seq"],
+                evidence_path=self.alpha_root / "1-draft.txt", expected_sha256=hashlib.sha256(b"not accepted").hexdigest())
+            return result
+        (self.alpha_root / "1-draft.txt").write_bytes(b"not accepted")
+        authority.grant = append_material
+        with self.assertRaisesRegex((ValueError, console.ConsoleError), "selection changed"): app.evaluate_auto_once()
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(host["sent"], [])
+        self.assertFalse(any(c["receipts"][0]["action"] == "AUTO" for c in ledger.replay()["connector_receipts"].values()))
+
+    def test_configured_auto_exact_accepted_output_not_bare_sha_or_same_bytes_other_path(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        app.evaluate_auto_once()
+        self._accept_configured_output(app, recipe, 0)
+        original = copy.deepcopy(recipe)
+        (self.alpha_root / "copy.txt").write_bytes((self.alpha_root / "1-draft.txt").read_bytes())
+        recipe["bindings"][0]["artifact_path"] = "copy.txt"
+        recipe["digest"] = console._auto_digest({k:v for k,v in recipe.items() if k != "digest"})
+        before = ledger._state.path.read_bytes()
+        self._expect_configured_selection_rejection(app, "run identity conflicts")
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        recipe["run_id"] = "different-path-probe"
+        recipe["digest"] = console._auto_digest({k:v for k,v in recipe.items() if k != "digest"})
+        self._expect_configured_selection_rejection(app, "exact accepted artifact")
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        recipe.clear(); recipe.update(original)
+        output = self.alpha_root / "1-draft.txt"
+        content = output.read_bytes(); output.write_bytes(b"changed")
+        self._expect_configured_selection_rejection(app, "exact accepted artifact")
+        output.unlink()
+        self._expect_configured_selection_rejection(app)
+        output.write_bytes(content)
+        with mock.patch.object(ledger, "replay", wraps=ledger.replay) as replay:
+            actual = replay._mock_wraps
+            def missing_identity():
+                projection = actual()
+                for block in projection["blocks"].values():
+                    block["proof_receipt_ids"] = [p for p in block["proof_receipt_ids"] if not p.startswith("runtime-artifact:")]
+                return projection
+            replay.side_effect = missing_identity
+            self._expect_configured_selection_rejection(app, "exact accepted artifact")
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertTrue(app.evaluate_auto_once()["dispatched"])
+
+    def test_configured_auto_changed_input_at_reservation_and_cancel_release(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        app.evaluate_auto_once(); self._accept_configured_output(app, recipe, 0)
+        reserve = ledger.reserve_connector_command
+        changed = False
+        def raced(payload, **kwargs):
+            nonlocal changed
+            if not changed:
+                changed = True
+                (self.alpha_root / "1-draft.txt").write_bytes(b"changed after selection")
+            return reserve(payload, **kwargs)
+        with mock.patch.object(ledger, "reserve_connector_command", side_effect=raced):
+            with self.assertRaisesRegex((ValueError, console.ConsoleError), "exact accepted artifact"): app.evaluate_auto_once()
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(len([c for c in ledger.replay()["connector_receipts"].values() if c["receipts"][0]["action"] == "AUTO"]), 1)
+        app.auto_command(dict(command="DISABLE", ctrl_id="root", project_id="project:alpha", request_id="cancel-input-change"))
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_OFF")
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        # The cancelled pre-send preparation must not consume global capacity.
+        app.store.set_auto("ctrl-2", "project:alpha", enabled=True, request_id="other-ctrl", now_ms=int(time.time()*1000))
+        self.assertTrue(app.store.claim_auto_dispatch(self._auto_decision("ctrl-2"), app._auto_generation(), now_ms=int(time.time()*1000))["claimed"])
+
+    def test_configured_auto_brief_writer_interleaves_before_admission_without_host_under_lock(self):
+        from contextlib import contextmanager
+        app, host, ledger, authority, transport, recipe = self._configured_auto_case()
+        lock = console._brief_update_lock
+        held, writer_ready, release_writer = threading.local(), threading.Event(), threading.Event()
+        errors, workers = [], []
+        @contextmanager
+        def observed_lock(path):
+            with lock(path):
+                held.value = True
+                try: yield
+                finally: held.value = False
+        grant, verify, request = authority.grant, authority.verify, transport.request
+        def unlocked(fn, *args):
+            self.assertFalse(getattr(held, "value", False), "host callback inside brief admission scope")
+            return fn(*args)
+        authority.grant = lambda *args: unlocked(grant, *args)
+        authority.verify = lambda *args: unlocked(verify, *args)
+        transport.request = lambda *args: unlocked(request, *args)
+        def writer():
+            try:
+                path = self.alpha_root / "SWARM.md"
+                def before_write():
+                    ledger.replay()  # Canonical writer lock order is brief -> Ledger.
+                    writer_ready.set()
+                    self.assertTrue(release_writer.wait(5))
+                document, _ = console.parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=self.alpha_root)
+                assignment = {**document["flow_assignments"][0], "version":2, "label":"Writer update"}
+                assignment["digest"] = "sha256:" + console._auto_digest({k:v for k,v in assignment.items() if k != "digest"})
+                console.mutate_project_brief(path, expected_digest=recipe["brief_digest"], operation="create",
+                    collection="flow_assignments", record_id=assignment["id"], changes={k:v for k,v in assignment.items() if k != "id"},
+                    updated_at="2026-10-28T00:00:00Z", verify_current_scope=before_write)
+            except BaseException as error:
+                errors.append(error)
+        reserve = ledger.reserve_connector_command
+        def raced(payload, **kwargs):
+            if not workers:
+                worker = threading.Thread(target=writer)
+                workers.append(worker); worker.start()
+                self.assertTrue(writer_ready.wait(5))
+                release_writer.set()
+            return reserve(payload, **kwargs)
+        before = ledger._state.path.read_bytes()
+        try:
+            with mock.patch.object(console, "_brief_update_lock", observed_lock), mock.patch.object(ledger, "reserve_connector_command", side_effect=raced):
+                with self.assertRaisesRegex(console.ConsoleError, "brief changed"):
+                    app.evaluate_auto_once()
+        finally:
+            release_writer.set()
+            for worker in workers: worker.join(5)
+        self.assertFalse(errors, errors)
+        self.assertTrue(all(not worker.is_alive() for worker in workers), "writer/admission deadlock")
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        self.assertEqual(host["sent"], [])
+
+    def _configured_cancel_race(self, admission_wins):
+        app, host, ledger, _, _, _ = self._configured_auto_case()
+        reserve, cancelled = ledger.reserve_connector_command, False
+        def raced(payload, **kwargs):
+            nonlocal cancelled
+            result = reserve(payload, **kwargs) if admission_wins else None
+            if not cancelled and (not admission_wins or result["status"] == "APPENDED"):
+                cancelled = True
+                app.auto_command(dict(command="DISABLE",ctrl_id="root",project_id="project:alpha",request_id="configured-cancel"))
+            return result if admission_wins else reserve(payload, **kwargs)
+        with mock.patch.object(ledger, "reserve_connector_command", side_effect=raced):
+            result = app.evaluate_auto_once()
+        self.assertFalse(result["work_completed"])
+        self.assertEqual(len(host["sent"]), int(admission_wins))
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_CLOSED")
+
+    def test_configured_auto_cancel_wins_before_command(self):
+        self._configured_cancel_race(False)
+
+    def test_configured_auto_admission_wins_cancel_without_duplicate_send(self):
+        self._configured_cancel_race(True)
+
+    def test_configured_auto_multiple_unfinished_runs_and_changed_actor_goal_fail_closed(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        grant = authority.grant
+        def changed_actor(state, digest):
+            result = grant(state, digest)
+            with closing(sqlite3.connect(self.database)) as db:
+                db.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root),)); db.commit()
+            return result
+        authority.grant = changed_actor
+        before = ledger._state.path.read_bytes()
+        with self.assertRaises(console.ConsoleError): app.evaluate_auto_once()
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.alpha_root),)); db.commit()
+        def changed_goal(state, digest):
+            result = grant(state, digest)
+            with closing(sqlite3.connect(console.goals_database(self.codex_home))) as db:
+                db.execute("UPDATE thread_goals SET status='paused'"); db.commit()
+            return result
+        authority.grant = changed_goal
+        with self.assertRaisesRegex(console.ConsoleError, "exact active host goal"): app.evaluate_auto_once()
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        with closing(sqlite3.connect(console.goals_database(self.codex_home))) as db:
+            db.execute("UPDATE thread_goals SET status='active'"); db.commit()
+        authority.grant = grant
+        app.evaluate_auto_once()
+        second = copy.deepcopy(recipe); second["run_id"] = "other-run"
+        second["digest"] = console._auto_digest({k:v for k,v in second.items() if k != "digest"})
+        authority.configured_run = lambda state: second
+        self._expect_configured_selection_rejection(app, "multiple unfinished")
+        self.assertEqual(len(host["sent"]), 1)
+
+    def test_configured_auto_preserves_historical_role_but_denies_rebinding_from_grant(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        pinned = recipe["bindings"][0]["role_manifest_ref"]
+        role = ledger.replay()["role_manifests"]["developer"]["versions"][pinned["manifest_version"]]
+        draft = {k:v for k,v in role.items() if k not in {"id", "version", "source", "provenance"}}
+        draft["instructions"] = [*draft["instructions"], "A later shared default; do not rewrite active history."]
+        revised = console.build_role_manifest("developer", draft, "user_override", ["test:revision"])
+        ledger.append(console.role_material_event("ROLE_MANIFEST_REVISE", event_id="later-role", dedupe_key="later-role",
+            role_id="developer", manifest=revised, expected_active_version=role["version"], assignment_task_id=None,
+            provenance="test:revision", observed_at_ms=20))
+        selected, _ = app._configured_auto_candidate(app.store.auto_status("root", "project:alpha"), ledger.replay())
+        self.assertTrue(selected)
+        candidate = app._configured_auto_step(recipe, recipe, ledger.replay())[0]
+        data = json.loads(candidate["instruction"][candidate["instruction"].index("{"):])
+        self.assertEqual(data["role"]["version"], role["version"])
+        self.assertNotEqual(data["role"]["version"], revised["version"])
+        grant = authority.grant
+        def rebound(state, digest):
+            result = grant(state, digest)
+            ledger.append(console.role_material_event("ROLE_ASSIGNMENT_BOUND", event_id="rebind-task", dedupe_key="rebind-task",
+                role_id="developer", manifest=revised, expected_active_version=revised["version"], assignment_task_id="task",
+                provenance="test:rebind", observed_at_ms=21))
+            return result
+        authority.grant = rebound
+        before = ledger._state.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "task role assignment is already bound"): app.evaluate_auto_once()
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        self.assertEqual(ledger.replay()["role_assignments"]["task"]["manifest_version"], role["version"])
+        self.assertEqual(host["sent"], [])
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+
+    def test_configured_auto_multi_output_planning_definition_remains_valid_but_not_executable(self):
+        app, host, _, authority, _, recipe = self._configured_auto_case()
+        current = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        flow = copy.deepcopy(current["definitions"][0]); flow.pop("digest"); flow["version"] = 2
+        flow["nodes"][0]["outputs"].append("second-output")
+        current = app.project_flow_command(dict(operation="save", project_id="project:alpha", expected_digest=current["source_digest"],
+            definition=flow, acknowledge=True))
+        definition = current["definitions"][-1]
+        assignment = {k:v for k,v in current["assignments"][0].items() if k not in {"id", "digest"}}
+        assignment.update(version=2, flow_version=2, flow_digest=definition["digest"])
+        current = app.project_flow_command(dict(operation="assign", project_id="project:alpha", expected_digest=current["source_digest"],
+            assignment=assignment, acknowledge=True))
+        recipe.update(brief_digest=current["source_digest"], flow_version=2, flow_digest=definition["digest"],
+            assignment_version=2, assignment_digest=current["assignments"][-1]["digest"])
+        recipe["digest"] = console._auto_digest({k:v for k,v in recipe.items() if k != "digest"})
+        self._expect_configured_selection_rejection(app, "exactly one named output")
+        self.assertEqual(host["sent"], [])
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+
+    def test_configured_auto_unaccepted_evidence_never_starts_or_unblocks_dependency(self):
+        app, host, ledger, _, _, recipe = self._configured_auto_case()
+        path = self.alpha_root / "1-draft.txt"; path.write_bytes(b"unadmitted proof")
+        ledger.append_bound_block_evidence(project_id="project:alpha", task_id="task", block_id="flow-1-draft",
+            manifest_digest=recipe["bindings"][0]["manifest_digest"], expected_event_seq=ledger.replay()["cursor"]["event_seq"],
+            evidence_path=path, expected_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        before = ledger._state.path.read_bytes()
+        self.assertEqual(app.evaluate_auto_once()["reason"], "CONFIGURED_ACCEPTANCE_OR_BOUND")
+        self.assertEqual(host["sent"], [])
+        self.assertEqual(before, ledger._state.path.read_bytes())
+
+    def _configured_disjoint_case(self, *, terminal=True, other="zz-other"):
+        app, host, ledger, authority, transport, recipe = self._configured_auto_case(terminal=terminal)
+        with closing(sqlite3.connect(self.database)) as db:
+            columns = [r[1] for r in db.execute("PRAGMA table_info(threads)")]
+            for original, target in (("root", other), ("task", "other-owner")):
+                row = list(db.execute("SELECT * FROM threads WHERE id=?", (original,)).fetchone())
+                row[columns.index("id")] = target
+                db.execute("INSERT INTO threads VALUES (" + ",".join("?" for _ in row) + ")",row)
+            db.commit()
+        app.auto_command(dict(command="ENABLE",ctrl_id=other,project_id="project:alpha",request_id="enable-disjoint"))
+        requested, grant = authority.configured_run, authority.grant
+        authority.configured_run = lambda state: requested(state) if state["ctrl_id"] == "root" else None
+        authority.grant = lambda state,digest: grant(state,digest) if state["ctrl_id"] == "root" else console.HQAutoGrant(
+            "other-grant",state["project_id"],digest,state["ctrl_id"],(console.HQCommandAction.AUTO,),int(time.time()*1000)+60000)
+        request, turns, sent = transport.request, [{"id":"other-before","status":"completed","items":[]}], []
+        def native(method, params):
+            ids = [item["threadId"] for item in params["targets"]] if method == "wait_threads" else [params["threadId"]]
+            if ids == ["task"]: return request(method,params)
+            self.assertEqual(ids,["other-owner"])
+            if method == "read_thread":
+                return dict(thread=dict(id="other-owner",cwd=str(self.alpha_root)),page=dict(order="newest_first"),turns=copy.deepcopy(turns[:2]))
+            if method == "wait_threads":return dict(timedOut=True)
+            self.assertEqual(method,"send_message_to_thread")
+            self.assertEqual(set(params),{"threadId","prompt"})
+            sent.append(dict(params));turns.insert(0,dict(id="other-turn",status="completed",items=[
+                dict(type="userMessage",content=[dict(type="text",text=params["prompt"])])]))
+            return dict(threadId="other-owner")
+        transport.request = native
+        return app,host,ledger,authority,recipe,sent
+
+    def _configured_rejection_allows_disjoint_dispatch(self, *, expired, wrong_root=False):
+        from itertools import count
+        app,host,ledger,authority,recipe,sent = self._configured_disjoint_case()
+        self.assertTrue(app.evaluate_auto_once()["dispatched"])
+        self.assertFalse(app.store.auto_status("root","project:alpha")["in_flight"])
+        prior = copy.deepcopy(ledger.replay()["connector_receipts"])
+        if wrong_root:
+            with closing(sqlite3.connect(self.database)) as db:
+                db.execute("UPDATE threads SET cwd=? WHERE id='root'",(str(self.root),));db.commit()
+            with self.assertRaises(console.ConsoleError) as root_error:app._native_auto_scope("root","project:alpha")
+            rejection=str(root_error.exception)
+        elif not expired:
+            current=app.project_flow_command(dict(operation="read",project_id="project:alpha"))
+            flow={k:v for k,v in current["definitions"][0].items() if k!="digest"};flow.update(version=2,objective="Changed current source")
+            app.project_flow_command(dict(operation="save",project_id="project:alpha",expected_digest=current["source_digest"],definition=flow,acknowledge=True))
+        if not wrong_root:rejection="configured Auto run expired" if expired else "configured Auto brief changed"
+        # Exercise the real ordinary selector and native dispatcher with bounded
+        # injected lifecycle facts, just as the adjacent ordinary Auto contracts.
+        ordinary = app._auto_candidate
+        projected = self._auto_projection()
+        projected["expected_receipts"]["expected-auto"]["receipt"].update(task_id="other-owner",owner_id="other-owner")
+        lifecycle=self._auto_lifecycle();lifecycle["event"]["record"]["task_id"]="other-owner"
+        overview=dict(nodes=[dict(id="other-owner",project_id="project:alpha",controller_ids=["zz-other"])])
+        visited=[]
+        def select(state, observed, projection):
+            visited.append(state["ctrl_id"])
+            self.assertEqual(state["ctrl_id"],"zz-other","invalid configured scope fell back")
+            with mock.patch.object(app,"_auto_lifecycle_events",return_value=([dict(lifecycle["event"],event_seq=3,event_digest="f"*64)],False)):
+                return ordinary(state,observed,{**projection,"expected_receipts":projected["expected_receipts"]})
+        clock=count(recipe["expires_at_ms"]/1000+1 if expired else time.time()+1,0.002)
+        with mock.patch.object(console.time,"time",side_effect=lambda:next(clock)), mock.patch.object(app,"_auto_candidate",side_effect=select):
+            result=app.evaluate_auto_once(overview)
+            self.assertTrue(result["dispatched"],result)
+            self.assertEqual(result["reason"],"NATIVE_DELIVERED")
+            self.assertEqual(result["scope_rejections"],[dict(ctrl_id="root",project_id="project:alpha",
+                reason=rejection)])
+            self.assertFalse(result["work_completed"])
+            again=app.evaluate_auto_once(overview)
+            self.assertEqual((again["dispatched"],again["reason"]),(False,"AUTO_SCOPE_REJECTED" if wrong_root else "CONFIGURED_SCOPE_REJECTED"))
+            self.assertEqual(again["scope_rejections"],result["scope_rejections"])
+        self.assertEqual(visited,["zz-other","zz-other"])
+        self.assertEqual(len(host["sent"]),1)
+        self.assertEqual(len(sent),1)
+        after=ledger.replay()["connector_receipts"]
+        for key,value in prior.items():self.assertEqual(after[key],value)
+        new=[value for key,value in after.items() if key not in prior]
+        self.assertEqual(len(new),1)
+        self.assertEqual(new[0]["receipts"][0]["action"],"AUTO")
+        self.assertEqual(new[0]["receipts"][-1]["thread_id"],"other-owner")
+        self.assertFalse(app.store.auto_status("root","project:alpha")["in_flight"])
+        self.assertTrue(app.store.auto_status("root","project:alpha")["enabled"])
+
+    def test_configured_auto_expired_scope_keeps_rejection_and_disjoint_eligible_work_dispatches(self):
+        self._configured_rejection_allows_disjoint_dispatch(expired=True)
+
+    def test_configured_auto_stale_scope_keeps_rejection_and_disjoint_eligible_work_dispatches(self):
+        self._configured_rejection_allows_disjoint_dispatch(expired=False)
+
+    def test_configured_auto_unbound_root_keeps_rejection_and_disjoint_eligible_work_dispatches(self):
+        self._configured_rejection_allows_disjoint_dispatch(expired=False,wrong_root=True)
+
+    def test_configured_auto_in_flight_lease_precedes_earlier_sorted_free_scope(self):
+        app,host,_,_,_,sent=self._configured_disjoint_case(terminal=False,other="aaa-other")
+        # Seed the root operation first while the disjoint scope has no due work.
+        with mock.patch.object(app,"_auto_candidate",return_value=None):app.evaluate_auto_once()
+        self.assertTrue(app.store.auto_status("root","project:alpha")["in_flight"])
+        with mock.patch.object(app,"_auto_candidate",side_effect=AssertionError("must reconcile existing global lease first")):
+            self.assertEqual(app.evaluate_auto_once()["reason"],"IN_FLIGHT")
+        self.assertEqual(len(host["sent"]),1);self.assertEqual(sent,[])
+
+    def test_configured_auto_corrupt_journal_is_not_ignored_as_scoped_wait(self):
+        app,_,_,_,_,_=self._configured_auto_case();app.evaluate_auto_once()
+        with closing(app.store._connect()) as db:
+            db.execute("UPDATE execution_event_receipts SET payload_digest=? WHERE event_kind='AUTO_DECISION' AND identity LIKE 'connector:%'",("0"*64,))
+            db.commit()
+        with mock.patch.object(app,"_auto_candidate",side_effect=AssertionError("corruption cannot fall back")):
+            with self.assertRaisesRegex(console.ConsoleError,"retained packet conflicts"):app.evaluate_auto_once()
 
     def test_native_auto_production_caller_advances_distinct_material_result_once(self):
         app, host, facts, ledger, _, _ = self._native_auto_case()

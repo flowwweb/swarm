@@ -11,7 +11,7 @@ from enum import StrEnum
 from hashlib import sha256
 import json
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Callable, Mapping, Protocol
+from typing import Callable, ContextManager, Mapping, Protocol
 from xml.etree import ElementTree
 
 from .core import (
@@ -484,7 +484,7 @@ class HQConnectorResult:
 
 
 class UniversalHQConnector:
-    def __init__(self, adapter: "CodexAppServerAdapter", *, authorization_verifier: HQAuthorizationVerifier, material_resolver: HQDispatchMaterialResolver, root_verifier: HQRootVerifier, admission_guard: Callable[[], bool] | None = None) -> None:
+    def __init__(self, adapter: "CodexAppServerAdapter", *, authorization_verifier: HQAuthorizationVerifier, material_resolver: HQDispatchMaterialResolver, root_verifier: HQRootVerifier, admission_guard: Callable[[], bool] | None = None, admission_scope: Callable[[], ContextManager[object]] | None = None) -> None:
         if not isinstance(adapter, CodexAppServerAdapter):
             raise InvariantError("universal connector requires the Codex adapter")
         self.adapter = adapter
@@ -492,12 +492,35 @@ class UniversalHQConnector:
         self.material_resolver = material_resolver
         self.root_verifier = root_verifier
         self.admission_guard = admission_guard
+        if admission_scope is not None and not callable(admission_scope):
+            raise InvariantError("HQ admission scope requires a local context factory")
+        self.admission_scope = admission_scope
 
     def _reserve_command(self, ledger, command, envelope):
-        if self.admission_guard is None:
-            return ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
-        return ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision,
-                                                _before_append=self.admission_guard)
+        def reserve():
+            if self.admission_guard is None:
+                return ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
+            return ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision,
+                                                    _before_append=self.admission_guard)
+        if self.admission_scope is None:
+            return reserve()
+        def replay_only():
+            return ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision,
+                                                    _before_append=lambda: False)
+        retained = replay_only()
+        if retained["status"] == "REPLAY":
+            return retained
+        try:
+            # Local scope precedes the Ledger lock; no host tools run here.
+            with self.admission_scope():
+                return reserve()
+        except Exception:
+            # A competing admission may have won while scope acquisition failed.
+            # This probe can only recover exact REPLAY, never append a command.
+            retained = replay_only()
+            if retained["status"] == "REPLAY":
+                return retained
+            raise
 
     @staticmethod
     def _receipt(envelope: HQCommandEnvelope, *, receipt_id: str, index: int, status: str, observed_at_ms: int, thread_id: str | None = None, turn_id: str | None = None, observed_root_digest: str | None = None) -> dict[str, object]:
