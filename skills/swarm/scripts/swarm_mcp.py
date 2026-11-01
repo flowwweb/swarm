@@ -32,8 +32,8 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_MAX_BYTES = 544 * 1024
-HQ_SDK_SHA256 = "effe8292b41526e9c232f6bed56088b00231e9ab3e607af48cefc9d226961491"
+HQ_SDK_MAX_BYTES = 512 * 1024
+HQ_SDK_SHA256 = "c84cc90a95c5f4ff2a81920a8e9def2660c42c268c179a992cf0ffca2aa3570a"
 
 
 def _startup_runtime_identity(root: Path, source: Path) -> dict[str, Any]:

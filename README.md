@@ -224,6 +224,8 @@ host/runtime receipt confirms them.
 
 SWARM includes an optional loopback-only console for seeing the live hierarchy, task state, requested and observed models, reasoning levels, lightweight logs, evidence, and blockers.
 
+Automatic model capture for ticket Logs is not connected. Model is shown only when a matching provider result has been recorded; otherwise it is not recorded. Reasoning effort is a requested setting.
+
 ```text
 python skills/swarm/scripts/swarm_console.py --start
 ```

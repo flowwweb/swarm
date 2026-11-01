@@ -2913,6 +2913,9 @@ class ConsoleStore:
             "independent_review": {"independent_review", "complete"},
             "complete": {"complete"},
         }
+        old_observation = retained.get("provider_model_observation")
+        if old_observation is not None and incoming.get("provider_model_observation") != old_observation:
+            raise ConsoleError("retained provider model observation is immutable")
         retained_state = str(retained.get("state") or "")
         incoming_state = str(incoming.get("state") or "")
         if incoming_state == "independent_review":
@@ -3037,6 +3040,35 @@ class ConsoleStore:
                                        (json.dumps(fields, sort_keys=True), now_ms, payload["ctrl_id"]))
                 self._retain_auto_event(connection, event_kind=kind, identity=identity, payload=payload, now_ms=now_ms)
             connection.commit()
+
+    def ingest_execution_provider_result(self, reservation_id: str, result_bytes: bytes, *,
+                                         receipt: DelegatedReturnReceipt, provider_session_id: str,
+                                         thread_id: str, turn_id: str, now_ms: int) -> dict[str, Any]:
+        """Persist observed result metadata only after an exact accepted material handoff."""
+        if type(now_ms) is not int or now_ms < 0 or not isinstance(receipt, DelegatedReturnReceipt):
+            raise ConsoleError("provider result requires an accepted receipt and nonnegative observation time")
+        with self._lock:
+            ledger = self.load_execution_ledger()
+            reservation_id = _auto_id(reservation_id, "reservation_id")
+            try:
+                reservation = ledger.reservation(reservation_id)
+            except InvariantError as exc:
+                raise ConsoleError(str(exc)) from exc
+            if now_ms < reservation.updated_at_ms:
+                raise ConsoleConflict("provider result observation is stale")
+            before = reservation.snapshot()
+            try:
+                if not (reservation.material_receipt_id == receipt.receipt_id and reservation.state in {
+                        ExecutionDispatchState.MATERIAL_RECEIPT, ExecutionDispatchState.INDEPENDENT_REVIEW, ExecutionDispatchState.COMPLETE}):
+                    raise ConsoleConflict("material receipt is not recorded")
+                ledger.ingest_provider_result(reservation_id, result_bytes, thread_id=thread_id, turn_id=turn_id,
+                    provider_session_id=provider_session_id, receipt=receipt)
+            except InvariantError as exc:
+                raise ConsoleError(str(exc)) from exc
+            if reservation.snapshot() != before:
+                reservation.updated_at_ms = now_ms
+                self.persist_execution_ledger(ledger, now_ms=now_ms)
+            return reservation.snapshot()
 
     def load_execution_ledger(self) -> ExecutionDispatchLedger:
         """Restore retained reservations and dedupe receipts without replaying host work."""
@@ -11116,7 +11148,7 @@ class App:
                     dedup = {item["event_id"]: item for item in items}
                     return {"ok": True, "operation": operation, "project_id": project_id, "record_id": payload["record_id"],
                             "items": sorted(dedup.values(), key=lambda item: item["event_seq"], reverse=True), "partial": partial,
-                            "claim_limit": "Retained scoped Ledger events; per-run model and reasoning are not recorded here."}
+                            "claim_limit": "Retained scoped Ledger events. Model is shown only with exact provider-result evidence; effort is a requested setting, not observed compute."}
                 now = int(time.time() * 1000); day = 86400000; first = (now // day - 6) * day
                 series = [{"start_ms": first + i * day, "accepted": None} for i in range(7)]
                 activation = metadata.get("projects", {}).get(project_id) if metadata is not None else None
@@ -17211,6 +17243,16 @@ class App:
 
         candidates: list[dict[str, Any]] = []
         identities: dict[str, str] = {}
+        try:
+            reservations = self.store.load_execution_ledger().reservations
+            observation_unavailable = False
+        except (ConsoleError, InvariantError, OSError, sqlite3.Error, ValueError):
+            reservations = ()
+            observation_unavailable = True
+        reservations_by_receipt: dict[str, list[ExecutionReservation]] = {}
+        for reservation in reservations:
+            if reservation.material_receipt_id:
+                reservations_by_receipt.setdefault(reservation.material_receipt_id, []).append(reservation)
         for record in records:
             event = record.get("_event")
             if event is None or event.ctrl_id != ctrl_id:
@@ -17242,6 +17284,22 @@ class App:
                 *event.cost_receipt_ids,
                 *event.release_receipt_ids,
             ]))[:12]
+            matching = [reservation for reservation in reservations_by_receipt.get(event.completion_receipt_id, ())
+                        if reservation.task_id == event.task_id and reservation.project_id == resolved_project_id
+                        and reservation.owner_id == event.owner_id
+                        and reservation.material_receipt_id == event.completion_receipt_id
+                        and reservation.material_receipt_id and reservation.host_completed]
+            observation = {"state": "UNKNOWN", "model": None, "effort": None,
+                           "reason": "EXECUTION_STORE_UNAVAILABLE" if observation_unavailable else "NO_RUN_BOUND_PROVIDER_RECEIPT"}
+            if len(matching) == 1:
+                reservation = matching[0]
+                observed = reservation.provider_model_observation
+                observation = {"state": "PROVIDER_REPORTED" if observed else "UNKNOWN",
+                               "model": observed["model"] if observed else None, "effort": None,
+                               "requested_model": reservation.requested_model or None,
+                               "requested_effort": reservation.requested_effort or None,
+                               "evidence_digest": observed["evidence_digest"] if observed else None,
+                               "reason": "OBSERVED_EFFORT_UNSUPPORTED" if observed else "NO_RUN_BOUND_PROVIDER_RECEIPT"}
             candidates.append({
                 "event_id": event.event_id,
                 "event_digest": event_digest,
@@ -17256,6 +17314,7 @@ class App:
                 "agent_id": event.task_id,
                 "structural_role": node.get("role"),
                 "profession": node.get("worker_role"),
+                "model_observation": observation,
                 "summary": summary,
                 "evidence_refs": evidence_refs,
                 "action_target": {

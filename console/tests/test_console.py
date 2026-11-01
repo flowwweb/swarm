@@ -5229,6 +5229,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(task_view["items"], owner_view["items"])
         self.assertEqual(unknown["items"], [])
         item = first["items"][0]
+        self.assertEqual(item["model_observation"], {"state": "UNKNOWN", "model": None,
+            "effort": None, "reason": "NO_RUN_BOUND_PROVIDER_RECEIPT"})
         self.assertEqual(
             (item["project_id"], item["ctrl_id"], item["agent_id"], item["summary"]),
             ("project:alpha", "root", "task", "Work was added."),
@@ -5243,6 +5245,65 @@ class SwarmConsoleTests(unittest.TestCase):
             app.run_log("root", project_id="project:missing")
         with self.assertRaisesRegex(console.ConsoleError, "observed host CTRL|host-confirmed"):
             app.run_log("lead", project_id="project:alpha")
+
+    def test_provider_result_receipt_persists_and_projects_only_exact_run(self) -> None:
+        from runtime import DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, ProofClass
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        artifact = ArtifactIdentity("run-artifact", "revision", "accepted result")
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("gen", False, "requested-model", "high", 1, "host-config"))
+        ledger.reserve("reservation", "task", "owner-task", artifact, observed_at_ms=2, project_id="project:alpha")
+        ledger.dispatch("reservation", "a" * 64, 100, observed_at_ms=3)
+        event = CodexAppServerAdapter().translate_event({"method":"turn/completed", "params":{"threadId":"thread", "turnId":"turn", "status":"completed"}})
+        ledger.observe_event("reservation", event, observed_at_ms=4)
+        app.store.persist_execution_ledger(ledger, now_ms=4)
+        provider = json.dumps({"session_id":"provider-session", "modelUsage":{"observed-model":{"canonicalModel":"observed-model"}}}).encode()
+        evidence = DelegatedEvidence("provider-result:provider-session", ProofClass.PROVIDER, artifact.key(), hashlib.sha256(provider).hexdigest(), "Provider result metadata.")
+        receipt = DelegatedReturnReceipt("material-receipt", "task", "owner-task", DelegatedReceiptVerdict.ACCEPT, artifact, "Accepted result.", evidence=(evidence,))
+        args = dict(receipt=receipt, provider_session_id="provider-session", thread_id="thread", turn_id="turn", now_ms=5)
+        with self.assertRaises(console.ConsoleError):
+            app.store.ingest_execution_provider_result("unknown-reservation", provider, **args)
+        from dataclasses import replace
+        with self.assertRaisesRegex(console.ConsoleConflict, "material receipt is not recorded"):
+            app.store.ingest_execution_provider_result("reservation", provider, **args)
+        retained = app.store.load_execution_ledger()
+        self.assertEqual(retained.reservation("reservation").state, ExecutionDispatchState.ACTIVE)
+        retained.record_material_receipt("reservation", receipt, observed_at_ms=5)
+        app.store.persist_execution_ledger(retained, now_ms=5)
+        args["now_ms"] = 6
+        with self.assertRaisesRegex(console.ConsoleError, "provider evidence"):
+            app.store.ingest_execution_provider_result("reservation", provider, **{**args, "receipt":replace(receipt, evidence=())})
+        self.assertIsNone(app.store.load_execution_ledger().reservation("reservation").provider_model_observation)
+        saved = app.store.ingest_execution_provider_result("reservation", provider, **args)
+        self.assertEqual(saved["provider_model_observation"]["model"], "observed-model")
+        self.assertEqual(app.store.ingest_execution_provider_result("reservation", provider, **args), saved)
+        restarted = console.ConsoleStore(app.store.path).load_execution_ledger()
+        self.assertEqual(restarted.reservation("reservation").provider_model_observation["model"], "observed-model")
+        altered = copy.deepcopy(restarted.reservation("reservation").snapshot())
+        altered["provider_model_observation"]["model"] = "tampered-model"
+        altered["updated_at_ms"] = 7
+        with self.assertRaisesRegex(console.ConsoleError, "observation is immutable"):
+            app.store.persist_execution_ledger(console.ExecutionDispatchLedger(reservations=(console.ExecutionReservation.from_snapshot(altered),)), now_ms=7)
+        with self.assertRaises(console.ConsoleError):
+            app.store.ingest_execution_provider_result("reservation", provider + b" ", **{**args, "now_ms":7})
+        material = self._notification_event("run-known", "run-known-block", "BLOCK_CREATED", "ACTIVE", 10)
+        material["schema_version"] = 2
+        material["topology"] = {"node_kind":"BLOCK", "input_receipt_ids":[], "dispatch_receipt_id":None,
+            "completion_receipt_id":"material-receipt", "cost_receipt_ids":[], "release_receipt_ids":[]}
+        self.assertEqual(app.progress_ledger.append(material)["status"], "appended")
+        historical = self._notification_event("run-unknown", "run-unknown-block", "BLOCK_CREATED", "ACTIVE", 11)
+        self.assertEqual(app.progress_ledger.append(historical)["status"], "appended")
+        logs = app.run_log("root", project_id="project:alpha")
+        rows = {item["event_id"]:item for item in logs["items"]}
+        self.assertEqual(rows["run-known"]["model_observation"]["model"], "observed-model")
+        self.assertEqual(rows["run-known"]["model_observation"]["requested_effort"], "high")
+        self.assertIsNone(rows["run-known"]["model_observation"]["effort"])
+        self.assertEqual(rows["run-unknown"]["model_observation"]["state"], "UNKNOWN")
+        self.assertIsNone(rows["run-unknown"]["model_observation"]["model"])
+        with mock.patch.object(app.store, "load_execution_ledger", side_effect=console.ConsoleError("unavailable")):
+            unavailable = app.run_log("root", project_id="project:alpha")
+        self.assertEqual({item["model_observation"]["reason"] for item in unavailable["items"]}, {"EXECUTION_STORE_UNAVAILABLE"})
 
     def test_run_log_cursor_is_monotonic_bounded_and_reports_truncation(self) -> None:
         self._confirm_root_ctrl()

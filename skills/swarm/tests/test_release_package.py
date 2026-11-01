@@ -213,6 +213,31 @@ class ReleasePackageTests(unittest.TestCase):
                         builder.build(root / 'sdk', root / 'rejected.js')
                     self.assertFalse((root / 'rejected.js').exists())
 
+    def test_hq_builder_rejects_unpinned_compaction_inputs_before_compiler(self):
+        spec = importlib.util.spec_from_file_location('hq_compact_builder', REPOSITORY_ROOT / 'skills/swarm/scripts/build_hq_app.py')
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sdk = root / 'package'
+            (sdk / 'dist/src').mkdir(parents=True)
+            (sdk / 'dist/src/app-with-deps.js').write_bytes(b'fixture-sdk')
+            (sdk / 'package.json').write_text(json.dumps({'name': '@modelcontextprotocol/ext-apps', 'version': '2.0.3'}))
+            compact = root / 'compact.js'
+            parser = root / 'acorn.js'
+            compact.write_bytes(b'bad-compact')
+            parser.write_bytes(b'bad-parser')
+            with mock.patch.object(builder, 'SDK_SHA', hashlib.sha256(b'fixture-sdk').hexdigest()), \
+                    mock.patch.object(builder.subprocess, 'check_output') as execute:
+                with self.assertRaisesRegex(ValueError, 'supplied together'):
+                    builder.build(root, root / 'out.js', compact_sdk=compact)
+                with self.assertRaisesRegex(ValueError, 'compact SDK digest mismatch'):
+                    builder.build(root, root / 'out.js', compact_sdk=compact, acorn=parser)
+                with mock.patch.object(builder, 'COMPACT_SDK_SHA', hashlib.sha256(b'bad-compact').hexdigest()):
+                    with self.assertRaisesRegex(ValueError, 'parser digest mismatch'):
+                        builder.build(root, root / 'out.js', compact_sdk=compact, acorn=parser)
+                execute.assert_not_called()
+
     def test_desktop_bundle_rejects_missing_or_stale_compiled_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.make_plugin(Path(directory))

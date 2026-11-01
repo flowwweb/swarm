@@ -6,7 +6,7 @@ host task state.
 """
 from __future__ import annotations
 
-from dataclasses import InitVar, dataclass, field
+from dataclasses import InitVar, dataclass, field, replace
 from enum import StrEnum
 from hashlib import sha256
 import json
@@ -18,6 +18,7 @@ from .core import (
     ArtifactIdentity,
     DelegatedReceiptVerdict,
     DelegatedReturnReceipt,
+    ProofClass,
     ExecutionRoute,
     ExecutionRoutingDecision,
     InvariantError,
@@ -1282,6 +1283,7 @@ class ExecutionReservation:
     project_id: str = ""
     service_tier_receipt_id: str = ""
     settings_task_id: str = ""
+    provider_model_observation: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         for value, label in ((self.reservation_id, "execution reservation id"), (self.task_id, "execution task id"), (self.owner_id, "execution owner id")):
@@ -1318,6 +1320,23 @@ class ExecutionReservation:
             self.snapshot_digest = _digest(self.snapshot_digest, "retained continuation snapshot")
         if not isinstance(self.updated_at_ms, int) or isinstance(self.updated_at_ms, bool) or self.updated_at_ms < 0:
             raise InvariantError("execution reservation requires a nonnegative update time")
+        if self.provider_model_observation is not None:
+            observation = self.provider_model_observation
+            fields = {"task_id", "artifact_digest", "thread_id", "turn_id", "material_receipt_id", "evidence_digest", "model", "provider_session_id", "source"}
+            if not isinstance(observation, dict) or set(observation) != fields:
+                raise InvariantError("provider model observation requires exact run bindings")
+            for field in fields:
+                value = observation[field]
+                if _text(value, "provider observation " + field) != value or len(value) > (128 if field == "model" else 256):
+                    raise InvariantError("provider observation fields must be exact bounded text")
+            _digest(observation["evidence_digest"], "provider observation evidence")
+            if observation["source"] != "provider_result":
+                raise InvariantError("provider model source is unsupported")
+            if (observation["task_id"] != self.task_id or observation["artifact_digest"] != self.artifact.content_address()
+                    or observation["thread_id"] != self.host_thread_id or observation["turn_id"] != self.host_turn_id
+                    or observation["material_receipt_id"] != self.material_receipt_id or not self.host_completed
+                    or not self.material_receipt_id):
+                raise InvariantError("provider model observation conflicts with retained run")
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -1349,6 +1368,7 @@ class ExecutionReservation:
             "host_turn_id": self.host_turn_id,
             "host_completed": self.host_completed,
             "material_receipt_id": self.material_receipt_id,
+            **({"provider_model_observation": dict(self.provider_model_observation)} if self.provider_model_observation else {}),
             "failure_kind": None if self.failure_kind is None else self.failure_kind.value,
             "retry_count": self.retry_count,
             "snapshot_digest": self.snapshot_digest,
@@ -1395,6 +1415,7 @@ class ExecutionReservation:
             host_turn_id=str(payload.get("host_turn_id") or ""),
             host_completed=payload.get("host_completed", False),  # type: ignore[arg-type]
             material_receipt_id=str(payload.get("material_receipt_id") or ""),
+            provider_model_observation=payload.get("provider_model_observation"),
             failure_kind=None if failure in (None, "") else ExecutionFailureKind(str(failure)),
             retry_count=int(payload.get("retry_count") or 0),
             snapshot_digest=str(payload.get("snapshot_digest") or ""),
@@ -1494,6 +1515,8 @@ class ExecutionDispatchLedger:
         reservation = self.reservation(reservation_id)
         if direct_user_keep_out:
             raise InvariantError("direct-user CTRL keep-out blocks delegated dispatch")
+        if reservation.provider_model_observation is not None:
+            raise InvariantError("observed provider result cannot be dispatched again")
         generation = self._generation_for(reservation)
         if generation is None:
             raise InvariantError("latest host execution config is unavailable; dispatch remains UNVERIFIED")
@@ -1635,6 +1658,50 @@ class ExecutionDispatchLedger:
         reservation.material_receipt_id = receipt.receipt_id
         reservation.state = ExecutionDispatchState.MATERIAL_RECEIPT
         reservation.updated_at_ms = observed_at_ms
+        return reservation
+
+    def ingest_provider_result(self, reservation_id: str, result_bytes: bytes, *,
+                               thread_id: str, turn_id: str, provider_session_id: str,
+                               receipt: DelegatedReturnReceipt) -> ExecutionReservation:
+        """Read bounded result bytes for descriptive metadata; caller supplies the observed binding."""
+        reservation = self.reservation(reservation_id)
+        if not isinstance(result_bytes, bytes) or not 0 < len(result_bytes) <= 1024 * 1024:
+            raise InvariantError("provider result must be bounded bytes")
+        try:
+            result = json.loads(result_bytes)
+            usage = result["modelUsage"]
+            if result.get("is_error") is True:
+                raise ValueError("provider result reports an error")
+            if not isinstance(usage, dict) or len(usage) != 1:
+                raise ValueError("provider result must name one model")
+            model, detail = next(iter(usage.items()))
+            if not isinstance(detail, dict) or detail.get("canonicalModel") != model:
+                raise ValueError("provider result model is inconsistent")
+            if result.get("session_id") != provider_session_id:
+                raise ValueError("provider result session mismatch")
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
+            raise InvariantError("provider result cannot establish model observation") from exc
+        evidence_digest = sha256(result_bytes).hexdigest()
+        if (not isinstance(receipt, DelegatedReturnReceipt) or receipt.verdict is not DelegatedReceiptVerdict.ACCEPT
+                or receipt.receipt_id != reservation.material_receipt_id or receipt.task_id != reservation.task_id
+                or receipt.owner_id != reservation.owner_id or receipt.artifact != reservation.artifact
+                or not any(item.proof_class is ProofClass.PROVIDER and item.artifact_key == reservation.artifact.key()
+                           and item.id == "provider-result:" + provider_session_id and item.digest == evidence_digest
+                           for item in receipt.evidence)):
+            raise InvariantError("provider result requires exact accepted receipt and provider evidence")
+        return self._record_provider_model(reservation_id, {
+            "task_id": reservation.task_id, "artifact_digest": reservation.artifact.content_address(),
+            "thread_id": thread_id, "turn_id": turn_id, "material_receipt_id": receipt.receipt_id,
+            "evidence_digest": evidence_digest, "model": model,
+            "provider_session_id": provider_session_id, "source": "provider_result"})
+
+    def _record_provider_model(self, reservation_id: str, observation: dict[str, str]) -> ExecutionReservation:
+        """Retain descriptive provider output; it grants no execution or acceptance authority."""
+        reservation = self.reservation(reservation_id)
+        candidate = replace(reservation, provider_model_observation=dict(observation))
+        if reservation.provider_model_observation is not None and reservation.provider_model_observation != candidate.provider_model_observation:
+            raise InvariantError("provider model observation is immutable")
+        reservation.provider_model_observation = candidate.provider_model_observation
         return reservation
 
     def record_independent_review(self, reservation_id: str, runtime: Swarm, *, observed_at_ms: int) -> ExecutionReservation:

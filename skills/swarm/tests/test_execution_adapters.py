@@ -1897,6 +1897,59 @@ class ExecutionAdapterTests(unittest.TestCase):
 
 
 class ExecutionDispatchLedgerTests(unittest.TestCase):
+    def test_provider_result_ingestion_uses_returned_model_and_session(self):
+        import json
+        from skills.swarm.runtime.execution_adapters import ExecutionReservation, ExecutionDispatchState
+        artifact = ArtifactIdentity("a", "r", "result")
+        r = ExecutionReservation("r", "t", "o", artifact, state=ExecutionDispatchState.MATERIAL_RECEIPT,
+            host_thread_id="thread", host_turn_id="turn", host_completed=True, material_receipt_id="receipt")
+        ledger = ExecutionDispatchLedger(reservations=(r,))
+        data = json.dumps({"session_id":"session", "modelUsage":{"actual":{"canonicalModel":"actual"}}}).encode()
+        evidence = DelegatedEvidence("provider-result:session", ProofClass.PROVIDER, artifact.key(), sha256(data).hexdigest(), "Provider output only.")
+        receipt = DelegatedReturnReceipt("receipt", "t", "o", DelegatedReceiptVerdict.ACCEPT, artifact, "Accepted result.", evidence=(evidence,))
+        args = dict(thread_id="thread", turn_id="turn", provider_session_id="session", receipt=receipt)
+        ledger.ingest_provider_result("r", data, **args)
+        ledger.ingest_provider_result("r", data, **args)
+        self.assertEqual(r.provider_model_observation["model"], "actual")
+        self.assertEqual(r.provider_model_observation["evidence_digest"], sha256(data).hexdigest())
+        before = r.snapshot()
+        with self.assertRaisesRegex(InvariantError, "cannot be dispatched again"):
+            ledger.dispatch("r", "a" * 64, 100, observed_at_ms=10)
+        self.assertEqual(r.snapshot(), before)
+        for field in ("thread_id", "turn_id", "provider_session_id"):
+            with self.subTest(field=field), self.assertRaises(InvariantError):
+                ledger.ingest_provider_result("r", data, **{**args, field:"wrong"})
+        with self.assertRaises(InvariantError):
+            ledger.ingest_provider_result("r", data, **{**args, "receipt":replace(receipt, receipt_id="wrong")})
+        with self.assertRaises(InvariantError):
+            ledger.ingest_provider_result("r", data + b" ", **args)
+        with self.assertRaises(InvariantError):
+            ledger.ingest_provider_result("r", data, **{**args, "receipt":None})
+        with self.assertRaises(InvariantError):
+            ledger.ingest_provider_result("r", b'{"session_id":"session","modelUsage":{"a":{"canonicalModel":"different"}}}', **args)
+        with self.assertRaises(InvariantError):
+            ledger.ingest_provider_result("r", b'{"session_id":"session","is_error":true,"modelUsage":{"a":{"canonicalModel":"a"}}}', **args)
+        with self.assertRaises(InvariantError):
+            ExecutionReservation.from_snapshot({**r.snapshot(), "provider_model_observation":{**r.provider_model_observation, "model":"x" * 129}})
+
+    def test_provider_model_observation_roundtrip_and_exact_binding(self):
+        from skills.swarm.runtime.execution_adapters import ExecutionReservation, ExecutionDispatchState
+        r = ExecutionReservation("reservation", "task", "owner", ArtifactIdentity("a", "r", "result"),
+            state=ExecutionDispatchState.MATERIAL_RECEIPT, host_thread_id="thread", host_turn_id="turn",
+            host_completed=True, material_receipt_id="receipt", requested_model="requested", requested_effort="high")
+        ledger = ExecutionDispatchLedger(reservations=(r,))
+        observation = {"task_id":"task", "artifact_digest":r.artifact.content_address(), "thread_id":"thread",
+                       "turn_id":"turn", "material_receipt_id":"receipt", "evidence_digest":"a"*64, "model":"observed", "provider_session_id":"session", "source":"provider_result"}
+        ledger._record_provider_model("reservation", observation)
+        ledger._record_provider_model("reservation", observation)
+        restored = ExecutionReservation.from_snapshot(r.snapshot())
+        self.assertEqual(restored.provider_model_observation, observation)
+        legacy = r.snapshot(); legacy.pop("provider_model_observation")
+        self.assertIsNone(ExecutionReservation.from_snapshot(legacy).provider_model_observation)
+        for field in ("task_id", "artifact_digest", "thread_id", "turn_id", "material_receipt_id"):
+            with self.subTest(field=field), self.assertRaises(InvariantError):
+                ExecutionReservation.from_snapshot({**r.snapshot(), "provider_model_observation":{**observation,field:"wrong"}})
+
     def setUp(self) -> None:
         self.artifact = ArtifactIdentity("queue-artifact", "rev-1", "exact queue result")
 

@@ -15,4 +15,6 @@ node --test console/tests/test_console_ui.mjs
 
 The browser test requires Playwright. Contributions are submitted under the repository's [MIT License](LICENSE).
 
+When changing the HQ bundle or literal pooler, also run `node skills/swarm/tests/test_compact_hq_literals.cjs <path-to-pinned-acorn.js>` with the Acorn digest required by `build_hq_app.py`.
+
 For suspected vulnerabilities, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
