@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Nemo",
+    "href": "https://nemoboat.app",
+    "logo": "nemo-horizontal-canonical-on-dark.svg"
+  },
+  {
+    "name": "Boatpedia",
+    "href": "https://boatpedia.co",
+    "logo": "boatpedia-logo-dark.svg"
+  },
+  {
+    "name": "Bluprint",
+    "href": null,
+    "logo": "bluprint-wordmark-alpha-990.png"
+  },
+  {
+    "name": "Helm",
+    "href": null,
+    "logo": "helm-lockup-white.svg"
+  },
+  {
+    "name": "RightWork",
+    "href": "https://rightwork.me",
+    "logo": "rightwork-canonical-white.svg"
+  },
+  {
+    "name": "Whxtever",
+    "href": "https://whxtever.com",
+    "logo": "whxtever-wordmark.svg"
+  },
+  {
+    "name": "Unbake",
+    "href": "https://unbake.ai",
+    "logo": "unbake-logo.svg"
+  },
+  {
+    "name": "FontGoblin",
+    "href": "https://fontgoblin.ai",
+    "logo": "fontgoblin-wordmark.svg"
+  }
+]

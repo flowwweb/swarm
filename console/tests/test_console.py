@@ -47,6 +47,64 @@ from runtime import (  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
+    def test_mcp_read_serializes_many_long_tickets_without_truncation(self):
+        from console import server
+        from skills.swarm.scripts import swarm_mcp
+        tasks=[{'id':f'ticket-{i}','label':f'Ticket {i}','description':str(i%10)*16384} for i in range(18)]
+        self._write_project_brief(self.alpha_root,'project:alpha',extra={'tasks':tasks})
+        app=server.App(self.codex_home,self.config)
+        wire={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'swarm_project_tickets',
+              'arguments':{'operation':'read','project_id':'project:alpha'}}}
+        with mock.patch.object(swarm_mcp.SwarmProjection,'_load_app',return_value=app), \
+             mock.patch.object(sys,'stdin',io.StringIO(json.dumps(wire))), \
+             mock.patch.object(sys,'stdout',new_callable=io.StringIO) as output:
+            self.assertEqual(swarm_mcp.serve(telemetry_path=self.root/'ticket-wire.jsonl'),0)
+        response=json.loads(output.getvalue())
+        self.assertNotIn('error',response)
+        rows=response['result']['structuredContent']['records']
+        self.assertEqual({r['id']:r['description'] for r in rows},{r['id']:r['description'] for r in tasks})
+
+    def test_mcp_description_boundary_and_rejected_draft_preservation(self):
+        from console import server
+        from skills.swarm.scripts import swarm_mcp
+        app = server.App(self.codex_home, self.config)
+        self._write_project_brief(self.alpha_root, 'project:alpha')
+        adapter = swarm_mcp.SwarmProjection()
+        adapter._app = app
+        read = adapter.call('swarm_project_tickets', {'operation':'read','project_id':'project:alpha'})
+        create = {'operation':'create','project_id':'project:alpha','expected_digest':read['source_digest'],
+                  'acknowledge':True,'collection':'tasks','record_id':'long-ticket','project_code':'SWRM',
+                  'changes':{'label':'Long ticket','description':'😀'*4096}}
+        encoded = json.dumps(create, ensure_ascii=True).encode('utf-8')
+        self.assertLessEqual(len(encoded),server.MAX_BODY_BYTES)
+        handler = self._handler('127.0.0.1','127.0.0.1:4788',token=app.token)
+        handler.headers['Content-Length'] = str(len(encoded))
+        handler.rfile = io.BytesIO(encoded)
+        self.assertEqual(handler._payload(),create)
+        saved = adapter.call('swarm_project_tickets',create)
+        self.assertTrue(saved['ok'],saved)
+        path = self.alpha_root / 'SWARM.md'
+        before = path.read_bytes()
+        oversized = {'operation':'update','project_id':'project:alpha','expected_digest':saved['source_digest'],
+                     'acknowledge':True,'collection':'tasks','record_id':'long-ticket',
+                     'changes':{'description':'😀'*4097}}
+        rejected = adapter.call('swarm_project_tickets',oversized)
+        self.assertEqual(rejected['code'],'TICKET_DESCRIPTION_TOO_LONG')
+        self.assertIn('16,384 UTF-8 bytes',rejected['message'])
+        self.assertEqual(path.read_bytes(),before)
+        wire={'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'swarm_project_tickets','arguments':oversized}}
+        with mock.patch.object(swarm_mcp.SwarmProjection,'_load_app',return_value=app), \
+             mock.patch.object(sys,'stdin',io.StringIO(json.dumps(wire))), \
+             mock.patch.object(sys,'stdout',new_callable=io.StringIO) as output:
+            self.assertEqual(swarm_mcp.serve(telemetry_path=self.root/'ticket-wire.jsonl'),0)
+        rejection=json.loads(output.getvalue())['result']
+        self.assertTrue(rejection['isError'])
+        self.assertEqual(rejection['structuredContent']['code'],'TICKET_DESCRIPTION_TOO_LONG')
+        self.assertEqual(path.read_bytes(),before)
+        restarted = server.App(self.codex_home,self.config)
+        row = next(r for r in restarted.project_ticket_command({'operation':'read','project_id':'project:alpha'})['records'] if r['id']=='long-ticket')
+        self.assertEqual(row['description'],'😀'*4096)
+
     def test_naming_descriptors_follow_canonical_config_and_scoped_validation(self):
         module = console.load_config_module()
         effective = module.merge({"role_icons": {"enabled": False}})
@@ -656,7 +714,9 @@ class SwarmConsoleTests(unittest.TestCase):
         invalid = [dict(repeat_count=x) for x in (True, 0, 2**53, 1.5)] + [
             dict(subject_version="stale"), dict(subject_id="not-a-role"), dict(ctrl_id="foreign-ctrl"),
             dict(flow_digest="sha256:" + "0" * 64), dict(flow_version=99), dict(version=1),
-            dict(version=3), dict(subject_kind="TASK"), dict(subject_kind=[]), dict(authority="execute"), dict(notes="bad\x00text")]
+            dict(version=3), dict(subject_kind="TASK"), dict(subject_kind=[]), dict(authority="execute"), dict(notes="bad\x00text"),
+            dict(decision={"action":"KEEP", "outcome":"accepted", "reason":"unchanged", "cost_basis":""}),
+            dict(decision={"action":[], "outcome":"accepted", "reason":"unchanged", "cost_basis":"observed time"})]
         for changes in invalid:
             with self.subTest(changes=changes), self.assertRaises(console.ConsoleError):
                 restarted.project_flow_command({**request, "expected_digest":result["source_digest"],
@@ -667,11 +727,37 @@ class SwarmConsoleTests(unittest.TestCase):
             restarted.project_flow_command({**request, "project_id":"project:missing"})
         with self.assertRaises(console.ConsoleError):
             restarted.project_flow_command({**request, "expected_digest":result["source_digest"], "acknowledge":False})
+        core = {"ctrl_id":"ctrl-a", "unit_ids":["lab-a", "factory-b"]}
+        lesson = {"artifact_digest":"sha256:"+"a"*64, "inputs_digest":"sha256:"+"b"*64,
+                  "expected_gain":5, "change_cost":3, "core_before":core, "core_after":copy.deepcopy(core)}
+        decision = {"action":"ADAPT", "outcome":"Accepted result", "reason":"Use the shorter path", "cost_basis":"Observed time and participant coverage", "lesson":lesson}
         revised = restarted.project_flow_command({**request, "expected_digest":result["source_digest"],
-            "assignment":{**draft, "version":2, "repeat_count":101, "label":"Revised project label"}})
+            "assignment":{**draft, "version":2, "repeat_count":101, "label":"Revised project label", "decision":decision}})
         self.assertEqual(revised["assignments"][0], first)
-        self.assertEqual([item["version"] for item in revised["assignments"]], [1, 2])
-        self.assertEqual(read(console.App(self.codex_home, self.config)), revised)
+        self.assertEqual(revised["assignments"][1]["decision"], decision)
+        self.assertEqual(revised["hive_lessons"][0]["assignment_digest"], revised["assignments"][1]["digest"])
+        self.assertTrue(revised["hive_lessons"][0]["requires_reassessment"])
+        self.assertEqual(len(console.flow_hive_lessons(revised["assignments"], inputs_digest=lesson["inputs_digest"])), 1)
+        self.assertEqual(console.flow_hive_lessons(revised["assignments"], inputs_digest="sha256:"+"c"*64), [])
+        hive = console.Swarm()
+        matches = hive.hydrate_hive("flow:", {}, 4, 1, flow_lessons=tuple(revised["hive_lessons"]), inputs_digest=lesson["inputs_digest"])
+        self.assertEqual([item.reference for item in matches], ["flow:"+revised["assignments"][1]["digest"]])
+        self.assertEqual(matches[0].provenance["reassessment"], "required")
+        self.assertEqual(hive.hydrate_hive("flow:", {}, 4, 1, flow_lessons=tuple(revised["hive_lessons"]), inputs_digest="sha256:"+"c"*64), [])
+        self.assertEqual(read(console.App(self.codex_home, self.config))["hive_lessons"], revised["hive_lessons"])
+        for bad in ({**lesson, "expected_gain":3}, {**lesson, "core_after":{"ctrl_id":"ctrl-a", "unit_ids":["lab-a"]}}):
+            with self.assertRaises(console.ConsoleError):
+                restarted.project_flow_command({**request, "expected_digest":revised["source_digest"],
+                    "assignment":{**draft, "version":3, "decision":{**decision, "lesson":bad}}})
+        with self.assertRaises(console.ConsoleError):
+            restarted.project_flow_command({**request, "expected_digest":revised["source_digest"],
+                "assignment":{**draft, "version":3, "decision":{k:v for k,v in decision.items() if k != "lesson"}}})
+        keep = {**decision, "action":"KEEP", "lesson":{**lesson, "expected_gain":3}}
+        kept = restarted.project_flow_command({**request, "expected_digest":revised["source_digest"],
+            "assignment":{**draft, "version":3, "decision":keep}})
+        self.assertEqual(kept["hive_lessons"][-1]["decision"]["action"], "KEEP")
+        self.assertEqual([item["version"] for item in kept["assignments"]], [1, 2, 3])
+        self.assertEqual(read(console.App(self.codex_home, self.config)), kept)
         self.assertEqual(restarted.progress_ledger.replay(), ledger_before)
         self.assertEqual(app.auto_bridge.mock_calls, [])
         self.assertEqual(restarted.auto_bridge.mock_calls, [])
@@ -1704,6 +1790,11 @@ class SwarmConsoleTests(unittest.TestCase):
         refused({**request(), "reviewer": "independent"})
         refused(request(reviewer="host-new"), pattern="independent reviewer")
         refused(request(reviewer="ctrl-a"), pattern="independent reviewer")
+        lead_owned = copy.deepcopy(app.progress_ledger.replay())
+        creation_binding = next(iter(lead_owned["task_creation_bindings"].values()))
+        creation_binding["parent_edge"] = {"state": "BOUND", "parent_task_id": "reviewer-host"}
+        with mock.patch.object(app.progress_ledger, "replay", return_value=lead_owned):
+            refused(request(), pattern="independent reviewer")
         refused(request(reviewer="reviewer-foreign"), pattern="HOST_REVIEW_UNVERIFIED")  # Returned cwd conflicts with that host thread.
         refused(request(reviewer="reviewer-absent"), pattern="HOST_REVIEW_UNVERIFIED")
         for invalid_cwd in ("", "relative-reviewer"):
@@ -1800,6 +1891,14 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.commit()
         pending = request()
         retained_review = copy.deepcopy(reviews["reviewer-host"])
+        day_ms = 24 * 60 * 60 * 1000
+        with mock.patch("runtime.progress_events.time.time", return_value=(now - 2 * day_ms) / 1000):
+            app.progress_ledger.start_velocity_instrumentation(project_id="project:alpha",
+                expected_event_seq=pending["expected_ledger_revision"])
+        metadata = app.progress_ledger._state.path.with_name("velocity-metadata.json")
+        damaged_metadata = getattr(self, "velocity_metadata_fixture", None)
+        if damaged_metadata is not None:
+            metadata.write_bytes(damaged_metadata)
         # A durable evidence prefix survives a crash without requiring another reviewer turn.
         app.progress_ledger.append_bound_block_evidence(
             project_id="project:alpha", task_id="host-new", block_id="b", manifest_digest=manifest_digest,
@@ -1807,6 +1906,11 @@ class SwarmConsoleTests(unittest.TestCase):
         refused(pending, pattern="ledger changed")
         pending["expected_ledger_revision"] = app.progress_ledger.replay()["cursor"]["event_seq"]
         self.assertEqual(reviews["reviewer-host"], retained_review)
+        if damaged_metadata is not None:
+            with mock.patch.object(app.progress_ledger, "start_velocity_instrumentation",
+                                   side_effect=console.ProgressEventError("progress ledger changed; reload before completing")):
+                refused(pending, pattern="ledger changed")
+            self.assertEqual(metadata.read_bytes(), damaged_metadata)
         accepted = post("/api/tasks/complete", pending)
         accepted._error.assert_not_called()
         result = accepted._json.call_args.args[1]
@@ -1897,6 +2001,77 @@ class SwarmConsoleTests(unittest.TestCase):
         (root / "deliverable.md").write_bytes(b"# Acceptance report\ndifferent accepted bytes\n")
         artifact_sha = hashlib.sha256(b"# Acceptance report\ndifferent accepted bytes\n").hexdigest()
         refused({**replay_body, "artifact_sha256": artifact_sha}, restarted, "different bytes")
+        records = [json.loads(line)["event"] for line in restarted.progress_ledger._state.path.read_text().splitlines()]
+        accepted_event = next(row for row in records if row.get("event_id") == "bound-accepted:host-new:b")
+        restarted.progress_ledger.append({**accepted_event, "event_id": "console-rework-b", "dedupe_key": "console-rework-b",
+            "event_kind": "REWORK_REQUESTED", "lifecycle_state": "INVALIDATED_REWORK",
+            "parent_event_id": accepted_event["event_id"], "observed_at_ms": int(time.time() * 1000)})
+        reworked = post("/api/tasks/complete", request(turn="review-turn-rework"), restarted)
+        reworked._error.assert_not_called()
+        self.assertEqual(reworked._json.call_args.args[1]["event_id"], "bound-accepted:host-new:b:attempt:2")
+        self.assertEqual(post("/api/tasks/complete", request(turn="review-turn-rework"), restarted)._json.call_args.args[1]["status"], "REPLAY")
+        end = (int(time.time() * 1000) // day_ms + 1) * day_ms
+        velocity = restarted.progress_ledger.project_velocity("project:alpha", days=7, as_of_ms=end)
+        if damaged_metadata is None:
+            self.assertEqual(velocity["current"][-1]["rate"], 2 / 24)
+        else:
+            self.assertEqual(velocity["diagnostic"], "VELOCITY_METADATA_CORRUPT_OR_INCOMPATIBLE")
+            self.assertTrue(all(point["rate"] is None for point in velocity["current"] + velocity["previous"]))
+            self.assertEqual(metadata.read_bytes(), damaged_metadata)
+
+        from skills.swarm.scripts import swarm_mcp
+        projection = swarm_mcp.SwarmProjection(telemetry_path=self.root / "velocity-status-telemetry.jsonl")
+        projection._app = restarted
+        accepted_again = projection.call("swarm_task_accept", {"request": request(turn="review-turn-rework"), "acknowledge": True})
+        self.assertEqual(accepted_again["status"], "REPLAY")
+        with mock.patch.object(restarted, "refresh_native_observation"), mock.patch("console.server.time.time", return_value=end / 1000), mock.patch.object(swarm_mcp, "_device_status", return_value={}):
+            scoped = projection.call("swarm_status", {"project_id": "project:alpha"})
+        chart = scoped["overview_metrics"]["velocity"]
+        self.assertEqual(set(chart["windows"]), {"7", "30", "90"})
+        self.assertTrue(all(window["project_id"] == "project:alpha" for window in chart["windows"].values()))
+        self.assertTrue(all(window["cursor"] == chart["windows"]["7"]["cursor"] for window in chart["windows"].values()))
+        self.assertEqual(chart["windows"]["7"]["current"][-1]["rate"], None if damaged_metadata else 2 / 24)
+        binding = restarted._saved_project_binding("project:alpha")
+        real_binding = restarted._saved_project_binding
+        def resolve_alias(project_id, *args, **kwargs):
+            return binding if project_id == "native:alpha" else real_binding(project_id, *args, **kwargs)
+        with mock.patch.object(restarted, "_saved_project_binding", side_effect=resolve_alias), \
+             mock.patch.object(restarted, "refresh_native_observation"), \
+             mock.patch("console.server.time.time", return_value=end / 1000), \
+             mock.patch.object(swarm_mcp, "_device_status", return_value={}):
+            alias_status = projection.call("swarm_status", {"project_id": "native:alpha"})
+        self.assertEqual(alias_status["overview_metrics"]["velocity"]["windows"]["7"]["project_id"], "project:alpha")
+        self.assertEqual(alias_status["overview_metrics"]["velocity"]["ledger_project_id"], "project:alpha")
+        live_as_of = int(time.time() * 1000) + 1000
+        with mock.patch.object(restarted, "refresh_native_observation"), \
+             mock.patch("console.server.time.time", return_value=live_as_of / 1000), \
+             mock.patch.object(swarm_mcp, "_device_status", return_value={}):
+            current_status = projection.call("swarm_status", {"project_id": "project:alpha"})
+        today_point = current_status["overview_metrics"]["velocity"]["windows"]["7"]["current"][-1]
+        self.assertTrue(today_point["partial"])
+        if damaged_metadata is None:
+            elapsed = today_point["observed_end_ms"] - today_point["observed_start_ms"]
+            self.assertAlmostEqual(today_point["rate"], 2 * 3_600_000 / elapsed)
+        else:
+            self.assertIsNone(today_point["rate"])
+        with mock.patch.object(restarted, "refresh_native_observation"), \
+             mock.patch.object(restarted.progress_ledger, "project_velocity", side_effect=sqlite3.OperationalError("read failed")), \
+             mock.patch.object(swarm_mcp, "_device_status", return_value={}):
+            failed_velocity = projection.call("swarm_status", {"project_id": "project:alpha"})
+        self.assertEqual(failed_velocity["overview_metrics"]["velocity"]["windows"], {})
+        self.assertIsNone(failed_velocity["overview_metrics"]["velocity"]["ledger_project_id"])
+
+    def test_console_completion_preserves_damaged_velocity_metadata(self) -> None:
+        for damaged in (b"{broken", b"{", b'{"schema_version":2,"projects":{}}'):
+            with self.subTest(metadata=damaged):
+                case = type(self)("test_bound_task_completion_composes_creation_runtime_review_and_ledger_acceptance")
+                case.velocity_metadata_fixture = damaged
+                case.setUp()
+                try:
+                    case.test_bound_task_completion_composes_creation_runtime_review_and_ledger_acceptance()
+                finally:
+                    case.tearDown()
+                    case.doCleanups()
 
     def test_project_ticket_api_edits_canonical_brief_without_runtime_writes(self) -> None:
         self._confirm_root_ctrl()
@@ -1992,6 +2167,144 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(console, "_is_reparse_point", return_value=True):
             with self.assertRaises(console.ConsoleError):
                 app._native_project_map()
+
+    def test_archived_alias_can_be_cleared_with_exact_revision_then_replaced(self) -> None:
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture, views
+        native = "native-project"
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        _, digest = views.parse_project_brief_markdown(brief.read_text(encoding="utf-8"))
+        old = {"native_project_id": native, "host_project_id": "project:new", "ledger_project_id": "project:alpha", "controller_id": "root"}
+        replacement = {**old, "controller_id": "lead"}
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", ("project:new", "alpha", "{}", 1, 0, 0))
+            connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:new", 0, str(self.alpha_root)))
+            connection.commit()
+        host_file = self.codex_home / console.HOST_STATE_FILENAME
+        host_key = "local:" + str(self.codex_home.resolve())
+        state = {console.HOST_STATE_PROJECTS_KEY: {native: {"id": native, "rootPaths": [str(self.alpha_root)]}},
+                 console.HOST_STATE_PROJECT_MAP_KEY: {host_key: {native: "project:new"}},
+                 "thread-project-assignments": {key: {"projectKind": "local", "projectId": native} for key in ("root", "lead")}}
+        host_file.write_text(json.dumps(state), encoding="utf-8")
+        app = console.App(self.codex_home, self.config)
+        with mock.patch.object(app.progress_ledger, "replay", return_value={"ticket_identities": {"project:alpha": {}}}):
+            saved = app.project_alias_command({"operation": "select", "selection": old, "expected_digest": digest, "acknowledge": True})
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE threads SET archived=1 WHERE id='root'")
+                connection.commit()
+            with self.assertRaises(console.ConsoleError): app._saved_project_binding(native)
+            preview = app.project_alias_command({"operation": "read", "selection": old})
+            self.assertEqual(preview["source_digest"], saved["source_digest"])
+            with self.assertRaises(console.ConsoleConflict):
+                app.project_alias_command({"operation": "clear", "selection": old, "expected_digest": digest, "acknowledge": True})
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "clear", "selection": replacement, "expected_digest": saved["source_digest"], "acknowledge": True})
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "clear", "selection": old, "expected_digest": saved["source_digest"], "acknowledge": False})
+            state["thread-project-assignments"]["root"]["projectId"] = "wrong"
+            host_file.write_text(json.dumps(state), encoding="utf-8")
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "clear", "selection": old, "expected_digest": saved["source_digest"], "acknowledge": True})
+            state["thread-project-assignments"]["root"]["projectId"] = native
+            host_file.write_text(json.dumps(state), encoding="utf-8")
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:third", 0, str(self.alpha_root)))
+                connection.commit()
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "clear", "selection": old, "expected_digest": saved["source_digest"], "acknowledge": True})
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("DELETE FROM project_roots WHERE project_id='project:third'")
+                connection.commit()
+            cleared = app.project_alias_command({"operation": "clear", "selection": old, "expected_digest": saved["source_digest"], "acknowledge": True})
+            self.assertEqual(cleared["provenance"], "LOCAL_CLEARED")
+            replaced = app.project_alias_command({"operation": "select", "selection": replacement, "expected_digest": cleared["source_digest"], "acknowledge": True})
+            self.assertFalse(replaced["admitted"])
+            self.assertEqual(app._saved_project_binding(native)["project_id"], "project:alpha")
+
+    def test_explicit_project_alias_rechecks_host_and_preserves_ledger_identity(self) -> None:
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture, views
+        native = "native-project"
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        _, digest = views.parse_project_brief_markdown(brief.read_text(encoding="utf-8"))
+        selection = {"native_project_id": native, "host_project_id": "project:new",
+                     "ledger_project_id": "project:alpha", "controller_id": "root"}
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", ("project:new", "alpha", "{}", 1, 0, 0))
+            connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:new", 0, str(self.alpha_root)))
+            connection.commit()
+        host_file = self.codex_home / console.HOST_STATE_FILENAME
+        host_key = "local:" + str(self.codex_home.resolve())
+        state = {console.HOST_STATE_PROJECTS_KEY: {native: {"id": native, "rootPaths": [str(self.alpha_root)]}},
+                 console.HOST_STATE_PROJECT_MAP_KEY: {host_key: {native: "project:new"}},
+                 "thread-project-assignments": {"root": {"projectKind": "local", "projectId": native}}}
+        host_file.write_text(json.dumps(state), encoding="utf-8")
+        app = console.App(self.codex_home, self.config)
+        with self.assertRaises(console.ConsoleError):
+            app._saved_project_binding(native)
+        with mock.patch.object(app.progress_ledger, "replay", return_value={"ticket_identities": {"project:alpha": {}}}):
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "select", "selection": selection, "expected_digest": digest, "acknowledge": False})
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "select", "selection": {**selection, "host_project_id": "wrong"}, "expected_digest": digest, "acknowledge": True})
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:missing", 0, str(self.root / "not-present")))
+                connection.commit()
+            preview = app.project_alias_command({"operation": "read", "selection": selection})
+            self.assertEqual(preview["source_digest"], digest)
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:new'", (str(self.root / "not-present"),))
+                connection.commit()
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "read", "selection": selection})
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:new'", (str(self.alpha_root),))
+                connection.execute("DELETE FROM project_roots WHERE project_id='project:missing'")
+                connection.commit()
+            before = brief.read_bytes()
+            original = app._explicit_project_alias
+            calls = []
+            def changing_host(*args, **kwargs):
+                calls.append(True)
+                if len(calls) == 2:
+                    raise console.ConsoleError("host changed before commit")
+                return original(*args, **kwargs)
+            with mock.patch.object(app, "_explicit_project_alias", side_effect=changing_host):
+                with self.assertRaises(console.ConsoleError):
+                    app.project_alias_command({"operation": "select", "selection": selection, "expected_digest": digest, "acknowledge": True})
+            self.assertEqual(brief.read_bytes(), before)
+            saved = app.project_alias_command({"operation": "select", "selection": selection, "expected_digest": digest, "acknowledge": True})
+            self.assertEqual((saved["project_id"], saved["admitted"]), ("project:alpha", False))
+            with self.assertRaises(console.ConsoleConflict):
+                app.project_alias_command({"operation": "select", "selection": selection, "expected_digest": digest, "acknowledge": True})
+            binding = app._saved_project_binding(native)
+            self.assertEqual(binding["project_id"], "project:alpha")
+            self.assertIn(native, binding["identities"])
+            state["thread-project-assignments"]["root"]["projectId"] = "other"
+            host_file.write_text(json.dumps(state), encoding="utf-8")
+            with self.assertRaises(console.ConsoleError):
+                app._saved_project_binding(native)
+            state["thread-project-assignments"]["root"]["projectId"] = native
+            host_file.write_text(json.dumps(state), encoding="utf-8")
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE threads SET archived=1 WHERE id='root'")
+                connection.commit()
+            with self.assertRaises(console.ConsoleError):
+                app._saved_project_binding(native)
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE threads SET archived=0 WHERE id='root'")
+                connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:third", 0, str(self.alpha_root)))
+                connection.commit()
+            with self.assertRaises(console.ConsoleError):
+                app._saved_project_binding(native)
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("DELETE FROM project_roots WHERE project_id='project:third'")
+                connection.commit()
+        with mock.patch.object(app.progress_ledger, "replay", return_value={"ticket_identities": {}}):
+            with self.assertRaises(console.ConsoleError):
+                app._saved_project_binding(native)
+        with self.assertRaises(views.ProjectModelError):
+            views.set_explicit_project_alias(brief, expected_digest=digest, selection=selection, updated_at="now", verify_current_scope=lambda: None)
 
     def test_native_saved_project_binding_is_read_only_alias_for_tickets_and_brief_identity(self) -> None:
         from console.tests.test_project_model_views import project_fixture, markdown_fixture, views
@@ -2255,6 +2568,86 @@ class SwarmConsoleTests(unittest.TestCase):
         with self.assertRaises(console.ConsoleError):
             restarted._observed_task_root("project:alpha", "task", allow_adopted=True)
         self.assertEqual(self.config.read_bytes(), config)
+
+    def test_adopted_projectless_owner_message_uses_retained_host_cwd(self) -> None:
+        from contextlib import contextmanager
+        app, request, _, _, _ = self._existing_owner_admission_fixture()
+        app.adopt_existing_task(request)
+        before = app.progress_ledger.replay()
+        context = app.task_message_context({"project_id":"project:alpha", "thread_id":"task"})
+        self.assertEqual(context["expected_ledger_revision"], before["cursor"]["event_seq"])
+        self.assertEqual(app.progress_ledger.replay(), before)
+        instruction = "Bounded adopted-owner probe"
+        envelope = {key: context[key] for key in ("project_id", "root_digest", "ctrl_id", "target_intent",
+            "target_thread_id", "expected_ledger_revision", "submitted_at_ms", "expires_at_ms", "action")}
+        envelope.update(command_id="adopted-message", idempotency_key="adopted-message",
+                        payload_digest=hashlib.sha256(instruction.encode()).hexdigest())
+        calls = []
+        @contextmanager
+        def session(cwd, **kwargs):
+            def send(message): calls.append(message)
+            def receive(predicate):
+                response = {"thread":{"id":"task", "cwd":str(self.root), "status":{"type":"idle"}}} if calls[-1]["method"] == "thread/resume" else {"turn":{"id":"turn-new"}}
+                return {"id":calls[-1]["id"], "result":response}
+            yield send, receive
+        app.auto_bridge.command_session = session
+        payload = {"acknowledge":True, "instruction":instruction, "envelope":envelope}
+        result = app.message_task(payload)
+        self.assertEqual((result["status"],result["thread_id"]), ("RESULT","task"))
+        self.assertEqual([item["method"] for item in calls], ["thread/resume","turn/start"])
+        self.assertEqual(app.message_task(payload)["status"], "REPLAY")
+        self.assertEqual(len(calls),2)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root/'moved'),)); connection.commit()
+        with self.assertRaises(console.ConsoleError): app.task_message_context({"project_id":"project:alpha", "thread_id":"task"})
+        with self.assertRaises(console.ConsoleError): app.message_task(payload)
+        self.assertEqual(len(calls),2)
+
+    def test_adopted_owner_rejects_wrong_observed_host_cwd_without_turn(self) -> None:
+        from contextlib import contextmanager
+        app, request, _, _, _ = self._existing_owner_admission_fixture()
+        with self.assertRaises(console.ConsoleError):
+            app.task_message_context({"project_id":"project:alpha", "thread_id":"task"})
+        app.adopt_existing_task(request)
+        context=app.task_message_context({"project_id":"project:alpha", "thread_id":"task"})
+        instruction="Host identity check"
+        envelope={key:context[key] for key in ("project_id","root_digest","ctrl_id","target_intent","target_thread_id",
+            "expected_ledger_revision","submitted_at_ms","expires_at_ms","action")}
+        envelope.update(command_id="wrong-cwd",idempotency_key="wrong-cwd",payload_digest=hashlib.sha256(instruction.encode()).hexdigest())
+        sent=[]
+        @contextmanager
+        def session(cwd, **kwargs):
+            def send(message): sent.append(message)
+            def receive(predicate): return {"id":sent[-1]["id"],"result":{"thread":{"id":"task","cwd":str(self.codex_home),"status":{"type":"idle"}}}}
+            yield send,receive
+        app.auto_bridge.command_session=session
+        result=app.message_task({"acknowledge":True,"instruction":instruction,"envelope":envelope})
+        self.assertEqual(result["status"],"PENDING")
+        self.assertEqual([item["method"] for item in sent],["thread/resume"])
+        self.assertFalse(result["work_completed"])
+
+    def test_adopted_owner_app_transport_uses_retained_cwd_and_replays(self) -> None:
+        from runtime.execution_adapters import HQAppTaskObservation
+        app, request, _, _, _ = self._existing_owner_admission_fixture()
+        app.adopt_existing_task(request)
+        context=app.task_message_context({"project_id":"project:alpha", "thread_id":"task"})
+        instruction="Native adopted task"
+        envelope={key:context[key] for key in ("project_id","root_digest","ctrl_id","target_intent","target_thread_id",
+            "expected_ledger_revision","submitted_at_ms","expires_at_ms","action")}
+        envelope.update(command_id="native-adopted",idempotency_key="native-adopted",payload_digest=hashlib.sha256(instruction.encode()).hexdigest())
+        sent=[]
+        def observe(command):
+            return HQAppTaskObservation("a"*64,command.digest,command.payload_digest,"task","old-turn","new-turn",str(self.root),command.submitted_at_ms)
+        app.task_transport=SimpleNamespace(send_message_to_thread=lambda **kw: sent.append(kw),observe_command=observe,
+            verify_observation=lambda observation,command:True)
+        app.auto_bridge.command_session=mock.Mock(side_effect=AssertionError("stdio fallback forbidden"))
+        payload={"acknowledge":True,"instruction":instruction,"envelope":envelope}
+        result=app.message_task(payload)
+        self.assertEqual((result["status"],result["thread_id"],result["turn_id"]),("RESULT","task","new-turn"))
+        self.assertEqual(len(sent),1)
+        self.assertEqual(app.message_task(payload)["status"],"REPLAY")
+        self.assertEqual(len(sent),1)
+        app.auto_bridge.command_session.assert_not_called()
 
     def test_existing_owner_admission_rejects_scope_and_host_conflicts_without_write(self) -> None:
         app, request, sent, controls, session = self._existing_owner_admission_fixture()
@@ -8352,6 +8745,17 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("task", {project["id"] for project in navigation["projects"]})
         self.assertNotIn(str(self.alpha_root), json.dumps(navigation["projects"]))
 
+    def test_roster_native_bindings_are_one_fresh_snapshot_per_read(self) -> None:
+        app = console.App(self.codex_home, self.config, self.root / "console" / "roster-snapshot.sqlite3")
+        with mock.patch.object(app, "_native_project_map", side_effect=[{}, {"project:alpha": {"valid": False}}]) as read_map:
+            first = app.project_roster()
+            second = app.project_roster()
+        self.assertEqual(read_map.call_count, 2)
+        first_alpha = next(item for item in first["projects"] if item["id"] == "project:alpha")
+        second_alpha = next(item for item in second["projects"] if item["id"] == "project:alpha")
+        self.assertNotEqual(first_alpha["manifest"]["status"], "INVALID")
+        self.assertEqual(second_alpha["manifest"]["status"], "INVALID")
+
     def test_project_roster_enumerates_saved_projects_and_keeps_current_work_separate(self) -> None:
         self._confirm_root_ctrl()
         inactive_root = self.root / "inactive-project"
@@ -9638,6 +10042,115 @@ class SwarmConsoleTests(unittest.TestCase):
         media_path.write_bytes(b"changed")
         with self.assertRaises(console.ConsoleError):
             store.proof_media_item("evidence-delivery", registered["digest"])
+
+    def test_proof_cli_registers_original_through_local_console(self) -> None:
+        source = self.root / "actual-temp-original.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        app = console.App(self.codex_home, self.config, self.root / "console" / "cli.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        server = console.SwarmHTTPServer(("127.0.0.1", 0), console.Handler, app)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with mock.patch.object(app, "_host_overview", return_value=overview):
+                command = [sys.executable, "-B", str(Path(__file__).resolve().parents[2] / "skills/swarm/scripts/swarm_proof.py"),
+                           str(source), "--codex-home", str(self.codex_home), "--console-url",
+                           f"http://127.0.0.1:{server.server_address[1]}", "--evidence-id", "cli-proof",
+                           "--task-id", "task-1", "--kind", "screenshot", "--caption", "Original"]
+                result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            event = json.loads(result.stdout)
+            self.assertEqual(app.proof_media_item("cli-proof", event["digest"])["path"], source.resolve())
+            self.assertFalse((self.codex_home / "swarm" / "proof-media").exists())
+            scan = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=10)
+            self.assertEqual(scan["rejected"], 0, scan)
+            self.assertEqual(scan["imported"], 1, scan)
+            scan = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=11)
+            self.assertEqual(scan["duplicates"], 1, scan)
+            source.write_bytes(b"\x89PNG\r\n\x1a\nother")
+            with self.assertRaises(console.ConsoleError):
+                app.proof_media_item("cli-proof", event["digest"])
+            source.unlink()
+            with self.assertRaisesRegex(console.ConsoleError, "unavailable"):
+                app.proof_media_item("cli-proof", event["digest"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_proof_cli_fails_closed_on_mismatched_console_home(self) -> None:
+        source = self.root / "other-home.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        app = console.App(self.codex_home, self.config, self.root / "console" / "home.sqlite3")
+        server = console.SwarmHTTPServer(("127.0.0.1", 0), console.Handler, app)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            other_home = self.root / "other-home"
+            command = [sys.executable, "-B", str(Path(__file__).resolve().parents[2] / "skills/swarm/scripts/swarm_proof.py"),
+                       str(source), "--codex-home", str(other_home), "--console-url", f"http://127.0.0.1:{server.server_address[1]}",
+                       "--evidence-id", "wrong-home", "--task-id", "task-1", "--kind", "screenshot", "--caption", "Original"]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("console does not match", result.stderr)
+            self.assertEqual(app.store.proof_feed(), [])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_explicit_original_authorization_and_changed_content(self) -> None:
+        source = self.root / "outside-original.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        app = console.App(self.codex_home, self.config, self.root / "console" / "explicit.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        event = {"acknowledge": True, "evidence_id": "explicit-proof", "task_id": "task-1",
+                 "kind": "screenshot", "locator": str(source), "caption": "Explicit source"}
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            with self.assertRaisesRegex(console.ConsoleError, "acknowledgement"):
+                app.authorize_original_proof({**event, "acknowledge": False})
+            row = app.authorize_original_proof(event)
+        self.assertEqual(app.proof_media_item("explicit-proof", row["digest"])["path"], source.resolve())
+        self.assertFalse((self.codex_home / "swarm" / "proof-media").exists())
+        source.unlink()
+        with self.assertRaisesRegex(console.ConsoleError, "unavailable"):
+            app.proof_media_item("explicit-proof", row["digest"])
+        source.write_bytes(b"\x89PNG\r\n\x1a\nother")
+        with self.assertRaises(console.ConsoleError):
+            app.proof_media_item("explicit-proof", row["digest"])
+
+    def test_original_proof_ingests_without_copy_and_rechecks_identity(self) -> None:
+        from skills.swarm.runtime.proof_events import register_proof_event
+        source = self.codex_home / "visualizations" / "capture.png"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        event = register_proof_event(self.codex_home, source, evidence_id="original-proof", task_id="task-1", kind="screenshot", caption="Original")
+        self.assertFalse((self.codex_home / "swarm" / "proof-media").exists())
+        store = console.ConsoleStore(self.root / "console" / "original.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual(result["imported"], 1, result)
+        media_root = self.codex_home / "swarm" / "proof-media"
+        item = store.proof_media_item("original-proof", event["digest"], allowed_root=media_root, codex_home=self.codex_home)
+        self.assertEqual(item["path"], source.resolve())
+        source.unlink()
+        with self.assertRaisesRegex(console.ConsoleError, "unavailable"):
+            store.proof_media_item("original-proof", event["digest"], allowed_root=media_root, codex_home=self.codex_home)
+        source.write_bytes(b"\x89PNG\r\n\x1a\nother")
+        with self.assertRaises(console.ConsoleError):
+            store.proof_media_item("original-proof", event["digest"], allowed_root=media_root, codex_home=self.codex_home)
+
+    def test_original_proof_outside_approved_roots_is_rejected(self) -> None:
+        from skills.swarm.runtime.proof_events import register_proof_event
+        source = self.root / "outside.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        register_proof_event(self.codex_home, source, evidence_id="outside-original", task_id="task-1", kind="screenshot", caption="Outside")
+        store = console.ConsoleStore(self.root / "console" / "outside.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(result["rejected"], 1)
+        self.assertEqual(store.proof_feed(), [])
 
     def test_proof_event_ingestion_derives_project_and_enforces_media_root(self) -> None:
         swarm_root = self.codex_home / "swarm"

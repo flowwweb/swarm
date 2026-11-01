@@ -2259,11 +2259,17 @@ class Swarm:
             if receipt and receipt.current_for(self._gate_capability,task_id,old_spec.id,contract.artifact,current,old_plan,old_spec,now):
                 reusable[old_spec.id]=receipt
         new_plan=self.plan_proof(inputs)
+        if new_plan==old_plan and len(reusable)==len(old_plan.gates):
+            return old_plan
         adopted:dict[str,GateReceipt]={}
-        for new_spec in new_plan.gates:
+        specs={spec.id:spec for spec in new_plan.gates}
+        for gate_id in TopologicalSorter({spec.id:spec.dependencies for spec in new_plan.gates}).static_order():
+            new_spec=specs[gate_id]
             receipt=reusable.get(new_spec.id)
             old_spec=next((item for item in old_plan.gates if item.id==new_spec.id),None)
-            if receipt is None or old_spec is None or _gate_spec_digest(old_spec)!=_gate_spec_digest(new_spec): continue
+            if (receipt is None or old_spec is None or new_spec.cache_policy is CachePolicy.NEVER
+                    or not set(new_spec.dependencies).issubset(adopted)
+                    or _gate_spec_digest(old_spec)!=_gate_spec_digest(new_spec)): continue
             refreshed=replace(receipt,plan_digest=new_plan.plan_digest,authority_context_digest=_sha256_text(f"{task_id}:{actor_id}:{new_plan.plan_digest}"),adopted=True)
             object.__setattr__(refreshed,"_authority",self._gate_capability); object.__setattr__(refreshed,"_bound_task_id",task_id)
             adopted[new_spec.id]=refreshed
@@ -2451,9 +2457,12 @@ class Swarm:
         if record is None or stage is None or stage.state is not RequestStageState.ACCEPTED or record.task_id!=task_id or record.state is not RequestState.OPEN or task is None or task.state is not TaskState.REQUEST_PENDING or record.outcome_identity!=self._request_outcome_identity(task,request_id) or record.accepting_route!=self._request_route(task): raise InvariantError("accepted request activation requires matching stage, task, owner, route, and outcome")
         if actor is Role.LEAD and task.owning_lead_id!=record.accepted_owner: raise InvariantError("only accepted owning LEAD may activate request")
         if actor is Role.DOER: self._require_lane_actor(task,actor,actor_id)
+        if task.work_unit is None and task.owner==task.owning_lead_id and task.owner in self.topology and (actor is not Role.LEAD or actor_id!=task.owner): raise InvariantError("accepted direct work requires its exact owning LEAD")
         current=next(item for item in self._request_ledger().project_request_lifecycles()["records"] if item["request_id"]==request_id)
         if current["lifecycle_state"]!="ADMITTED": self._append_request_lifecycle(state,self._request_store().read()[1],request_id,"ADMITTED",f"activate:{task_id}",record)
         if task.work_unit is not None: task.state=TaskState.ACTIVE; return
+        if task.owner==task.owning_lead_id and task.owner in self.topology:
+            task.state=TaskState.ACTIVE; return
         worker=self.workers.get(task.owner)
         parent=task.owning_lead_id or Role.CTRL.value
         if worker is None or worker.lead!=parent or worker.state is WorkerState.RETIRED: raise InvariantError("accepted request has no matching live worker")
@@ -2872,9 +2881,20 @@ class Swarm:
         record.created_at=now; self.hive[record.id]=record; self.telemetry["hive_created"]=self.telemetry.get("hive_created",0)+1; self._hive_counts(); return record.id
     def _hive_counts(self) -> None:
         self.telemetry.update({f"hive_{state.value.lower()}":sum(r.status==state for r in self.hive.values()) for state in HiveStatus})
-    def hydrate_hive(self, query:str, architecture:dict[str,int], budget:int, now:int) -> list[HiveRecord]:
+    def hydrate_hive(self, query:str, architecture:dict[str,int], budget:int, now:int, *, flow_lessons:tuple[dict,...]=(), inputs_digest:str="") -> list[HiveRecord]:
         if not query or budget<1 or not self.hive_enabled: return []
         matches=[r for r in self.hive.values() if r.current_for(architecture) and query.lower() in f"{r.content} {r.reference} {r.source} {r.provenance.get('scope','')} {r.provenance.get('artifact','')}".lower()][:budget]
+        for item in flow_lessons:
+            if len(matches)>=budget: break
+            if not isinstance(item,dict): continue
+            decision=item.get("decision"); lesson=decision.get("lesson") if isinstance(decision,dict) else None
+            if (not isinstance(lesson,dict) or not inputs_digest or lesson.get("inputs_digest")!=inputs_digest
+                    or not isinstance(item.get("assignment_digest"),str) or not isinstance(item.get("flow_digest"),str)
+                    or not isinstance(lesson.get("artifact_digest"),str) or item.get("requires_reassessment") is not True): continue
+            reference="flow:"+item["assignment_digest"]
+            if query.lower() not in f"{reference} {item['flow_digest']} {lesson['artifact_digest']}".lower(): continue
+            matches.append(HiveRecord(id=reference,reference=reference,source="flow",source_version=item["flow_digest"],
+                provenance={"artifact":lesson["artifact_digest"],"inputs":inputs_digest,"reassessment":"required"}))
         for record in matches: record.last_used_at=now
         self.telemetry.update({"hive_hydration_count":len(matches),"hive_hydration_size":sum(len(r.content)+len(r.reference) for r in matches)})
         return matches
@@ -2910,12 +2930,17 @@ class Swarm:
         self.artifact_index[key]=task.id; task.artifacts[key]=source or task.id
         if provenance is not None: self.provenance_index[provenance.id]=key; task.artifact_provenance[key]=provenance
         return key
-    def assign(self, actor: Role, task: Task) -> None:
-        self._role(actor,{Role.LEAD}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._require_task_intake(task); self._worker_identity(task.owner); w=self.workers.get(task.owner)
-        if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
+    def assign(self, actor: Role, task: Task, *, actor_id: str="") -> None:
+        self._role(actor,{Role.LEAD}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._require_task_intake(task)
+        direct=bool(actor_id and actor_id==task.owner==task.owning_lead_id and actor_id in self.topology)
+        w=self.workers.get(task.owner)
+        if not direct:
+            self._worker_identity(task.owner)
+            if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
+        lead_id=actor_id if direct else w.lead
         operation={WorkKind.GENERAL:OperationClass.EXECUTE,WorkKind.DESIGN:OperationClass.MUTATE,WorkKind.IMAGEGEN:OperationClass.GENERATE,WorkKind.IMAGE_EDIT:OperationClass.GENERATE}[task.work_kind]
-        if role_gate(actor,replace(task,owning_lead_id=w.lead),operation,actor_id=w.lead,lease_version=task.current_lease_version) is not RoleGateDecision.ALLOW: raise InvariantError("role gate denied task dispatch")
-        self._bind_task_lead(task,w)
+        if role_gate(actor,replace(task,owning_lead_id=lead_id),operation,actor_id=lead_id,lease_version=task.current_lease_version) is not RoleGateDecision.ALLOW: raise InvariantError("role gate denied task dispatch")
+        if not direct: self._bind_task_lead(task,w)
         staged=[]; pending=set(); pending_provenance=set()
         for artifact,source in task.artifacts.items():
             artifact_key=self._artifact(artifact).key(); provenance=task.artifact_provenance.get(artifact_key)
@@ -2924,7 +2949,8 @@ class Swarm:
         task.artifacts={}
         task.artifact_provenance={}
         for artifact,source,justification,provenance in staged: self._register_artifact(task,artifact,source,justification,provenance)
-        self.tasks[task.id]=task; w.task_ids.add(task.id)
+        self.tasks[task.id]=task
+        if not direct: w.task_ids.add(task.id)
     def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False, contention:bool=False) -> bool:
         allowed=independent and not contention and (critical_path or verification) and (not duplicate_artifact or verification) and sum(w.state!=WorkerState.RETIRED for w in self.workers.values()) < MODE_POLICY[self.mode]["parallel"]
         reason="allow:verification" if verification else "allow:critical_path" if allowed else "refuse:independent=false" if not independent else "refuse:contention" if contention else "refuse:duplicate" if duplicate_artifact else "refuse:noncritical"
@@ -2990,7 +3016,9 @@ class Swarm:
         return reorientation or (f"{task_id}:surface-proof:{','.join(due)}" if due else None)
     def context_decision(self, *, affinity:int|None=None, bloat:bool|None=None, stale:bool|None=None, stalls:int|None=None, worker_id:str|None=None, replacement:str|None=None) -> str:
         context=self.workers[worker_id].context if worker_id else {}; affinity=context.get("affinity",affinity or 0); bloat=context.get("bloat",bloat or False); stale=context.get("stale",stale or False); stalls=context.get("stalls",stalls or 0)
-        result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self._record("efficiency_ledger",{"kind":"context","decision":result,"reason":"bounded_spine"})
+        result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"
+        if result=="retire" and worker_id and self._core_unit_identity(worker_id): result="preserve"
+        self._record("efficiency_ledger",{"kind":"context","decision":result,"reason":"core_unit" if result=="preserve" else "bounded_spine"})
         if result=="retire" and worker_id: self.retire(Role.LEAD,worker_id,replacement)
         return result
     def change_architecture(self, actor: Role, contracts: dict[str,int], now:int=0) -> None:
@@ -3330,8 +3358,14 @@ class Swarm:
         self._role(actor,{Role.CTRL})
         if surface in self.leases and self.leases[surface]!=holder: raise InvariantError("surface already leased")
         self.leases[surface]=holder
+    def _core_unit_identity(self, identity:str) -> bool:
+        return identity.strip().upper()==Role.CTRL.value or any(
+            task.work_unit is not None and identity in {task.id,task.owner,task.owning_lead_id}
+            for task in self.tasks.values())
     def retire(self, actor: Role, worker_id: str, replacement: str|None=None, *, lessons:list[HiveRecord]|None=None, now:int=0, watchdog_review:WatchdogChangeReview|None=None) -> None:
         self._role(actor,{Role.LEAD}); w=self.workers[worker_id]
+        if self._core_unit_identity(worker_id) or any(self.tasks[task_id].work_unit is not None for task_id in w.task_ids):
+            raise InvariantError("ordinary retirement cannot replace core CTRL or Unit coordination")
         if not replacement or replacement not in self.workers or self.workers[replacement].lead!=w.lead: self._request_guard(owner=w.lead)
         for task_id in w.task_ids:
             if self.tasks[task_id].topology_receipt==("CTRL","DOER","atomic:isolated"): self._request_guard(task_id=task_id)
@@ -3351,7 +3385,10 @@ class Swarm:
         if self.hive_enabled: self.telemetry["hive_retirement_flushes"]=self.telemetry.get("hive_retirement_flushes",0)+len(flushed)
     def collapse(self, actor: Role, lead: str, *, watchdog_review:WatchdogChangeReview|None=None) -> Depth:
         """Retire idle capacity and remove a lead when only one isolated task remains."""
-        self._role(actor,{Role.CTRL}); active=[t for t in self.tasks.values() if t.state not in {TaskState.COMPLETE,TaskState.BACKLOG,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE}]
+        self._role(actor,{Role.CTRL})
+        if self._core_unit_identity(lead):
+            raise InvariantError("ordinary collapse cannot remove core CTRL or Unit")
+        active=[t for t in self.tasks.values() if t.state not in {TaskState.COMPLETE,TaskState.BACKLOG,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE}]
         if len(active) > 1: return Depth.WORKSTREAM
         self._require_watchdog_change([task for task in self.tasks.values() if task.owning_lead_id==lead],"collapse",lead,watchdog_review)
         def shrink():

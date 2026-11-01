@@ -60,12 +60,13 @@ _LIFECYCLE_FIELDS = frozenset({
 })
 _UPDATE_LOCK = threading.Lock()
 _MAX_BRIEF_BYTES = 512 * 1024
+TICKET_DESCRIPTION_MAX_BYTES = 16 * 1024
 # Planning tickets: Goal(root) -> Milestone -> Task -> Block(terminal), all inside one project brief.
 _TICKET_KINDS = {"goals": "goal", "milestones": "milestone", "tasks": "task", "blocks": "block"}
 _TICKET_PARENT_KINDS = {"goal": None, "milestone": "goal", "task": "milestone", "block": "task"}
 _TICKET_PARENT_FIELDS = {"milestone": "goal_id", "task": "milestone_id", "block": "task_id"}
 _TICKET_PRIORITIES = ("critical", "high", "medium", "low")
-_TICKET_FIELDS = frozenset({"label", "description", "rank", "priority", "parent_id", "assignment"})
+_TICKET_FIELDS = frozenset({"label", "description", "rank", "priority", "parent_id", "assignment", "ownership"})
 _TICKET_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _TICKET_CLAIM_LIMIT = (
     "Project brief planning metadata only. Priority, parent and assignment never grant execution, "
@@ -98,8 +99,36 @@ def validate_flow_assignment(value: Any, definitions: list[dict[str, Any]]) -> d
     """Project-scoped preferences only; repetition never grants dispatch authority."""
     fields = {"id", "version", "subject_kind", "subject_id", "subject_version", "ctrl_id",
               "flow_id", "flow_version", "flow_digest", "label", "notes", "repeat_count", "digest"}
-    if not isinstance(value, dict) or set(value) != fields:
+    if not isinstance(value, dict) or set(value) not in (fields, fields | {"decision"}):
         raise ProjectModelError("Flow assignment fields are invalid")
+    if "decision" in value:
+        decision = value["decision"]
+        fields = {"action", "outcome", "reason", "cost_basis"}
+        if (not isinstance(decision, dict) or set(decision) not in (fields, fields | {"lesson"})
+                or not isinstance(decision["action"], str) or decision["action"] not in {"KEEP", "ADAPT"}
+                or any(not isinstance(decision[key], str) or not decision[key].strip()
+                       or len(decision[key]) > 2048 or not _flow_text(decision[key])
+                       for key in ("outcome", "reason", "cost_basis"))):
+            raise ProjectModelError("Flow decision requires KEEP or ADAPT, outcome, reason and cost basis")
+        if "lesson" in decision:
+            lesson = decision["lesson"]
+            if (not isinstance(lesson, dict) or set(lesson) != {"artifact_digest", "inputs_digest", "expected_gain", "change_cost", "core_before", "core_after"}
+                    or any(not isinstance(lesson[key], str) or re.fullmatch(r"sha256:[0-9a-f]{64}", lesson[key]) is None for key in ("artifact_digest", "inputs_digest"))
+                    or any(type(lesson[key]) is not int or not 0 <= lesson[key] <= 2**53 - 1 for key in ("expected_gain", "change_cost"))):
+                raise ProjectModelError("Flow lesson requires exact evidence digests and bounded comparable cost estimates")
+            for core in (lesson["core_before"], lesson["core_after"]):
+                if (not isinstance(core, dict) or set(core) != {"ctrl_id", "unit_ids"}
+                        or not isinstance(core["ctrl_id"], str) or _TICKET_TOKEN.fullmatch(core["ctrl_id"]) is None
+                        or not isinstance(core["unit_ids"], list) or not core["unit_ids"]
+                        or any(not isinstance(item, str) or _TICKET_TOKEN.fullmatch(item) is None for item in core["unit_ids"])
+                        or len(set(core["unit_ids"])) != len(core["unit_ids"])):
+                    raise ProjectModelError("Flow lesson requires a CTRL and distinct Unit identities")
+            if (lesson["core_before"]["ctrl_id"] != lesson["core_after"]["ctrl_id"]
+                    or set(lesson["core_before"]["unit_ids"]) != set(lesson["core_after"]["unit_ids"])):
+                raise ProjectModelError("ordinary Flow adaptation cannot alter core CTRL or Units")
+            expected = "ADAPT" if lesson["expected_gain"] > lesson["change_cost"] else "KEEP"
+            if decision["action"] != expected:
+                raise ProjectModelError("Flow decision must reflect expected gain and change cost")
     if not isinstance(value["subject_kind"], str) or value["subject_kind"] not in {"ROLE", "LAB", "FACTORY"}:
         raise ProjectModelError("Flow assignment subject kind is invalid")
     for key in ("subject_id", "subject_version", "flow_id"):
@@ -126,6 +155,16 @@ def validate_flow_assignment(value: Any, definitions: list[dict[str, Any]]) -> d
     if value["digest"] != "sha256:" + _digest({k: v for k, v in value.items() if k != "digest"}):
         raise ProjectModelError("Flow assignment digest mismatch")
     return value
+
+
+def flow_hive_lessons(assignments: list[dict[str, Any]], *, inputs_digest: str | None = None) -> list[dict[str, Any]]:
+    """Project useful Flow evidence without creating a second decision authority."""
+    return [{"assignment_id": item["id"], "assignment_version": item["version"],
+             "assignment_digest": item["digest"], "flow_digest": item["flow_digest"],
+             "decision": item["decision"], "requires_reassessment": True}
+            for item in assignments if "decision" in item and "lesson" in item["decision"]
+            and (inputs_digest is None or item["decision"]["lesson"]["inputs_digest"] == inputs_digest)]
+
 
 
 def validate_flow_definition(value: Any) -> dict[str, Any]:
@@ -471,6 +510,33 @@ def mutate_project_brief(
         )
 
 
+def set_explicit_project_alias(path: Path, *, expected_digest: str, selection: Mapping[str, Any],
+                               updated_at: str, verify_current_scope: Callable[[], Any], clear: bool = False) -> str:
+    """CAS one explicit local project mapping; this never grants execution authority."""
+    fields = {"native_project_id", "host_project_id", "ledger_project_id", "controller_id"}
+    if not isinstance(selection, Mapping) or set(selection) != fields or any(
+            not isinstance(selection[key], str) or not selection[key].strip() or len(selection[key]) > 128
+            or any(ord(char) < 33 for char in selection[key]) for key in fields):
+        raise ProjectModelError("project alias requires exact bounded identities")
+    if selection["host_project_id"] == selection["ledger_project_id"]:
+        raise ProjectModelError("project alias requires distinct host and Ledger identities")
+    if not callable(verify_current_scope):
+        raise ProjectModelError("project alias requires fresh host scope verification")
+    with _brief_update_lock(path):
+        text, document, _ = _read_brief_for_edit(path, expected_digest)
+        old = document.get("explicit_project_alias")
+        if old is not None and old != dict(selection):
+            raise ProjectModelError("existing project alias must be explicitly reconciled")
+        if clear:
+            if old != dict(selection):
+                raise ProjectModelError("clear requires the exact retained project alias")
+            del document["explicit_project_alias"]
+        else:
+            document["explicit_project_alias"] = dict(selection)
+        verify_current_scope()
+        return _write_project_brief(path, text, document, updated_at)
+
+
 def _mutate_project_brief(
     path: Path,
     *,
@@ -658,6 +724,22 @@ def _ticket_assignment(value: Any) -> dict[str, str]:
     return dict(value)
 
 
+def _milestone_ownership(value: Any) -> dict[str, Any]:
+    def unit(item: Any) -> bool:
+        return (isinstance(item, dict) and set(item) == {"kind", "id"}
+                and isinstance(item["kind"], str) and item["kind"] in {"LAB", "FACTORY"} and isinstance(item["id"], str)
+                and _TICKET_TOKEN.fullmatch(item["id"]) is not None)
+    if (not isinstance(value, dict) or set(value) != {"owner", "contributors"}
+            or not unit(value["owner"]) or not isinstance(value["contributors"], list)
+            or len(value["contributors"]) > 64 or not all(unit(item) for item in value["contributors"])):
+        raise ProjectModelError("milestone ownership requires one Unit owner and distinct Unit contributors")
+    units = [item["id"] for item in [value["owner"], *value["contributors"]]]
+    if len(set(units)) != len(units):
+        raise ProjectModelError("milestone ownership requires distinct Units")
+    return value
+
+
+
 def _ticket_record(kind: str, record: Mapping[str, Any], groups: Mapping[str, list[dict[str, Any]]],
                    index: Mapping[str, tuple[str, dict[str, Any]]], order: int) -> dict[str, Any]:
     identity = record["id"].strip()
@@ -676,6 +758,7 @@ def _ticket_record(kind: str, record: Mapping[str, Any], groups: Mapping[str, li
         "rank": rank if isinstance(rank, (int, float)) and not isinstance(rank, bool) and math.isfinite(rank) else None,
         "priority": record.get("priority") if record.get("priority") in _TICKET_PRIORITIES else None,
         "parent": parent, "parent_status": status, "assignment": assignment,
+        "ownership": _milestone_ownership(record["ownership"]) if kind == "milestone" and "ownership" in record else None,
         "declared_state": state.strip() if isinstance(state, str) and state.strip() else None,
         "order": order,
     }
@@ -688,6 +771,42 @@ def _ticket_result(document: Mapping[str, Any], digest: str) -> dict[str, Any]:
                for kind, items in groups.items() for order, record in enumerate(items)]
     records.sort(key=lambda item: (kinds.index(item["kind"]), item["rank"] is None, item["rank"] or 0, item["order"], item["id"]))
     return {"source_digest": digest, "hierarchy": kinds, "records": records, "claim_limit": _TICKET_CLAIM_LIMIT}
+
+
+
+def prepare_ticket_sync_snapshot(path: Path, *, project_ids: Any, project_id: str, root_digest: str,
+                                 cloud_project_id: str, registry: Any) -> dict[str, Any]:
+    """Prepare exact planning records only; the caller must verify both project bindings.
+
+    This read-only candidate does not persist an intent, submit a cloud operation,
+    or turn the cloud copy into an authority for the local brief.
+    """
+    if (not isinstance(project_id, str) or not project_id or
+            not isinstance(root_digest, str) or re.fullmatch(r"[0-9a-f]{64}", root_digest) is None or
+            not isinstance(cloud_project_id, str) or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", cloud_project_id) is None):
+        raise ProjectModelError("ticket sync binding is invalid")
+    with _brief_update_lock(path):
+        _, document, source_digest = _read_brief_for_edit(path, "", compare=False)
+        _require_ticket_project(document, project_ids)
+        groups, index = _ticket_index(document)
+        projected = _ticket_result(document, source_digest)
+        if any(row["parent_status"] in {"DANGLING", "CONFLICT"} for row in projected["records"]):
+            raise ProjectModelError("ticket sync hierarchy is unresolved")
+        ledger = registry.replay()
+        identities = registry.brief_ticket_display_ids(ledger, project_id, root_digest)
+        for record_id, (kind, _) in index.items():
+            binding = identities.get(record_id)
+            if not binding or binding.get("kind") != kind or not binding.get("display_id") or not binding.get("request_digest"):
+                raise ProjectModelError("ticket sync requires retained identities for every record")
+        payload = {"schema_version": 1, "local_project_id": project_id, "root_digest": root_digest,
+                   "cloud_project_id": cloud_project_id, "source_digest": source_digest,
+                   "records": {kind: [{"identity": identities[row["id"].strip()]["display_id"], "record": row}
+                                      for row in rows] for kind, rows in groups.items()}}
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode("utf-8")) > 32000:
+            raise ProjectModelError("ticket sync snapshot exceeds cloud value limit")
+        _read_brief_for_edit(path, source_digest)  # Detect non-cooperating writes before returning.
+        return {"value": encoded, "source_digest": source_digest, "ledger_cursor": ledger["cursor"]}
 
 
 def _ticket_depth(identity: str, groups: Mapping[str, list[dict[str, Any]]],
@@ -769,7 +888,9 @@ def _apply_ticket_changes(groups: Mapping[str, list[dict[str, Any]]], index: Map
             remove_or(key, value, isinstance(value, str) and 0 < len(value.strip()) <= 160 and _flow_text(value)
                       and "\n" not in value and "\t" not in value, "ticket label must be bounded single-line text")
         elif key == "description":
-            remove_or(key, value, isinstance(value, str) and len(value) <= 4096 and _flow_text(value),
+            if isinstance(value, str) and _flow_text(value) and len(value.encode("utf-8")) > TICKET_DESCRIPTION_MAX_BYTES:
+                raise ProjectModelError("TICKET_DESCRIPTION_TOO_LONG: description must be at most 16384 UTF-8 bytes")
+            remove_or(key, value, isinstance(value, str) and _flow_text(value),
                       "ticket description must be bounded text")
         elif key == "rank":
             remove_or(key, value, type(value) is int and 0 <= value <= 1_000_000, "ticket rank must be an integer from 0 to 1000000")
@@ -778,6 +899,10 @@ def _apply_ticket_changes(groups: Mapping[str, list[dict[str, Any]]], index: Map
                       "ticket priority must be critical, high, medium or low")
         elif key == "assignment":
             remove_or(key, None if value is None else _ticket_assignment(value), True, "")
+        elif key == "ownership":
+            if kind != "milestone":
+                raise ProjectModelError("Unit ownership is supported only for milestones")
+            remove_or(key, None if value is None else _milestone_ownership(value), True, "")
     if "parent_id" in patch:
         _reparent_ticket(groups, index, kind, record, patch["parent_id"], creating=creating)
 

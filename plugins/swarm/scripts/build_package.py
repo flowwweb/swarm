@@ -221,6 +221,14 @@ def _desktop_dependency_pins(read_bytes: Callable[[str], bytes]) -> dict[str, st
             if module == "swarm_desktop.py":
                 declared["skills/swarm/scripts/swarm_mcp.py"] = ast.literal_eval(values["MCP_SHA256"])
             if module == "swarm_mcp.py":
+                if "SUPPORTER_LOGOS" in values:
+                    logos = ast.literal_eval(values["SUPPORTER_LOGOS"])
+                    if not isinstance(logos, dict) or not logos:
+                        raise ValueError("invalid supporter logo pins")
+                    for name, digest in logos.items():
+                        if not isinstance(name, str) or Path(name).name != name:
+                            raise ValueError("invalid supporter logo path")
+                        declared["skills/swarm/assets/ui/brand/supporters/" + name] = digest
                 sdk = values["HQ_SDK_PATH"]
                 if not (isinstance(sdk, ast.BinOp) and isinstance(sdk.op, ast.Div)
                         and isinstance(sdk.left, ast.Name) and sdk.left.id == "SWARM_SKILL_ROOT"):
@@ -380,8 +388,14 @@ def canonical_worktree_bytes(root: Path, archive_name: str, payload: bytes) -> b
     archive_name = normalise_relative_path(archive_name)
     expected = _git_hash_object(root, payload, archive_name=archive_name)
     candidates = (payload, payload.replace(b"\r\n", b"\n"))
+    algorithm = {40: "sha1", 64: "sha256"}.get(len(expected))
+    if algorithm is None:
+        raise ValueError("unsupported Git object hash")
     for candidate in dict.fromkeys(candidates):
-        if _git_hash_object(root, candidate) == expected:
+        digest = hashlib.new(algorithm)
+        digest.update(f"blob {len(candidate)}\0".encode("ascii"))
+        digest.update(candidate)
+        if digest.hexdigest() == expected:
             return candidate
     raise ValueError(
         f"configured clean filter cannot be materialized safely for: {archive_name}"
@@ -629,12 +643,53 @@ def _build_snapshot_bytes(snapshot: GitSnapshot) -> tuple[bytes, dict[str, objec
     return payload.getvalue(), metadata
 
 
+def _build_claude_snapshot_bytes(snapshot: GitSnapshot) -> tuple[bytes, dict[str, object]]:
+    """Package the Claude entrypoint and the same snapshot's canonical runtime."""
+    import io
+
+    host_prefix = "hosts/claude/"
+    selected = {
+        name[len(host_prefix):] if name.startswith(host_prefix) else name: blob
+        for name, blob in snapshot.blobs.items()
+        if name.startswith(host_prefix)
+        or name.startswith("skills/swarm/runtime/")
+        or name == "skills/swarm/scripts/swarm_contract.py"
+    }
+    required = {".claude-plugin/plugin.json", "skills/swarm/SKILL.md",
+                "skills/swarm/scripts/swarm_contract.py", "skills/swarm/runtime/__init__.py"}
+    if not required.issubset(selected):
+        raise ValueError("Claude package requires the canonical entrypoint and runtime")
+    validate_canonical_paths([*selected, PACKAGE_METADATA_PATH], "Claude package")
+    try:
+        manifest = json.loads(selected[".claude-plugin/plugin.json"].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("Claude manifest is invalid") from error
+    if manifest.get("name") != "swarm" or not isinstance(manifest.get("version"), str):
+        raise ValueError("Claude manifest identity is invalid")
+    files = {name: hashlib.sha256(blob).hexdigest() for name, blob in sorted(selected.items())}
+    metadata = {"schema": "swarm-claude-package-v1", "target": "claude",
+                "version": manifest["version"], "commit": snapshot.commit,
+                "tree": snapshot.tree, "files": files}
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_STORED, strict_timestamps=True) as archive:
+        for name, blob in sorted(selected.items()):
+            info = zipfile.ZipInfo(name, date_time=ZIP_TIMESTAMP)
+            info.create_system = 3
+            info.external_attr = 0o100644 << 16
+            archive.writestr(info, blob)
+        info = zipfile.ZipInfo(PACKAGE_METADATA_PATH, date_time=ZIP_TIMESTAMP)
+        info.create_system = 3
+        info.external_attr = 0o100644 << 16
+        archive.writestr(info, _metadata_bytes(metadata))
+    return payload.getvalue(), metadata
+
+
 def build_package_bytes(root: Path) -> tuple[bytes, dict[str, object]]:
     """Build deterministic ZIP bytes from one validated immutable Git snapshot."""
     return _build_snapshot_bytes(release_identity(root))
 
 
-def write_package(root: Path, output: Path, verify_repeat: bool = False, *, commit: str | None = None, tree: str | None = None) -> tuple[str, int]:
+def write_package(root: Path, output: Path, verify_repeat: bool = False, *, commit: str | None = None, tree: str | None = None, target: str = "codex") -> tuple[str, int]:
     root = root.resolve()
     output = output.resolve()
     try:
@@ -647,9 +702,12 @@ def write_package(root: Path, output: Path, verify_repeat: bool = False, *, comm
     if (commit is None) != (tree is None):
         raise ValueError("commit and tree must be supplied together")
     snapshot = release_identity(root) if commit is None else immutable_release_identity(root, commit, tree)
-    first, metadata = _build_snapshot_bytes(snapshot)
+    if target not in {"codex", "claude"}:
+        raise ValueError("unsupported package target")
+    build = _build_snapshot_bytes if target == "codex" else _build_claude_snapshot_bytes
+    first, metadata = build(snapshot)
     if verify_repeat:
-        second, _ = _build_snapshot_bytes(snapshot)
+        second, _ = build(snapshot)
         if first != second:
             raise ValueError("repeated package build was not byte-identical")
     output.write_bytes(first)
@@ -667,9 +725,10 @@ def main() -> int:
     parser.add_argument("--verify-repeat", action="store_true", help="build twice and require identical ZIP bytes")
     parser.add_argument("--commit", help="full immutable commit ID; requires --tree")
     parser.add_argument("--tree", help="full expected tree ID; requires --commit")
+    parser.add_argument("--target", choices=("codex", "claude"), default="codex")
     args = parser.parse_args()
     try:
-        checksum, count = write_package(args.source, args.output, args.verify_repeat, commit=args.commit, tree=args.tree)
+        checksum, count = write_package(args.source, args.output, args.verify_repeat, commit=args.commit, tree=args.tree, target=args.target)
     except ValueError as error:
         parser.error(str(error))
     print(f"built {args.output.resolve()} ({count} files, sha256 {checksum})")

@@ -628,7 +628,72 @@ class FlowDefinitionTests(unittest.TestCase):
 
 
 class ProjectTicketTests(unittest.TestCase):
+    def test_long_description_round_trip_conflict_and_byte_boundary(self):
+        initial=self.call({'operation':'read'})['source_digest']
+        draft='x'*3953+'\n'+'new evidence '*20
+        concurrent=self.write(initial,'update','tasks','t-flat',{'label':'Concurrent label'})
+        before=self.path.read_bytes()
+        with self.assertRaises(server.ConsoleConflict):
+            self.write(initial,'update','tasks','t-flat',{'description':draft})
+        self.assertEqual(self.path.read_bytes(),before)
+        result=self.write(concurrent['source_digest'],'update','tasks','t-flat',{'description':draft})
+        row=self.by_id(self.call({'operation':'read'}))['t-flat']
+        self.assertEqual((row['label'],row['description']),('Concurrent label',draft))
+        for value in ('x'*16384,'😀'*4096):
+            result=self.write(result['source_digest'],'update','tasks','t-flat',{'description':value})
+            self.assertEqual(self.by_id(self.call({'operation':'read'}))['t-flat']['description'],value)
+        before=self.path.read_bytes()
+        for value in ('x'*16385,'😀'*4097):
+            with self.assertRaisesRegex(server.ConsoleError,'TICKET_DESCRIPTION_TOO_LONG'):
+                self.write(result['source_digest'],'update','tasks','t-flat',{'description':value})
+            self.assertEqual(self.path.read_bytes(),before)
+
+    def test_existing_oversized_description_survives_unrelated_edit(self):
+        document = self.document()
+        old_description = "z" * 20000
+        next(row for row in document["tasks"] if row["id"] == "t-flat")["description"] = old_description
+        self.path.write_text(markdown_fixture(document), encoding="utf-8")
+        read = self.call({"operation": "read"})
+        self.assertEqual(self.by_id(read)["t-flat"]["description"], old_description)
+        self.write(read["source_digest"], "update", "tasks", "t-flat", {"label": "Updated"})
+        self.assertEqual(self.by_id(self.call({"operation": "read"}))["t-flat"]["description"], old_description)
+
     ACCEPTED_TASK = {"id": "t-accepted", "state": "accepted", "acceptance_receipt_ids": ["r-1"], "milestone_id": "m-flat"}
+
+    def test_sync_snapshot_preserves_raw_planning_records_and_requires_exact_retained_binding(self):
+        from unittest import mock
+        doc = self.document()
+        doc["blocks"] = []  # External host blocks do not have a portable planning parent.
+        self.path.write_text(markdown_fixture(doc), encoding="utf-8")
+        seeded = self.write(self.call({"operation": "read"})["source_digest"], "create", "goals", "new-goal", {"label": "New"})
+        self.call({"operation": "allocate_ids", "expected_digest": seeded["source_digest"], "acknowledge": True})
+        root_digest = server._auto_digest({"project_id": "swarm", "canonical_root": server._normalized_project_path(str(self.root))})
+        params = dict(project_ids={"swarm"}, project_id="swarm", root_digest=root_digest,
+                      cloud_project_id="11111111-1111-4111-8111-111111111111", registry=self.ticket_ledger)
+        before = self.path.read_bytes()
+        snapshot = views.prepare_ticket_sync_snapshot(self.path, **params)
+        payload = json.loads(snapshot["value"])
+        self.assertEqual(payload["source_digest"], seeded["source_digest"])
+        self.assertEqual([row["record"] for row in payload["records"]["task"]], self.document()["tasks"])
+        self.assertEqual(next(row["record"]["custom"] for row in payload["records"]["task"] if row["record"]["id"] == "t-legacy"), {"keep": True})
+        self.assertEqual(self.path.read_bytes(), before)
+        self.ticket_ledger = server.ProgressLedger(self.root / "ledger")
+        params["registry"] = self.ticket_ledger
+        self.assertEqual(views.prepare_ticket_sync_snapshot(self.path, **params)["value"], snapshot["value"])
+        with self.assertRaisesRegex(views.ProjectModelError, "retained identities"):
+            views.prepare_ticket_sync_snapshot(self.path, **{**params, "root_digest": "0" * 64})
+        with self.assertRaisesRegex(views.ProjectModelError, "another saved project"):
+            views.prepare_ticket_sync_snapshot(self.path, **{**params, "project_ids": {"other"}})
+        oversized = self.document()
+        oversized["tasks"][0]["custom"] = "x" * 32001
+        self.path.write_text(markdown_fixture(oversized), encoding="utf-8")
+        with self.assertRaisesRegex(views.ProjectModelError, "exceeds cloud value limit"):
+            views.prepare_ticket_sync_snapshot(self.path, **params)
+        self.path.write_bytes(before)
+        with mock.patch.object(views, "_read_brief_for_edit", wraps=views._read_brief_for_edit) as reader:
+            reader.side_effect = [reader(self.path, "", compare=False), views.ProjectModelError("project brief digest conflict")]
+            with self.assertRaisesRegex(views.ProjectModelError, "digest conflict"):
+                views.prepare_ticket_sync_snapshot(self.path, **params)
 
     def test_allocate_legacy_ids_preserves_records_numbers_bytes_and_restart(self):
         seeded = self.write(self.call({"operation": "read"})["source_digest"], "create", "tasks", "new-task", {"label": "New"})
@@ -820,6 +885,23 @@ class ProjectTicketTests(unittest.TestCase):
     def document(self):
         return views.parse_project_brief_markdown(self.path.read_text(encoding="utf-8"))[0]
 
+    def test_milestone_unit_ownership_is_persisted_as_planning_only(self):
+        initial = self.call({"operation": "read"})
+        self.assertIsNone(self.by_id(initial)["m-flat"]["ownership"])
+        ownership = {"owner": {"kind": "LAB", "id": "lab-1"},
+                     "contributors": [{"kind": "FACTORY", "id": "factory-1"}]}
+        result = self.write(initial["source_digest"], "update", "milestones", "m-flat", {"ownership": ownership})
+        self.assertEqual(self.by_id(self.call({"operation": "read"}))["m-flat"]["ownership"], ownership)
+        before = self.path.read_bytes()
+        for invalid in ({"owner": ownership["owner"], "contributors": [ownership["owner"]]},
+                        {"owner": {"kind": "ROLE", "id": "one"}, "contributors": []},
+                        {"owner": [], "contributors": []}):
+            with self.assertRaises(server.ConsoleError):
+                self.write(result["source_digest"], "update", "milestones", "m-flat", {"ownership": invalid})
+            self.assertEqual(self.path.read_bytes(), before)
+        with self.assertRaises(server.ConsoleError):
+            self.write(result["source_digest"], "update", "tasks", "t-flat", {"ownership": ownership})
+
     def test_all_four_kinds_priority_assignment_reparent_and_restart(self):
         read = self.call({"operation": "read"})
         records = self.by_id(read)
@@ -894,7 +976,7 @@ class ProjectTicketTests(unittest.TestCase):
             ("update", "tasks", "t-flat", {"label": ""}),
             ("update", "tasks", "t-flat", {"label": None}),
             ("update", "tasks", "t-flat", {"label": "two\nlines"}),
-            ("update", "tasks", "t-flat", {"description": "x" * 4097}),
+            ("update", "tasks", "t-flat", {"description": "x" * 16385}),
             ("update", "tasks", "t-flat", {"assignment": {}}),
             ("update", "tasks", "t-flat", {"assignment": {"assignee_id": "bad id!"}}),
             ("update", "tasks", "t-flat", {"assignment": {"executor": "agent-1"}}),

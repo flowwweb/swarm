@@ -53,7 +53,7 @@ def build(sdk_root: Path, output: Path) -> dict:
         payload = b'// swarm-hq-inputs:' + json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode() + b'\n' + payload
     # esbuild retains blank indentation in SDK-generated code templates.
     payload = re.sub(rb'(?m)^[ \t]+(?=\r?$)', b'', payload)
-    if len(payload) > 524288 or b'</script' in payload.lower():
+    if len(payload) > 544 * 1024 or b'</script' in payload.lower():
         raise ValueError('bundle exceeds embedding contract')
     output.write_bytes(payload)
     return {'sdk': '@modelcontextprotocol/ext-apps@2.0.3', 'sdk_sha256': SDK_SHA, 'compiler_sha256': ESBUILD_SHA,

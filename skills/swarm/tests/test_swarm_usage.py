@@ -17,6 +17,15 @@ def counts(input=100, cached=80, output=20, reasoning=5, writes=0):
 
 
 class TrackingTests(unittest.TestCase):
+    def test_outcome_coverage_requires_complete_roster_and_elapsed_bounds(self):
+        session = read_session(self.session([self.event()]))
+        report = build_report([session], participant_ids=["one", "reviewer"],
+                              outcome_start="2026-10-01T00:00:00Z", outcome_end="2026-10-01T02:00:00Z")
+        self.assertEqual(report["missing_participants"], ["reviewer"])
+        self.assertEqual(report["outcome_token_coverage"], "INCOMPLETE")
+        self.assertIsNone(report["outcome_tokens"])
+        self.assertEqual(report["elapsed_seconds"], 7200)
+
     def session(self, events):
         records = [{"type": "session_meta", "payload": {"id": "one"}},
                    {"type": "turn_context", "payload": {"model": "gpt-6.1-sol", "effort": "xhigh"}}]

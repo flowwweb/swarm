@@ -72,6 +72,26 @@ class RuntimeTests(unittest.TestCase):
   self.assertEqual(choose_depth(TopologyFacts(**{**portfolio.__dict__,"architecture_gate":True})),Depth.PROJECT)
   self.s.tasks["A"].state=TaskState.COMPLETE
   self.assertEqual(self.s.collapse(Role.CTRL,"L"),Depth.ATOMIC)
+ def test_collapse_cannot_remove_core_unit_or_ctrl(self):
+  self.s.tasks["L"]=RuntimeTask("L","L","CTRL",1,{},work_unit={"kind":"LAB"})
+  before=(set(self.s.topology),dict(self.s.leases),self.s.workers["D"].state)
+  for identity in ("L","CTRL"):
+   with self.assertRaisesRegex(InvariantError,"core CTRL or Unit"): self.s.collapse(Role.CTRL,identity)
+   self.assertEqual((self.s.topology,self.s.leases,self.s.workers["D"].state),before)
+ def test_retirement_cannot_reassign_unit_coordinator_but_allows_lower_worker(self):
+  self.s.add_worker(Role.LEAD,Worker("R","L",2))
+  self.s.tasks["A"].work_unit={"kind":"LAB"}
+  self.s.lease(Role.CTRL,"surface","D")
+  before=(self.s.tasks["A"].owner,set(self.s.workers["D"].task_ids),dict(self.s.leases))
+  with self.assertRaisesRegex(InvariantError,"core CTRL or Unit coordination"):
+   self.s.retire(Role.LEAD,"D","R")
+  self.assertEqual((self.s.tasks["A"].owner,self.s.workers["D"].task_ids,self.s.leases),before)
+  self.assertEqual(self.s.context_decision(worker_id="D",stale=True,replacement="R"),"preserve")
+  self.assertEqual((self.s.tasks["A"].owner,self.s.workers["D"].task_ids,self.s.leases),before)
+  self.s.tasks["A"].work_unit=None
+  self.s.retire(Role.LEAD,"D","R")
+  self.assertEqual(self.s.tasks["A"].owner,"R")
+  self.assertEqual(self.s.leases,{"surface":"D"})
  def test_hygiene_archives_not_deletes_and_preserves_stale_provenance(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
   self.s.workers["D"].task_ids.discard("A")

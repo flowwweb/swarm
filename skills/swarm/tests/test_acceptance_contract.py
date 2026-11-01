@@ -1,5 +1,7 @@
 from pathlib import Path
+from dataclasses import replace
 from hashlib import sha256
+from unittest.mock import patch
 import os
 import sys
 import tempfile
@@ -32,6 +34,37 @@ def delegated_accept(swarm, task_id):
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_owning_lead_can_assign_and_execute_without_worker(self):
+        task = Task("lead-owned", "lead", "author", 1, {}, subagent_receipt="host:thread:lead-owned",
+                    lane_kind=LaneKind.NON_CODE, owning_lead_id="lead", acceptance_contract=AcceptanceContract.empty(),
+                    delegation_contract=delegation("lead-owned", "lead", self.artifact, path="artifact.txt"))
+        self.swarm.assign(Role.LEAD, task, actor_id="lead")
+        self.assertIs(self.swarm.tasks[task.id], task)
+        self.assertNotIn("lead", self.swarm.workers)
+        with self.assertRaises(InvariantError):
+            self.swarm.assign(Role.LEAD, Task("wrong", "lead", "author", 1, {},
+                subagent_receipt="host:thread:wrong", lane_kind=LaneKind.NON_CODE,
+                owning_lead_id="lead", acceptance_contract=AcceptanceContract.empty(),
+                delegation_contract=delegation("wrong", "lead", self.artifact, path="artifact.txt")), actor_id="other")
+
+    def test_direct_lead_delivers_with_review_and_no_worker(self):
+        task = Task("direct-delivery", "lead", "author", 1, {}, subagent_receipt="host:thread:direct-delivery",
+                    lane_kind=LaneKind.CODE, owning_lead_id="lead",
+                    acceptance_contract=AcceptanceContract(self.artifact, ("test",), observation_root=self.temp.name),
+                    delegation_contract=delegation("direct-delivery", "lead", self.artifact, path="artifact.txt"))
+        self.swarm.assign(Role.LEAD, task, actor_id="lead")
+        self.swarm.consult_incidents(Role.LEAD, task.id, IncidentLedger(self.temp.name), artifact="route", scope="routing", actor_id="lead")
+        self.swarm.run_gate(Role.LEAD, task.id, "test", (sys.executable, "-c", "pass"), cwd=self.temp.name, actor_id="lead")
+        file = ArtifactFileEvidence("artifact.txt", 1, sha256(task.id.encode()).hexdigest())
+        evidence = DelegatedEvidence("direct-evidence", ProofClass.SOURCE, self.artifact.key(), sha256(b"proof").hexdigest(), "Source contract test only.")
+        receipt = DelegatedReturnReceipt("direct-return", task.id, "lead", DelegatedReceiptVerdict.ACCEPT, self.artifact, "Exact test return.", (evidence,), ArtifactParityReceipt.from_files(self.artifact, (file,)), (), 1)
+        self.swarm.record_delegated_return(Role.LEAD, task.id, receipt, actor_id="lead")
+        review = ReviewEvidence(ReviewStrategy.LIGHT, "independent", True, self.artifact, receipt=(("acceptance", "review:direct"),), scope=ReviewScope.ACCEPTANCE)
+        self.swarm.review(Role.REVIEW, task.id, review, True)
+        self.swarm.complete(Role.LEAD, task.id, True, True, 1, actor_id="lead")
+        self.assertEqual(task.state, TaskState.COMPLETE)
+        self.assertNotIn("lead", self.swarm.workers)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.artifact_path=Path(self.temp.name)/"artifact.txt"; self.artifact_path.write_text("version-1",encoding="utf-8"); self.artifact=ArtifactIdentity.capture("route","sha-1","release",root=self.temp.name,paths=("artifact.txt",))
@@ -164,6 +197,48 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertTrue(self.swarm.tasks["route"].gate_receipts["contracts-fast"].adopted)
         snapshot=self.swarm.proof_snapshot("route")
         self.assertEqual(snapshot["metrics"]["adopted"],1)
+
+    def test_unchanged_plan_keeps_current_independent_review(self):
+        command=(sys.executable,"-c","pass")
+        inputs=ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.DOCS,("artifact.txt",)),),
+            dependency_reach=DependencyReach(known=True),
+            repo_capabilities=RepoProofCapabilities(gate_commands=(("contracts-fast",command),)))
+        plan=self.swarm.plan_proof(inputs)
+        task=self.swarm.tasks["route"]
+        task.acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=plan)
+        self.swarm.run_gate(Role.LEAD,"route","contracts-fast",command,cwd=self.temp.name,actor_id="lead")
+        self.swarm.review(Role.REVIEW,"route",self.acceptance(),True)
+        self.assertIsNotNone(self.swarm._runtime_acceptance_current(task))
+        self.swarm.revise_proof_plan(Role.LEAD,"route",inputs,actor_id="lead")
+        self.assertTrue(task.review_passed)
+        self.assertIsNotNone(self.swarm._runtime_acceptance_current(task))
+        self.swarm.revise_proof_plan(Role.LEAD,"route",replace(inputs,runtime_signals=(RuntimeSignal("selector-disagreement","focused"),)),actor_id="lead")
+        self.assertFalse(task.review_passed)
+        self.assertIsNone(self.swarm._runtime_acceptance_current(task))
+
+    def test_changed_gate_invalidates_only_its_dependent_receipts(self):
+        command=(sys.executable,"-c","pass")
+        inputs=ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.RUNTIME,("artifact.txt",)),),
+            dependency_reach=DependencyReach(("focused",),known=True),
+            repo_capabilities=RepoProofCapabilities(gate_commands=(("contracts-fast",command),("impacted-tests",command))))
+        base=self.swarm.plan_proof(inputs)
+        first=replace(base,plan_digest="",gates=(*base.gates,replace(base.gates[1],id="parallel")))
+        self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=first)
+        for gate in ("contracts-fast","impacted-tests","parallel"):
+            self.swarm.run_gate(Role.LEAD,"route",gate,command,cwd=self.temp.name,actor_id="lead")
+        changed=(sys.executable,"-c","print('changed')")
+        second=replace(first,plan_digest="",gates=tuple(replace(g,argv=changed) if g.id=="impacted-tests" else g for g in first.gates))
+        with patch.object(self.swarm,"plan_proof",return_value=second):
+            self.swarm.revise_proof_plan(Role.LEAD,"route",inputs,actor_id="lead")
+        self.assertEqual(self.swarm.open_gates("route"),("impacted-tests",))
+        self.assertTrue(self.swarm.tasks["route"].gate_receipts["parallel"].adopted)
+        self.swarm.run_gate(Role.LEAD,"route","impacted-tests",changed,cwd=self.temp.name,actor_id="lead")
+        third=replace(second,plan_digest="",gates=tuple(replace(g,argv=changed) if g.id=="contracts-fast" else g for g in second.gates))
+        with patch.object(self.swarm,"plan_proof",return_value=third):
+            self.swarm.revise_proof_plan(Role.LEAD,"route",inputs,actor_id="lead")
+        self.assertEqual(set(self.swarm.open_gates("route")),{"contracts-fast","impacted-tests","parallel"})
+        self.swarm.run_gate(Role.LEAD,"route","contracts-fast",changed,cwd=self.temp.name,actor_id="lead")
+        self.assertEqual(set(self.swarm.open_gates("route")),{"impacted-tests","parallel"})
 
     def test_declared_claim_without_matching_current_proof_stays_open(self):
         plan=plan_proof(ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.DOCS,("artifact.txt",)),),declared_claims=(ProofClaim("physical device",ProofClass.DEVICE),),dependency_reach=DependencyReach(known=True)))

@@ -25,9 +25,17 @@ reuse or assign an eligible owner, or report the exact blocker. Never finish the
 work in CTRL. An assigned LEAD or DOER keeps its production role; loading SWARM
 does not promote it to CTRL.
 
-Labs and Factories are work units, separate from CTRL/LEAD/DOER authority. Each
-has its own identity, goal, coordinator, bounded task hierarchy and results;
-CTRL routes requests to units. Goals are on by default for every CTRL, Lab and
+CTRL owns the goal, priorities and dependencies. Each milestone has one
+accountable Lab or Factory and optional contributing Units; record these as
+planning metadata. The LEAD delivers its tickets directly unless a worker's
+concrete cost or reliability benefit justifies coordination and verification.
+Never staff recursively by default. Reuse review only for unchanged inputs;
+rerun failed or affected checks. At a milestone, stall or material change,
+record KEEP or ADAPT in Flow with the outcome, reason and cost basis. Hive
+retains useful linked lessons for reassessment, never automatic replay. Keep
+the CTRL and Units fixed during ordinary adaptation; preserve custody, leases
+and required checks. Label estimates and preserve existing holds.
+Goals are on by default for every CTRL, Lab and
 Factory through the same `goals.use_goals` setting and existing goal owner. Hold the large outcome in the parent
 goal; delegate only the next concrete block with an artifact, scope, dependencies,
 acceptance and stop condition. A software factory is a sequence of these blocks,

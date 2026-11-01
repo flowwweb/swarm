@@ -30,8 +30,9 @@ class ProofEventTests(unittest.TestCase):
             )
             self.assertEqual(event["disposition"], "PENDING")
             self.assertEqual(event["size_bytes"], len(PNG))
-            media = root / "codex" / "swarm" / event["locator"]
-            self.assertEqual(media.read_bytes(), PNG)
+            self.assertEqual(Path(event["locator"]), source.resolve())
+            self.assertFalse((root / "codex" / "swarm" / "proof-media").exists())
+            self.assertEqual(source.read_bytes(), PNG)
             again = register_proof_event(
                 root / "codex",
                 source,

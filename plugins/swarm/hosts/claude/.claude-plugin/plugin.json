@@ -1,0 +1,8 @@
+{
+  "name": "swarm",
+  "version": "1.0.34",
+  "description": "SWARM project workflow for Claude Code.",
+  "author": { "name": "Flowwweb", "url": "https://flowwweb.com" },
+  "repository": "https://github.com/flowwweb/swarm",
+  "license": "MIT"
+}

@@ -81,7 +81,7 @@ class ReleasePackageTests(unittest.TestCase):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('{}', encoding='utf-8')
-            dependencies = ('console/static/icon.svg', 'skills/swarm/assets/ui/pinned.css', 'skills/swarm/assets/ui/sdk.js')
+            dependencies = ('console/static/icon.svg', 'skills/swarm/assets/ui/pinned.css', 'skills/swarm/assets/ui/sdk.js', 'skills/swarm/assets/ui/brand/supporters/example.svg')
             digest = hashlib.sha256(b'fixture').hexdigest()
             for relative in dependencies:
                 path = root / relative
@@ -91,6 +91,7 @@ class ReleasePackageTests(unittest.TestCase):
                 'ASSETS = ' + repr({dependencies[0]: digest}), encoding='utf-8')
             (root / 'skills/swarm/scripts/swarm_mcp.py').write_text(
                 'PROJECTS_ASSETS = ' + repr({dependencies[1]: digest}) +
+                '\nSUPPORTER_LOGOS = ' + repr({'example.svg': digest}) +
                 '\nHQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/sdk.js"\nHQ_SDK_SHA256 = ' + repr(digest), encoding='utf-8')
             desktop = root / 'skills/swarm/scripts/swarm_desktop.py'
             mcp_digest = hashlib.sha256((root / 'skills/swarm/scripts/swarm_mcp.py').read_bytes()).hexdigest()
@@ -559,6 +560,23 @@ class ReleasePackageTests(unittest.TestCase):
                 metadata = json.loads(archive.read(PACKAGE_METADATA_PATH))
                 self.assertEqual((metadata["commit"], metadata["tree"]), (commit, tree))
                 self.assertEqual(archive.read("README.md"), original)
+
+    def test_canonical_bytes_apply_git_filter_without_a_second_git_process(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.make_plugin(Path(directory))
+            (root / ".gitattributes").write_text("*.md text eol=lf\n", encoding="utf-8")
+            with mock.patch.object(package_builder, "_git_hash_object", wraps=package_builder._git_hash_object) as git_hash:
+                result = package_builder.canonical_worktree_bytes(root, "README.md", b"one\r\ntwo\r\n")
+            self.assertEqual(result, b"one\ntwo\n")
+            self.assertEqual(git_hash.call_count, 1)
+
+    def test_canonical_bytes_support_sha256_git_object_format(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", "--object-format=sha256", str(root)], check=True)
+            (root / ".gitattributes").write_text("*.md text eol=lf\n", encoding="utf-8")
+            result = package_builder.canonical_worktree_bytes(root, "README.md", b"one\r\ntwo\r\n")
+            self.assertEqual(result, b"one\ntwo\n")
 
     def test_clean_filter_normalization_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

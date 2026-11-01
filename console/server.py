@@ -57,6 +57,7 @@ from runtime.progress_events import (  # noqa: E402
     PULSE_ROOT,
     ProgressLedger,
     ProgressEventError,
+    VelocityMetadataError,
     ProgressPulseEvent,
     build_role_manifest,
     build_task_manifest,
@@ -97,7 +98,9 @@ from project_model_views import (  # noqa: E402
     project_schema1_views,
     validate_flow_definition,
     validate_flow_assignment,
+    flow_hive_lessons,
     mutate_project_brief,
+    set_explicit_project_alias,
     mutate_project_tickets,
     allocate_project_ticket_ids,
     migrate_legacy_project_tickets,
@@ -4825,7 +4828,7 @@ class ConsoleStore:
         """Return the UI-compatible sequence from the durable proof cursor."""
         return int(self.proof_cursor()["sequence"])
 
-    def proof_media_item(self, evidence_id: str, digest: str, *, allowed_root: Path | None = None) -> dict[str, Any]:
+    def proof_media_item(self, evidence_id: str, digest: str, *, allowed_root: Path | None = None, codex_home: Path | None = None) -> dict[str, Any]:
         evidence_id = _safe_metadata_text(evidence_id, "evidence_id", maximum=256)
         digest = _safe_metadata_text(digest, "digest", maximum=64).casefold()
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -4849,6 +4852,11 @@ class ConsoleStore:
             raise ConsoleError("registered proof media exceeds the delivery guard")
         if row["size_bytes"] is not None and int(row["size_bytes"]) != stat.st_size:
             raise ConsoleError("registered proof media changed since registration")
+        if codex_home is not None and allowed_root is not None and not resolved.is_relative_to(allowed_root.resolve()):
+            if str(row["receipt"]).startswith("ctrl-original:"):
+                allowed_root = resolved.parent
+            else:
+                allowed_root = _proof_original_root(codex_home, str(row["project_id"]), resolved)
         current = _media_metadata(str(resolved), digest, allowed_root=allowed_root)
         if current["digest"] != digest:
             raise ConsoleError("registered proof media digest no longer matches the file")
@@ -6252,7 +6260,7 @@ class ConsoleStore:
         media_root = expected_media_root.resolve()
         if swarm_root != expected_swarm_root or event_root != expected_event_root or media_root != expected_media_root:
             return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0, "enumerated": 0}
-        if not event_root.is_dir() or not media_root.is_dir():
+        if not event_root.is_dir():
             return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 0, "capped": 0, "enumerated": 0}
         nodes = {
             str(node.get("id")): node
@@ -6316,23 +6324,40 @@ class ConsoleStore:
                     retryable += 1
                     continue
                 project_id = observed_project_id
-                relative = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=512))
-                if relative.is_absolute() or ".." in relative.parts:
-                    raise ConsoleError("proof event locator escapes the evidence store")
-                locator = (swarm_root / relative).resolve(strict=True)
+                relative = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=4096))
+                explicit_receipt = None
+                if relative.is_absolute():
+                    locator = relative.resolve(strict=True)
+                    with self._lock, closing(self._connect()) as connection:
+                        existing = connection.execute(
+                            "SELECT task_id, project_id, locator, receipt FROM proof_media WHERE evidence_id=?",
+                            (evidence_id,),
+                        ).fetchone()
+                    if (existing is not None and existing["task_id"] == task_id
+                            and existing["project_id"] == project_id and existing["locator"] == str(locator)
+                            and existing["receipt"] == f"ctrl-original:{task_id}"):
+                        selected_root = locator.parent
+                        explicit_receipt = existing["receipt"]
+                    else:
+                        selected_root = _proof_original_root(codex_home, project_id, locator)
+                else:
+                    if ".." in relative.parts:
+                        raise ConsoleError("proof event locator escapes the evidence store")
+                    locator = (swarm_root / relative).resolve(strict=True)
+                    selected_root = media_root
                 payload = {
                     **event,
                     "task_id": task_id,
                     "project_id": project_id,
                     "locator": str(locator),
                     "disposition": "PENDING",
-                    "receipt": f"proof-event:{resolved_event.stem}",
+                    "receipt": explicit_receipt or f"proof-event:{resolved_event.stem}",
                     "surface_kind": "available_media",
                 }
                 metadata = _media_metadata(
                     str(locator),
                     str(event.get("digest", "")),
-                    allowed_root=media_root,
+                    allowed_root=selected_root,
                     supplied_size=event.get("size_bytes"),
                     supplied_media_type=str(event.get("media_type", "")),
                 )
@@ -6361,7 +6386,7 @@ class ConsoleStore:
                             project_id=project_id,
                             media_digest=media_digest,
                         )
-                self.record_proof_media(payload, now_ms=now_ms, allowed_root=media_root)
+                self.record_proof_media(payload, now_ms=now_ms, allowed_root=selected_root)
                 if receipt is None:
                     self._record_proof_event_receipt(
                         resolved_event.name,
@@ -7325,6 +7350,26 @@ def bound_task_acceptance_binding(
         "review_strategy": review_strategy, "ctrl_id": ctrl_id, "root_digest": root_digest,
         "role_manifest_ref": role_manifest_ref,
     }
+
+
+def _proof_original_root(codex_home: Path, project_id: str, locator: Path) -> Path:
+    """Admit originals only from the observed project's roots or Codex visualizations."""
+    roots = [codex_home / "visualizations"]
+    try:
+        with closing(_readonly_connection(state_database(codex_home))) as connection:
+            roots.extend(Path(str(row[0])) for row in connection.execute(
+                "SELECT path FROM project_roots WHERE project_id=?", (project_id,)
+            ))
+    except (sqlite3.Error, OSError) as exc:
+        raise ConsoleError("proof original project roots are unavailable") from exc
+    try:
+        resolved = locator.resolve(strict=True)
+        for root in roots:
+            if root.is_absolute() and root.exists() and resolved.is_relative_to(root.resolve(strict=True)):
+                return root.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ConsoleError("registered original proof media is unavailable") from exc
+    raise ConsoleError("original proof media is outside the observed project and visualization roots")
 
 
 def observed_task_project_id(codex_home: Path, task_id: str) -> str | None:
@@ -8581,15 +8626,36 @@ class App:
         self._native_project_map_snapshot = (identity, bindings)
         return copy.deepcopy(bindings)
 
-    def _saved_project_binding(self, project_id: str, purpose: str = "Project view") -> dict[str, Any]:
+    def _saved_project_binding(self, project_id: str, purpose: str = "Project view", *, native_bindings: dict[str, Any] | None = None) -> dict[str, Any]:
         """One snapshot of planning root identity: SQLite authority plus a proven native alias.
 
         A native ID and its mapped SQLite ID are aliases only when the host map names them and both
         saved roots resolve strictly to the same canonical directory. Labels or a shared cwd never do.
         """
-        native = self._native_project_map().get(project_id)
+        native_map = self._native_project_map() if native_bindings is None else native_bindings
+        native = native_map.get(project_id)
+        if native is None:
+            # Legacy callers may use a retained, explicit selection; a shared
+            # path by itself never creates an alias.
+            try:
+                with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+                    roots = connection.execute("SELECT path FROM project_roots WHERE project_id=? ORDER BY position", (project_id,)).fetchall()
+                if len(roots) == 1:
+                    root = Path(roots[0]["path"]).resolve(strict=True)
+                    document, _ = parse_project_brief_markdown((root / "SWARM.md").read_text(encoding="utf-8"), root=root)
+                    selected = document.get("explicit_project_alias")
+                    if isinstance(selected, dict) and selected.get("ledger_project_id") == project_id:
+                        native = (self._native_project_map() if native_bindings is None else native_map).get(selected.get("native_project_id"))
+                        if native is None:
+                            raise ConsoleError(f"{purpose} selected native project is unavailable")
+            except (OSError, ValueError, sqlite3.Error):
+                pass
         if native is not None and not native["valid"]:
             raise ConsoleError(f"{purpose} host saved-state native project record is invalid")
+        if native is not None:
+            explicit = self._explicit_project_alias(native, purpose)
+            if explicit is not None:
+                return explicit
         canonical_id = native["project_id"] if native is not None else project_id
         database = state_database(self.codex_home)
         with closing(sqlite3.connect(database)) as connection:
@@ -8638,6 +8704,114 @@ class App:
                 identities = identities | {native["native_id"]}
         return {"project_id": canonical_id, "root": root, "identities": identities,
                 "identity_error": identity_error, "native_id": native["native_id"] if native is not None else None}
+
+    def _explicit_project_alias(self, native: dict[str, Any], purpose: str, selection: dict[str, Any] | None = None, *, allow_archived: bool = False) -> dict[str, Any] | None:
+        """Resolve a local selection against current host state; never authorize execution."""
+        try:
+            root = Path(native["native_root"]).resolve(strict=True)
+            brief = root / "SWARM.md"
+            text = brief.read_text(encoding="utf-8")
+            document, brief_digest = parse_project_brief_markdown(text, root=root)
+        except (OSError, ValueError):
+            return None  # Preserve the existing resolver for projects without a readable brief.
+        retained = document.get("explicit_project_alias")
+        if selection is not None and retained is not None and retained != selection:
+            raise ConsoleError(f"{purpose} explicit project alias conflicts with retained configuration")
+        selected = selection if selection is not None else retained
+        if selected is None:
+            return None
+        fields = {"native_project_id", "host_project_id", "ledger_project_id", "controller_id"}
+        if (not isinstance(selected, dict) or set(selected) != fields
+                or any(not isinstance(selected[k], str) or not selected[k].strip() for k in fields)
+                or selected["native_project_id"] != native["native_id"]
+                or selected["host_project_id"] != native["project_id"]
+                or selected["host_project_id"] == selected["ledger_project_id"]):
+            raise ConsoleError(f"{purpose} explicit project alias conflicts with the host map")
+        host_file = self.codex_home / HOST_STATE_FILENAME
+        try:
+            raw = host_file.read_bytes()
+            if len(raw) > HOST_STATE_MAX_BYTES or _is_reparse_point(host_file):
+                raise ValueError("invalid host state")
+            state = json.loads(raw.decode("utf-8"))
+            assignment = state.get("thread-project-assignments", {}).get(selected["controller_id"])
+            if assignment != {"projectKind": "local", "projectId": selected["native_project_id"]}:
+                raise ValueError("controller project assignment changed")
+            host_key = "local:" + str(self.codex_home.resolve())
+            host_map = state.get(HOST_STATE_PROJECT_MAP_KEY, {}).get(host_key, {})
+            project = state.get(HOST_STATE_PROJECTS_KEY, {}).get(selected["native_project_id"], {})
+            if (host_map.get(selected["native_project_id"]) != selected["host_project_id"]
+                    or project.get("id") != selected["native_project_id"]
+                    or len(project.get("rootPaths", [])) != 1
+                    or Path(project["rootPaths"][0]).resolve(strict=True) != root):
+                raise ValueError("native project map changed")
+            with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+                roots = connection.execute("SELECT project_id,path FROM project_roots ORDER BY position").fetchall()
+                rows = connection.execute("SELECT id,name FROM projects WHERE id IN (?,?)", (selected["host_project_id"], selected["ledger_project_id"])).fetchall()
+                controller = connection.execute("SELECT archived FROM threads WHERE id=?", (selected["controller_id"],)).fetchall()
+            if len(rows) != 2 or len(controller) != 1 or (controller[0]["archived"] and not allow_archived):
+                raise ValueError("project or controller host record is missing")
+            resolved = []
+            for row in roots:
+                owner, path = str(row["project_id"]), Path(row["path"])
+                try:
+                    resolved.append((owner, path.resolve(strict=True)))
+                except FileNotFoundError:
+                    # A missing unrelated root cannot own an existing root; retain
+                    # fail-closed checks for both selected identities and aliases.
+                    if owner in {selected["host_project_id"], selected["ledger_project_id"]} or path.resolve(strict=False) == root:
+                        raise
+            owners = [owner for owner, path in resolved if path == root]
+            if sorted(owners) != sorted([selected["host_project_id"], selected["ledger_project_id"]]):
+                raise ValueError("project roots are ambiguous or changed")
+            if selected["ledger_project_id"] not in self.progress_ledger.replay()["ticket_identities"]:
+                raise ValueError("Ledger project identity is not retained")
+            if host_file.read_bytes() != raw or parse_project_brief_markdown(brief.read_text(encoding="utf-8"), root=root)[1] != brief_digest:
+                raise ValueError("host or project configuration changed during binding")
+            with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+                if (connection.execute("SELECT project_id,path FROM project_roots ORDER BY position").fetchall() != roots
+                        or connection.execute("SELECT archived FROM threads WHERE id=?", (selected["controller_id"],)).fetchall() != controller
+                        or connection.execute("SELECT id,name FROM projects WHERE id IN (?,?)", (selected["host_project_id"], selected["ledger_project_id"])).fetchall() != rows):
+                    raise ValueError("host project roots or controller changed during binding")
+            name = document["project"]["id"]
+            return {"project_id": selected["ledger_project_id"], "root": root,
+                    "identities": frozenset({selected["ledger_project_id"], selected["host_project_id"], selected["native_project_id"], name}),
+                    "identity_error": None, "native_id": selected["native_project_id"]}
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, ProgressEventError) as exc:
+            raise ConsoleError(f"{purpose} explicit project alias is unavailable or stale") from exc
+
+    def project_alias_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Save an acknowledged, revision-bound local selection; never admit a controller."""
+        operation = payload.get("operation") if isinstance(payload, dict) else None
+        fields = {"operation", "selection"} if operation == "read" else {"operation", "expected_digest", "selection", "acknowledge"}
+        if (operation not in {"read", "select", "clear"} or set(payload) != fields
+                or operation in {"select", "clear"} and payload["acknowledge"] is not True):
+            raise ConsoleError("project alias requires exact acknowledged selection and revision")
+        selection = payload["selection"]
+        if not isinstance(selection, dict) or not isinstance(selection.get("native_project_id"), str):
+            raise ConsoleError("project alias selection is invalid")
+        def verify():
+            native = self._native_project_map().get(selection["native_project_id"])
+            if native is None or not native["valid"]:
+                raise ConsoleError("project alias native project is unavailable")
+            result = self._explicit_project_alias(native, "Project alias", selection, allow_archived=operation in {"read", "clear"})
+            if result is None:
+                raise ConsoleError("project alias requires a readable canonical project brief")
+            return result
+        binding = verify()
+        if operation == "read":
+            _, digest = parse_project_brief_markdown((binding["root"] / "SWARM.md").read_text(encoding="utf-8"), root=binding["root"])
+            return {"ok": True, "project_id": binding["project_id"], "source_digest": digest,
+                    "provenance": "LOCAL_SELECTION_PREVIEW", "host_attested": False,
+                    "admitted": False, "dispatched": False, "accepted": False}
+        try:
+            digest = set_explicit_project_alias(binding["root"] / "SWARM.md", expected_digest=payload["expected_digest"],
+                selection=selection, updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                verify_current_scope=verify, clear=operation == "clear")
+        except ProjectModelError as exc:
+            raise ConsoleConflict(str(exc)) from exc
+        return {"ok": True, "project_id": binding["project_id"], "source_digest": digest,
+                "provenance": "LOCAL_CLEARED" if operation == "clear" else "LOCAL_CONFIGURED", "host_attested": False,
+                "admitted": False, "dispatched": False, "accepted": False}
 
     def _canonical_project_root(self, project_id: str, purpose: str = "Project view") -> Path:
         return self._saved_project_binding(project_id, purpose)["root"]
@@ -8972,6 +9146,7 @@ class App:
         self,
         record: dict[str, Any],
         root_binding: dict[str, Any],
+        *, native_bindings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         manifest = {
             "status": "UNAVAILABLE",
@@ -9014,7 +9189,7 @@ class App:
         # The same verified native-to-SQLite binding used by planning resolves this read projection;
         # the saved alias string and IDs in root_binding stay exactly as the host recorded them.
         try:
-            binding = self._saved_project_binding(record["id"])
+            binding = self._saved_project_binding(record["id"], native_bindings=native_bindings)
         except (ConsoleError, OSError, sqlite3.Error):
             binding = None
         if binding is None or (root_binding.get("availability") != "AVAILABLE" and binding["native_id"] is None):
@@ -10572,6 +10747,9 @@ class App:
             projects, roots = _host_project_catalog(connection)
             project, state = _canonical_project_binding(rows[0], projects, roots) if len(rows) == 1 else (None, "unbound")
         if project is None or project["id"] != project_id or state not in {"direct", "root"} or rows[0]["archived"]:
+            if (len(rows) == 1 and not rows[0]["archived"] and project is None and state == "conflicted"
+                    and self._selected_root_controller(project_id, thread_id, rows[0]["cwd"]) == root):
+                return root
             if allow_adopted and len(rows) == 1 and not rows[0]["archived"] and project is None and state == "unbound":
                 projection = self.progress_ledger.replay() if projection is None else projection
                 binding = projection["task_creation_bindings"].get(projection["task_creation_operations_by_task"].get(thread_id), {})
@@ -10582,6 +10760,20 @@ class App:
                         and observation.get("cwd_digest") == _auto_digest(_normalized_project_path(rows[0]["cwd"]))):
                     return root
             raise ConsoleError("task requires observed host project membership")
+        return root
+
+    def _selected_root_controller(self, project_id: str, thread_id: str, cwd: str) -> Path | None:
+        """Recognize only the explicitly selected root controller, not arbitrary same-root tasks."""
+        binding = self._saved_project_binding(project_id, "Selected controller")
+        if binding["project_id"] != project_id or binding["native_id"] is None:
+            return None
+        root = Path(binding["root"]).resolve(strict=True)
+        if _normalized_project_path(cwd) != _normalized_project_path(str(root)):
+            return None
+        document, _ = parse_project_brief_markdown((root / "SWARM.md").read_text(encoding="utf-8"), root=root)
+        selection = document.get("explicit_project_alias", {})
+        if selection.get("controller_id") != thread_id or selection.get("ledger_project_id") != project_id:
+            return None
         return root
 
     def task_history(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -10711,6 +10903,9 @@ class App:
                         raise ValueError("existing host owner is missing, archived or has invalid cwd")
                     projects, roots = _host_project_catalog(connection)
                     observed_project, state = _canonical_project_binding(row, projects, roots)
+                    if (root_owner and state == "conflicted" and observed_project is None
+                            and self._selected_root_controller(project_id, thread_id, row["cwd"]) == root):
+                        observed_project, state = {"id": project_id}, "explicit-local-alias"
                     if state in {"stale", "conflicted"} or (observed_project and observed_project["id"] != project_id):
                         raise ValueError("existing owner belongs to a different or ambiguous project")
                     cwd = _normalized_project_path(row["cwd"])
@@ -11248,8 +11443,9 @@ class App:
         creation_root = assignment.get("root_equivalence", {}).get("physical_root_digest", root_digest) if assignment else root_digest
         if creation["root_digest"] != creation_root or self._observed_task_root(project_id, ctrl_id, allow_adopted=True) != root:
             raise ConsoleError("bound task owning CTRL or root changed")
-        if reviewer_id in {task_id, ctrl_id}:
-            raise ConsoleError("bound task requires an independent reviewer, not its producer or creator")
+        parent_id = creation.get("parent_edge", {}).get("parent_task_id")
+        if reviewer_id in {task_id, ctrl_id, parent_id}:
+            raise ConsoleError("bound task requires an independent reviewer, not its producer, lead or creator")
         _, config, _ = load_config(self.config_path)
         # Ordinary tasks inherit their retained owning CTRL goal; they need no duplicate native goal.
         if assignment:
@@ -11266,9 +11462,11 @@ class App:
             gates=[[gate_id, list(gate[1])] for gate_id, gate in zip(gate_ids, gates)], review_strategy=strategy,
             ctrl_id=ctrl_id, root_digest=root_digest,
             role_manifest_ref=assignment["role_manifest_ref"] if assignment else creation["role_manifest_ref"])
-        accepted_id = f"bound-accepted:{task_id}:{block_id}"
         retained = next((item for item in projection["blocks"].values()
                          if item["project_id"] == project_id and item["block_id"] == block_id and item["task_id"] == task_id), None)
+        attempt = 1 if retained is None else retained["attempt"] + (retained["lifecycle_state"] == "INVALIDATED_REWORK")
+        suffix = "" if attempt == 1 else f":attempt:{attempt}"
+        accepted_id = f"bound-accepted:{task_id}:{block_id}{suffix}"
         def task_completed(snapshot):
             return App._bound_blocks_accepted(snapshot, project_id, task_id, manifest)[0]
         replay = retained is not None and retained["latest_event_id"] == accepted_id
@@ -11326,12 +11524,22 @@ class App:
                 raise InvariantError("host task/root/goal/review binding changed during verification")
             if assignment:
                 self._work_assignment_scope(project_id, manifest, self.progress_ledger.replay(), accepting=True)
+            try:
+                started = self.progress_ledger.start_velocity_instrumentation(project_id=project_id, expected_event_seq=revision)
+            except VelocityMetadataError:
+                started = None  # Analytics metadata never authorizes or prevents the reviewed completion.
+                if self.progress_ledger.replay()["cursor"]["event_seq"] != revision:
+                    raise ProgressEventError("progress ledger changed; reload before completing")
+            if started is not None:
+                if started["cursor"]["event_seq"] != revision:
+                    raise ProgressEventError("progress ledger changed; reload before completing")
+                revision = started["cursor"]["event_seq"]
             self.progress_ledger.append_bound_block_evidence(
                 project_id=project_id, task_id=task_id, block_id=block_id, manifest_digest=manifest_digest,
-                expected_event_seq=revision, evidence_path=root / relative, expected_sha256=artifact_sha256)
+                expected_event_seq=revision, evidence_path=root / relative, expected_sha256=artifact_sha256, attempt=attempt)
             result = self.progress_ledger.append_runtime_block_acceptance(
                 swarm=swarm, project_id=project_id, task_id=task_id, block_id=block_id, manifest_digest=manifest_digest,
-                expected_event_seq=self.progress_ledger.replay()["cursor"]["event_seq"])
+                expected_event_seq=self.progress_ledger.replay()["cursor"]["event_seq"], attempt=attempt)
         except (InvariantError, ProgressEventError, OSError, ValueError) as exc:
             raise ConsoleError(str(exc)) from exc
         with self.overview_lock:
@@ -11353,7 +11561,8 @@ class App:
         accepted = {block["block_id"] for block in ledger["blocks"].values()
                     if block["project_id"] == project_id and block["task_id"] == task_id
                     and block["lifecycle_state"] == "ACCEPTED"
-                    and block["latest_event_id"] == f"bound-accepted:{task_id}:{block['block_id']}"}
+                    and block["latest_event_id"] == (f"bound-accepted:{task_id}:{block['block_id']}"
+                        + ("" if block.get("attempt", 1) == 1 else f":attempt:{block['attempt']}"))}
         count = sum(block_id in accepted for block_id in declared)
         return bool(declared) and count == len(declared), count, len(declared)
 
@@ -11366,9 +11575,9 @@ class App:
             raise ConsoleError("message context requires exact project and thread")
         project_id = _auto_id(payload["project_id"], "project_id")
         thread_id = _auto_id(payload["thread_id"], "thread_id")
-        root = self._observed_task_root(project_id, thread_id)
+        root = self._observed_task_root(project_id, thread_id, allow_adopted=True)
         revision = self.progress_ledger.replay()["cursor"]["event_seq"]
-        if type(revision) is not int or revision < 0 or self._observed_task_root(project_id, thread_id) != root:
+        if type(revision) is not int or revision < 0 or self._observed_task_root(project_id, thread_id, allow_adopted=True) != root:
             raise ConsoleError("message context changed or is unavailable")
         now = int(time.time() * 1000)
         return {"ok": True, "project_id": project_id, "target_thread_id": thread_id,
@@ -11392,7 +11601,7 @@ class App:
                 raise ValueError("an exact bound task creation contract is required")
             root = self._canonical_project_root(envelope.project_id)
             if action is HQCommandAction.TASK:
-                if envelope.ctrl_id or self._observed_task_root(envelope.project_id, envelope.target_thread_id) != root:
+                if envelope.ctrl_id or self._observed_task_root(envelope.project_id, envelope.target_thread_id, allow_adopted=True) != root:
                     raise ValueError("explicit task message requires exact membership, not a CTRL grant")
             material = HQDispatchMaterial(str(root), payload["instruction"].encode("utf-8"))
             root_digest = _auto_digest({"project_id": envelope.project_id, "canonical_root": _normalized_project_path(str(root))})
@@ -11418,15 +11627,25 @@ class App:
                                             self.progress_ledger.replay(), accepting=True)
 
         def observe(cwd):
-            if not isinstance(cwd, str) or Path(cwd).resolve(strict=True) != root:
+            if not isinstance(cwd, str) or not Path(cwd).is_absolute():
                 raise ValueError("host cwd conflicts with registered project root")
+            if Path(cwd).resolve(strict=True) != root:
+                if action is not HQCommandAction.TASK:
+                    raise ValueError("host cwd conflicts with registered project root")
+                current = self.progress_ledger.replay()
+                retained = current["task_creation_bindings"].get(current["task_creation_operations_by_task"].get(envelope.target_thread_id), {})
+                subject = retained.get("existing_host", {}).get("subject", {})
+                if (subject.get("thread_id") != envelope.target_thread_id
+                        or subject.get("cwd_digest") != _auto_digest(_normalized_project_path(cwd))
+                        or self._observed_task_root(envelope.project_id, envelope.target_thread_id, allow_adopted=True, projection=current) != root):
+                    raise ValueError("host cwd conflicts with adopted task identity")
             # Recheck host catalog custody, not a title or host-issued project fiction.
             if self._canonical_project_root(envelope.project_id) != root:
                 raise ValueError("registered project root changed")
-            if action is HQCommandAction.TASK and self._observed_task_root(envelope.project_id, envelope.target_thread_id) != root:
+            if action is HQCommandAction.TASK and self._observed_task_root(envelope.project_id, envelope.target_thread_id, allow_adopted=True) != root:
                 raise ValueError("target task membership changed")
             verify_assigned_work()
-            return HQRootObservation("hq-root", str(root), root_digest)
+            return HQRootObservation("hq-root", cwd, root_digest)
 
         with ExitStack() as stack:
             channel = None
@@ -11495,7 +11714,7 @@ class App:
             connector = UniversalHQConnector(adapter,
                 authorization_verifier=SimpleNamespace(verify=lambda receipt, command, now: receipt == auth and command == envelope and now <= auth.expires_at_ms),
                 material_resolver=SimpleNamespace(resolve=lambda command: material),
-                root_verifier=SimpleNamespace(observe=observe, verify=lambda observation, command: observation.canonical_cwd == str(root) and observation.root_digest == command.root_digest))
+                root_verifier=SimpleNamespace(observe=observe, verify=lambda observation, command: observation.root_digest == command.root_digest))
             unit = contract.get("task_manifest_draft", {}).get("work_unit") if contract else None
             if unit and envelope.idempotency_key not in self.progress_ledger.replay()["connector_receipts"]:
                 try:
@@ -12753,6 +12972,22 @@ class App:
             scope_id=selected_ctrl_id if ctrl_scope else selected_project_id,
             scope_type="ctrl" if ctrl_scope else "project",
         )
+        if not ctrl_scope:
+            windows = {}
+            ledger_project_id = None
+            try:
+                as_of_ms = int(time.time() * 1000)
+                binding = self._saved_project_binding(selected_project_id)
+                ledger_project_id = binding["project_id"]
+                windows = self.progress_ledger.project_velocity_windows(ledger_project_id, as_of_ms=as_of_ms)
+                if any(item["cursor"] != windows["7"]["cursor"] for item in windows.values()):
+                    raise ProgressEventError("Ledger changed during Velocity comparison")
+                if self._saved_project_binding(selected_project_id) != binding:
+                    raise ProgressEventError("project identity changed during Velocity comparison")
+            except (ConsoleError, OSError, ProgressEventError, AttributeError, sqlite3.Error, KeyError, TypeError, ValueError):
+                windows = {}
+                ledger_project_id = None
+            view["overview_metrics"]["velocity"] = {"schema_version": 1, "unit": "blk / h", "ledger_project_id": ledger_project_id, "windows": windows}
         view["project_view"] = None if ctrl_scope else self._project_view_projection(
             selected_project_id,
             view.get("project_briefs"),
@@ -15078,10 +15313,11 @@ class App:
         self,
         record: dict[str, Any],
         root_owners: dict[str, set[str]],
+        *, native_bindings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         root_binding = self._project_root_binding(record, root_owners)
         try:
-            return self._project_manifest_projection(record, root_binding)
+            return self._project_manifest_projection(record, root_binding, native_bindings=native_bindings)
         except (AttributeError, ConsoleError, OSError, UnicodeError, sqlite3.Error, TypeError, ValueError):
             return self._project_identity_unavailable(record)
 
@@ -15100,9 +15336,13 @@ class App:
             return unavailable
         if state == "UNKNOWN" or cursor is None:
             return unavailable
+        try:
+            native_bindings = self._native_project_map()
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            native_bindings = None  # Preserve each identity's existing unavailable handling.
         projects = []
         for record in records:
-            identity = self._project_identity(record, root_owners)
+            identity = self._project_identity(record, root_owners, native_bindings=native_bindings)
             manifest = identity.get("manifest") if isinstance(identity.get("manifest"), dict) else {}
             projects.append({
                 "project_id": record["id"],
@@ -15200,11 +15440,15 @@ class App:
         }
         projects: list[dict[str, Any]] = []
         records_by_id = {record["id"]: record for record in records}
+        try:
+            native_bindings = self._native_project_map()
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            native_bindings = None  # Preserve each identity's existing unavailable handling.
         for record in records:
             project = copy.deepcopy(
                 navigation_by_id.get(record["id"], self._project_navigation_fallback(record))
             )
-            identity = self._project_identity(record, root_owners)
+            identity = self._project_identity(record, root_owners, native_bindings=native_bindings)
             project.update({
                 "id": record["id"],
                 "name": record["display_name"],
@@ -16579,8 +16823,10 @@ class App:
                 draft = payload["assignment"]
                 required = {"version", "subject_kind", "subject_id", "subject_version", "ctrl_id",
                             "flow_id", "flow_version", "flow_digest", "label", "notes", "repeat_count"}
-                if not isinstance(draft, dict) or set(draft) != required:
+                if not isinstance(draft, dict) or set(draft) not in (required, required | {"decision"}):
                     raise ConsoleError("Flow assignment draft fields are invalid")
+                if isinstance(draft.get("decision"), dict) and draft["decision"].get("action") == "ADAPT" and "lesson" not in draft["decision"]:
+                    raise ConsoleError("new ADAPT decisions require cost and core planning evidence")
                 identity = {key: draft[key] for key in ("subject_kind", "subject_id", "ctrl_id")}
                 record = {**draft, "id": "assignment-" + _auto_digest(identity)}
                 record = validate_flow_assignment({**record, "digest": "sha256:" + _auto_digest(record)}, document.get("flow_definitions", []))
@@ -16614,6 +16860,7 @@ class App:
                     raise ConsoleConflict("Flow changed after saving; reload to reconcile")
             result = {"ok": True, "project_id": project_id, "source_digest": digest,
                 "definitions": document.get("flow_definitions", []), "assignments": document.get("flow_assignments", []),
+                "hive_lessons": flow_hive_lessons(document.get("flow_assignments", [])),
                 "starter": create_flow_draft(), "claim_limit": "Saved project definitions, scoped preferences and previews only. Assignment history pins source versions; it does not prove current runtime binding. Repetition is manual planning metadata, never a trigger or task dispatch."}
             if operation == "preview":
                 definition = next((item for item in result["definitions"] if item["id"] == payload["flow_id"] and type(payload["version"]) is int and item["version"] == payload["version"]), None)
@@ -16626,7 +16873,7 @@ class App:
                 _, agents, _, _ = self._observed_scope(project_id=project_id)
                 owner = next((agent for agent in agents if agent.get("id") == node["owner_id"] and agent.get("project_id") == project_id and agent.get("archived") is not True), None)
                 external = bool(set(node["proof_classes"]) & {"HUMAN", "AUTH", "PROVIDER", "PAYMENT", "DEPLOYED", "DEVICE", "BROWSER_AUTHENTICATED"})
-                ready = owner is not None and not external
+                ready = owner is not None and not external and bool(document["authority"].get("ctrl_id"))
                 labels = {key: unicodedata.normalize("NFC", " ".join(node[key].split()))[:160].rstrip() for key in ("objective", "completion")}
                 result["preview"] = {"status": "PREVIEW", "readiness": "READY" if ready else "WAITING", "node_id": node["id"],
                     "flow_digest": definition["digest"], "node_digest": "sha256:" + _auto_digest(node), "source_digest": digest, "dispatch_available": False,
@@ -16635,7 +16882,7 @@ class App:
                     "waiting_node_ids": [item["id"] for item in definition["nodes"] if item["dependencies"]],
                     "instruction": "\n".join((definition["objective"], node["objective"], "Required capability: " + node["capability"], "Completion: " + node["completion"], "Proof: " + ", ".join(node["proof_classes"]))),
                     "task_manifest_draft": build_task_manifest(manifest_id="flow-preview", task_id="draft-only", task_name=labels["objective"],
-                        project_id=project_id, ctrl_id=document["authority"].get("ctrl_id") or node["owner_id"], role_scope="DOER_SINGLE",
+                        project_id=project_id, ctrl_id=document["authority"]["ctrl_id"], role_scope="DOER_SINGLE",
                         milestones=[{"milestone_id": node["id"], "order": 0, "title": labels["objective"], "verification_policy": "flow-required-proof", "supersedes_milestone_id": None}],
                         blocks=[{"block_id": "flow-output", "milestone_id": node["id"], "order": 0, "title": labels["completion"], "verification_policy": "flow-required-proof", "estimate_minutes": None, "weight": None, "supersedes_block_id": None}]) if ready else None}
                 if parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=root)[1] != digest:
@@ -17215,7 +17462,31 @@ class App:
             evidence_id,
             digest,
             allowed_root=self.codex_home / PROOF_MEDIA_ROOT,
+            codex_home=self.codex_home,
         )
+
+    def authorize_original_proof(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Accept one explicitly selected original through the authenticated local endpoint."""
+        if event.get("acknowledge") is not True:
+            raise ConsoleError("original proof requires explicit source acknowledgement")
+        locator = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=4096))
+        if not locator.is_absolute():
+            raise ConsoleError("original proof path must be absolute")
+        task_id = _safe_metadata_text(event.get("task_id"), "task_id", maximum=256)
+        overview = self._host_overview()
+        node = next((node for node in overview.get("nodes", []) if str(node.get("id")) == task_id
+                     and not node.get("virtual") and node.get("project_id")), None)
+        if node is None:
+            raise ConsoleError("proof media requires an observed task")
+        project_id = str(node["project_id"])
+        path = locator.resolve(strict=True)
+        payload = {**event, "source": "CtrlEvidence", "task_id": task_id, "project_id": project_id,
+                   "locator": str(path), "disposition": "PENDING",
+                   "receipt": f"ctrl-original:{task_id}", "surface_kind": "available_media"}
+        result = self.store.record_proof_media(payload, now_ms=int(time.time() * 1000), allowed_root=path.parent)
+        with self.overview_lock:
+            self._store_generation += 1
+        return result
 
     def proof_cursor(self) -> dict[str, Any]:
         self._ingest_proof_events_if_changed()
@@ -18651,6 +18922,7 @@ class Handler(BaseHTTPRequestHandler):
             "ok": True,
             "token": self.server.app.token if local else "",
             "config_path": str(self.server.app.config_path) if local else "",
+            "codex_home": str(self.server.app.codex_home) if local else "",
             "local_only": local,
             "read_only": not local,
             "capabilities": {"task_message": {"contract": "swarm.hq_task_message.v1", "method": "POST",
@@ -19372,6 +19644,10 @@ class Handler(BaseHTTPRequestHandler):
                     payload.get("scope_type"), payload.get("scope_id"), payload.get("expected_revision"),
                 )
                 self._json(HTTPStatus.OK, {"ok": True, "reset": result})
+                return
+            if path == "/api/evidence/original":
+                result = self.server.app.authorize_original_proof(self._payload())
+                self._json(HTTPStatus.OK, {"ok": True, "proof": result})
                 return
             if path == "/api/evidence":
                 result = self.server.app.register_proof(self._payload())

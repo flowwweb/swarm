@@ -6,6 +6,8 @@ import argparse
 import json
 import os
 import sys
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 
@@ -23,6 +25,7 @@ def main() -> int:
     parser.add_argument("--kind", required=True)
     parser.add_argument("--caption", required=True)
     parser.add_argument("--claim-limit", default="Available for review; acceptance is recorded separately.")
+    parser.add_argument("--console-url", default="http://127.0.0.1:4788")
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")))
     args = parser.parse_args()
     try:
@@ -37,6 +40,29 @@ def main() -> int:
         )
     except (OSError, ProofEventError) as exc:
         parser.error(str(exc))
+    if Path(result["locator"]).is_absolute():
+        from urllib.parse import urlparse
+        parsed = urlparse(args.console_url)
+        if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            parser.error("console URL must be an explicit 127.0.0.1 HTTP origin")
+        base = args.console_url.rstrip("/")
+        try:
+            with urllib.request.urlopen(base + "/api/bootstrap", timeout=5) as response:
+                bootstrap = json.load(response)
+            if not bootstrap.get("local_only") or not bootstrap.get("token"):
+                raise ValueError("console did not provide local authorization")
+            # A different configured home must never receive this source.
+            if not bootstrap.get("codex_home") or Path(bootstrap["codex_home"]).expanduser().resolve() != args.codex_home.expanduser().resolve():
+                raise ValueError("console does not match the requested Codex home")
+            payload = json.dumps({**result, "acknowledge": True}).encode("utf-8")
+            request = urllib.request.Request(base + "/api/evidence/original", data=payload,
+                headers={"Content-Type": "application/json", "X-Swarm-Token": bootstrap["token"]}, method="POST")
+            with urllib.request.urlopen(request, timeout=10) as response:
+                registered = json.load(response)
+            if not registered.get("ok"):
+                raise ValueError("console refused original proof")
+        except (OSError, ValueError, KeyError, urllib.error.URLError) as exc:
+            parser.error(f"original event saved but console registration failed: {exc}")
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 

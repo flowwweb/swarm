@@ -137,6 +137,29 @@ class SwarmMCPTests(unittest.TestCase):
             coordinator_role={"id": role["id"], "version": role["version"]})
         return server, fixture, projection, request
 
+    def test_project_initialize_existing_folder_and_preserves_documents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sentinel = root / "existing.txt"
+            sentinel.write_text("untouched", encoding="utf-8")
+            adapter = mcp.SwarmProjection()
+            request = {"root": str(root), "acknowledge": True}
+            first = adapter.call("swarm_project_initialize", request)
+            self.assertTrue(first["ok"], first)
+            self.assertEqual(first["status"], "INITIALIZED")
+            self.assertFalse(first["registered"])
+            self.assertEqual(set(first["created"]), {"SWARM.md", "project.md"})
+            original = (root / "SWARM.md").read_bytes()
+            again = adapter.call("swarm_project_initialize", request)
+            self.assertEqual(again["status"], "ADOPTED")
+            self.assertEqual((root / "SWARM.md").read_bytes(), original)
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "untouched")
+            with self.assertRaises(mcp.MCPError):
+                adapter.call("swarm_project_initialize", {"root": str(root), "acknowledge": False})
+            with self.assertRaises(mcp.MCPError):
+                adapter.call("swarm_project_initialize", {"root": "relative", "acknowledge": True})
+            self.assertFalse(adapter.call("swarm_project_initialize", {"root": str(root / "missing"), "acknowledge": True})["ok"])
+
     def test_native_unit_prepare_create_readback_restart_uses_existing_connector(self):
         server, fixture, projection, request = self._unit_fixture()
         app = projection._app
@@ -240,7 +263,7 @@ class SwarmMCPTests(unittest.TestCase):
         server, fixture, projection, request = self._unit_fixture()
         for name in ("swarm_unit_prepare", "swarm_unit_create"):
             spec = next(tool for tool in mcp.TOOLS if tool["name"] == name)
-            self.assertEqual(spec["_meta"]["ui"]["visibility"], ["app"])
+            self.assertEqual(spec["_meta"]["ui"]["visibility"], ["model", "app"] if name == "swarm_unit_prepare" else ["app"])
             self.assertEqual(spec["annotations"]["readOnlyHint"], name == "swarm_unit_prepare")
         request["coordinator_role"]["version"] = "builtin:stale"
         wire = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -254,6 +277,163 @@ class SwarmMCPTests(unittest.TestCase):
         self.assertTrue(result["isError"])
         self.assertEqual(result["structuredContent"]["state"], "CONFLICT")
         self.assertNotIn(request["objective"], (fixture.root / "unit-wire.jsonl").read_text())
+
+    def test_project_alias_visibility_is_explicit(self):
+        spec = next(tool for tool in mcp.TOOLS if tool["name"] == "swarm_project_alias_select")
+        self.assertEqual(spec["_meta"]["ui"]["visibility"], ["model", "app"])
+        self.assertIn("clear", spec["inputSchema"]["properties"]["operation"]["enum"])
+
+    def test_project_alias_bootstrap_through_mcp_and_reload(self):
+        import sqlite3
+        from contextlib import closing
+        from console import server
+        from console.tests.test_console import SwarmConsoleTests
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        fixture = SwarmConsoleTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        brief = fixture.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        native = "native-project"
+        selection = {"native_project_id": native, "host_project_id": "project:new",
+                     "ledger_project_id": "project:alpha", "controller_id": "root"}
+        with closing(sqlite3.connect(fixture.database)) as connection:
+            connection.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", ("project:new", "alpha", "{}", 1, 0, 0))
+            connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:new", 0, str(fixture.alpha_root)))
+            connection.commit()
+        host_file = fixture.codex_home / server.HOST_STATE_FILENAME
+        host_key = "local:" + str(fixture.codex_home.resolve())
+        state = {server.HOST_STATE_PROJECTS_KEY: {native: {"id": native, "rootPaths": [str(fixture.alpha_root)]}},
+                 server.HOST_STATE_PROJECT_MAP_KEY: {host_key: {native: "project:new"}},
+                 "thread-project-assignments": {"root": {"projectKind": "local", "projectId": native}}}
+        host_file.write_text(json.dumps(state), encoding="utf-8")
+        app = server.App(fixture.codex_home, fixture.config)
+        root_digest = server._auto_digest({"project_id": "project:alpha", "canonical_root": server._normalized_project_path(str(fixture.alpha_root.resolve()))})
+        app.progress_ledger.reserve_brief_ticket_id(project_id="project:alpha", kind="milestone", record_id="m-alpha",
+            root_digest=root_digest, source_digest="sha256:" + "1"*64, request_digest="2"*64, record_digest="3"*64, project_code="TEST")
+        def wire(name, arguments):
+            request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
+            with patch.object(mcp.SwarmProjection, "_load_app", return_value=app), \
+                 patch.object(sys, "stdin", io.StringIO(json.dumps(request))), \
+                 patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+                mcp.serve(telemetry_path=fixture.root / "alias-wire.jsonl")
+            return json.loads(output.getvalue())["result"]
+        preview = wire("swarm_project_alias_select", {"operation": "read", "selection": selection})
+        self.assertFalse(preview["isError"])
+        digest = preview["structuredContent"]["source_digest"]
+        request = {"operation": "select", "selection": selection, "expected_digest": digest, "acknowledge": True}
+        chosen = wire("swarm_project_alias_select", request)
+        self.assertFalse(chosen["isError"])
+        self.assertFalse(chosen["structuredContent"]["admitted"])
+        self.assertTrue(wire("swarm_project_alias_select", request)["isError"])
+        def read(project):
+            return wire("swarm_project_tickets", {"operation": "read", "project_id": project})
+        legacy, selected = read("project:alpha"), read(native)
+        self.assertFalse(legacy["isError"])
+        self.assertFalse(selected["isError"])
+        self.assertEqual(legacy["structuredContent"]["project_id"], "project:alpha")
+        self.assertEqual(legacy["structuredContent"]["records"], selected["structuredContent"]["records"])
+        self.assertIn("TEST-1", [r["display_id"] for r in legacy["structuredContent"]["records"]])
+        app = server.App(fixture.codex_home, fixture.config)
+        self.assertEqual(read(native)["structuredContent"]["records"], legacy["structuredContent"]["records"])
+        from runtime.progress_events import build_task_manifest, role_manifest_reference
+        role = next(r for r in app.builtin_role_manifests if r["id"] == "developer")
+        manifest = build_task_manifest(manifest_id="existing:root", task_id="root", task_name="Selected root",
+            project_id="project:alpha", ctrl_id="root", role_scope="CTRL_BOUNDED", milestones=[], blocks=[])
+        request_adopt = {"operation_id": "adopt-selected-root", "project_id": native, "root_digest": root_digest,
+                         "task_manifest": manifest, "role_manifest_ref": role_manifest_reference(role),
+                         "expected_host_cwd": str(fixture.alpha_root),
+                         "expected_ledger_revision": app.progress_ledger.replay()["cursor"]["event_seq"], "acknowledge": True}
+        sent = []
+        @contextmanager
+        def session(cwd, **kwargs):
+            def send(message):
+                sent.append(message)
+            def receive(predicate):
+                return {"id": sent[-1]["id"], "result": {"thread": {"id": "root", "cwd": str(fixture.alpha_root)}}}
+            yield send, receive
+        app.auto_bridge.command_session = session
+        with self.assertRaises(server.ConsoleError):
+            app.adopt_existing_task({**request_adopt, "expected_ledger_revision": 0})
+        with self.assertRaises(server.ConsoleError):
+            app.adopt_existing_task({**request_adopt, "acknowledge": False})
+        with self.assertRaises(server.ConsoleError):
+            app.adopt_existing_task({**request_adopt, "expected_host_cwd": str(fixture.root)})
+        self.assertFalse(sent)
+        state["thread-project-assignments"]["root"]["projectId"] = "wrong"
+        host_file.write_text(json.dumps(state), encoding="utf-8")
+        with self.assertRaises(server.ConsoleError):
+            app.adopt_existing_task(request_adopt)
+        state["thread-project-assignments"]["root"]["projectId"] = native
+        state[server.HOST_STATE_PROJECT_MAP_KEY][host_key][native] = "project:other"
+        host_file.write_text(json.dumps(state), encoding="utf-8")
+        with self.assertRaises(server.ConsoleError):
+            app.adopt_existing_task(request_adopt)
+        state[server.HOST_STATE_PROJECT_MAP_KEY][host_key][native] = "project:new"
+        host_file.write_text(json.dumps(state), encoding="utf-8")
+        with closing(sqlite3.connect(fixture.database)) as connection:
+            connection.execute("UPDATE threads SET archived=1 WHERE id='root'")
+            connection.commit()
+        with self.assertRaises(server.ConsoleError):
+            app.adopt_existing_task(request_adopt)
+        with closing(sqlite3.connect(fixture.database)) as connection:
+            connection.execute("UPDATE threads SET archived=0 WHERE id='root'")
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:new'", (str(fixture.root),))
+            connection.commit()
+        with self.assertRaises(server.ConsoleError):
+            app.adopt_existing_task(request_adopt)
+        with closing(sqlite3.connect(fixture.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:new'", (str(fixture.alpha_root),))
+            connection.commit()
+        self.assertFalse(sent)
+        admitted = app.adopt_existing_task(request_adopt)
+        self.assertEqual(admitted["status"], "APPENDED")
+        self.assertFalse(admitted["dispatched"])
+        self.assertFalse(admitted["work_completed"])
+        self.assertEqual(admitted["binding"]["project_id"], "project:alpha")
+        self.assertEqual(app._observed_task_root("project:alpha", "root"), fixture.alpha_root.resolve())
+        state["thread-project-assignments"]["root"]["projectId"] = "wrong"
+        host_file.write_text(json.dumps(state), encoding="utf-8")
+        self.assertTrue(read(native)["isError"])
+        with self.assertRaises(server.ConsoleError):
+            app._observed_task_root("project:alpha", "root")
+
+    def test_project_alias_tool_routes_and_redacts_conflicts(self):
+        sys.path.insert(0, str(mcp.REPO_ROOT))
+        from console.server import ConsoleConflict
+        projection = mcp.SwarmProjection()
+        projection._app = Mock()
+        request = {"operation": "select", "expected_digest": "sha256:" + "0" * 64, "selection": {}, "acknowledge": True}
+        projection._app.project_alias_command.return_value = {"ok": True, "admitted": False}
+        self.assertEqual(projection.call("swarm_project_alias_select", request)["admitted"], False)
+        projection._app.project_alias_command.assert_called_once_with(request)
+        projection._app.project_alias_command.side_effect = ConsoleConflict("private detail")
+        result = projection.call("swarm_project_alias_select", request)
+        self.assertEqual(result["state"], "CONFLICT")
+        self.assertNotIn("private detail", json.dumps(result))
+
+    def test_task_accept_uses_existing_reviewed_completion_and_requires_acknowledgement(self):
+        import threading
+        from console.server import ConsoleError
+        projection = mcp.SwarmProjection()
+        app = Mock()
+        app.write_lock = threading.Lock()
+        projection._app = app
+        request = {"project_id": "project:alpha", "acknowledge": True}
+        app.complete_bound_task.return_value = {"ok": True, "status": "ACCEPTED"}
+        result = projection.call("swarm_task_accept", {"request": request, "acknowledge": True})
+        self.assertEqual(result["status"], "ACCEPTED")
+        app.complete_bound_task.assert_called_once_with(request)
+        with self.assertRaises(mcp.MCPError):
+            projection.call("swarm_task_accept", {"request": request, "acknowledge": False})
+        with self.assertRaises(mcp.MCPError):
+            projection.call("swarm_task_accept", {"request": {**request, "acknowledge": False}, "acknowledge": True})
+        app.complete_bound_task.side_effect = ConsoleError("private host data")
+        refused = projection.call("swarm_task_accept", {"request": request, "acknowledge": True})
+        self.assertEqual(refused["state"], "REJECTED")
+        self.assertNotIn("private host data", json.dumps(refused))
+        spec = next(item for item in mcp.TOOLS if item["name"] == "swarm_task_accept")
+        self.assertEqual(spec["_meta"]["ui"]["visibility"], ["app"])
 
     def test_ticket_read_failure_is_not_reported_as_failed_save(self):
         sys.path.insert(0, str(mcp.REPO_ROOT))
@@ -949,7 +1129,8 @@ class SwarmMCPTests(unittest.TestCase):
         """Exercise the real pinned image admission with an isolated template."""
         names = list(mcp.PROJECTS_ASSETS)
         files = {names[0]: ('<!doctype html><style>__CSS__</style><body>' + body + '<script type="module">__SCRIPT__</script></body>').encode(),
-                 names[1]: b'body{color:black}', names[2]: b'.swarm-settings{color:white}'}
+                 names[1]: b'body{color:black}', names[2]: b'.swarm-settings{color:white}',
+                 'skills/swarm/assets/ui/supporters.json': b'[]'}
         for name, _, digest in mcp.PROJECTS_SUPPORT_IMAGES.values():
             files[name] = (mcp.REPO_ROOT / name).read_bytes()
             self.assertEqual(hashlib.sha256(files[name]).hexdigest(), digest)
@@ -1243,8 +1424,8 @@ class SwarmMCPTests(unittest.TestCase):
                 self.assertEqual(mcp.serve(hq_app=app), 0)
             rows = [json.loads(line) for line in output.getvalue().splitlines()]
             self.assertIn("resources", rows[0]["result"]["capabilities"])
-            self.assertEqual(rows[1]["result"]["tools"][:14], list(mcp.TOOLS))
-            self.assertEqual(len(rows[1]["result"]["tools"]), 15)
+            self.assertEqual(rows[1]["result"]["tools"][:len(mcp.TOOLS)], list(mcp.TOOLS))
+            self.assertEqual(len(rows[1]["result"]["tools"]), len(mcp.TOOLS) + 1)
             tool = rows[1]["result"]["tools"][-1]
             self.assertEqual(tool["name"], "swarm_hq_view")
             self.assertEqual(tool["_meta"], {"ui": {"resourceUri": app.uri}, "openai/ui": {"entrypoints": [{"type": "global"}, {"type": "thread"}]}})
@@ -1375,7 +1556,7 @@ class SwarmMCPTests(unittest.TestCase):
             self.assertTrue(rows[7]["result"]["isError"])
             self.assertFalse(rows[8]["result"]["isError"])
             self.assertFalse(rows[9]["result"]["isError"])
-            self.assertEqual(len(rows[-1]["result"]["tools"]), 14)
+            self.assertEqual(len(rows[-1]["result"]["tools"]), len(mcp.TOOLS))
             self.assertNotIn("SECRET", output.getvalue() + telemetry.read_text())
 
     def test_output_cap_and_scratch_validation(self) -> None:
