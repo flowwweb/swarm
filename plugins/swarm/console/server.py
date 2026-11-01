@@ -99,6 +99,7 @@ from project_model_views import (  # noqa: E402
     validate_flow_definition,
     validate_flow_assignment,
     flow_hive_lessons,
+    ticket_discussion,
     mutate_project_brief,
     set_explicit_project_alias,
     mutate_project_tickets,
@@ -11068,6 +11069,103 @@ class App:
         Task manifests, host goals, dispatch and acceptance are never changed.
         """
         operation = payload.get("operation") if isinstance(payload, dict) else None
+        if operation in {"read_activity", "read_logs"}:
+            if set(payload) != {"operation", "project_id", "record_id"}:
+                raise ConsoleError("ticket evidence requires exact project and ticket identities")
+            binding = self._saved_project_binding(_auto_id(payload["project_id"], "project_id"))
+            _auto_id(payload["record_id"], "record_id")
+            project_id = binding["project_id"]
+            try:
+                tickets = read_project_tickets(Path(binding["root"]) / "SWARM.md", project_ids=frozenset(_binding_identities(binding)))
+                by_id = {row["id"]: row for row in tickets["records"]}
+                if payload["record_id"] not in by_id:
+                    raise ConsoleError("ticket evidence requires an existing planning ticket")
+                scoped, pending = set(), [payload["record_id"]]
+                while pending:
+                    identity = pending.pop()
+                    if identity in scoped: continue
+                    scoped.add(identity)
+                    pending.extend(row["id"] for row in tickets["records"] if row["parent_status"] == "BOUND" and row["parent"] and row["parent"]["id"] == identity)
+                snapshot = self.progress_ledger._velocity_read_snapshot(project_id)
+                projection, records, metadata, diagnostic, links = snapshot
+                refs_by_id = {identity: [ref for ref in self.progress_ledger.ticket_execution_status(projection, project_id, identity)["references"] if ref["membership"] == "REQUIRED"] for identity in scoped}
+                references = [ref for refs in refs_by_id.values() for ref in refs]
+                targets = {(ref["task_id"], ref["block_id"]) for ref in references if ref["manifest_current"]}
+                tasks = [by_id[identity] for identity in scoped if by_id[identity]["kind"] == "task"]
+                blocks = [by_id[identity] for identity in scoped if by_id[identity]["kind"] == "block"]
+                task_ids_with_blocks = {row["parent"]["id"] for row in blocks if row["parent_status"] == "BOUND" and row["parent"]}
+                leaves = blocks + [task for task in tasks if task["id"] not in task_ids_with_blocks]
+                coverage_complete = bool(leaves) and all(ref["manifest_current"] for ref in references) and all(
+                    refs_by_id[leaf["id"]] for leaf in leaves)
+                if operation == "read_logs":
+                    task_ids = {task for task, _ in targets}
+                    controllers = set()
+                    for task_id in task_ids:
+                        state = projection["task_manifests"].get(task_id, {})
+                        manifest = state.get("versions", {}).get(state.get("active_version"), {})
+                        ctrl = manifest.get("work_assignment", {}).get("accepting_ctrl_id", manifest.get("ctrl_id"))
+                        if isinstance(ctrl, str) and ctrl: controllers.add(ctrl)
+                    items, partial = [], not coverage_complete or not bool(controllers)
+                    for ctrl in controllers:
+                        try:
+                            page = self.run_log(ctrl, project_id=project_id)
+                            items.extend(item for item in page["items"] if (item.get("task_id"), (item.get("action_target") or {}).get("subject_id")) in targets)
+                            partial |= page["retention"]["page_truncated"] or page["retention"]["source_scan_truncated"]
+                        except ConsoleError:
+                            partial = True
+                    dedup = {item["event_id"]: item for item in items}
+                    return {"ok": True, "operation": operation, "project_id": project_id, "record_id": payload["record_id"],
+                            "items": sorted(dedup.values(), key=lambda item: item["event_seq"], reverse=True), "partial": partial,
+                            "claim_limit": "Retained scoped Ledger events; per-run model and reasoning are not recorded here."}
+                now = int(time.time() * 1000); day = 86400000; first = (now // day - 6) * day
+                series = [{"start_ms": first + i * day, "accepted": None} for i in range(7)]
+                activation = metadata.get("projects", {}).get(project_id) if metadata is not None else None
+                if activation and any(row["event_seq"] > activation["event_seq"] and row["event"].get("project_id") == project_id
+                        and not self.progress_ledger._is_non_material_record(row["event"])
+                        and row["event"].get("observed_at_ms", 0) < activation["observed_at_ms"] for row in records):
+                    activation = None
+                if activation and not diagnostic and targets and coverage_complete:
+                    rate = self.progress_ledger.project_accepted_progress_rate(project_id, observed_after_ms=first,
+                        observed_before_ms=now, as_of_ms=now, bucket_ms=now-first, _snapshot=(projection, records, links))
+                    receipts = metadata["receipts"]
+                    counts = [set() for _ in series]; unknown = set()
+                    for item in rate["outcomes"]:
+                        position = (item["observed_at_ms"] - first) // day
+                        if item["kind"] == "ACCEPTED" and 0 <= position < 7 and (item["task_id"], item["block_id"]) in targets:
+                            if item["timestamp_status"] == "ORDERED" and item["event_id"] in receipts and item["linkage"]["state"] == "LINKED":
+                                counts[position].add((item["task_id"], item["block_id"]))
+                            else:
+                                unknown.add(position)
+                    for index, bucket in enumerate(series):
+                        if index not in unknown and activation["observed_at_ms"] <= bucket["start_ms"] and not any(reason in rate["reasons"] for reason in ("OUT_OF_ORDER_TIMESTAMP", "TIMESTAMP_AFTER_AS_OF", "EVENT_IDENTITY_CONFLICT", "TOPOLOGY_CONFLICT")):
+                            bucket["accepted"] = len(counts[index])
+                return {"ok": True, "operation": operation, "project_id": project_id, "record_id": payload["record_id"],
+                        "days": series, "claim_limit": "UTC accepted blocks in the retained ticket subtree; null means coverage is unknown."}
+            except (ProjectModelError, ProgressEventError) as exc:
+                raise ConsoleError(str(exc)) from exc
+        if operation in {"read_discussion", "add_comment", "add_attachment"}:
+            required = {"operation", "project_id", "record_id"}
+            if operation != "read_discussion":
+                required |= {"expected_digest", "acknowledge", "changes"}
+            if set(payload) != required or (operation != "read_discussion" and payload["acknowledge"] is not True):
+                raise ConsoleError("ticket discussion requires exact fields and write acknowledgement")
+            requested_id = _auto_id(payload["project_id"], "project_id")
+            binding = self._saved_project_binding(requested_id)
+            if operation != "read_discussion" and self._saved_project_binding(requested_id) != binding:
+                raise ConsoleConflict("saved project binding changed; reload before saving")
+            try:
+                result = ticket_discussion(Path(binding["root"]) / "SWARM.md",
+                    project_ids=frozenset(_binding_identities(binding)), record_id=payload["record_id"],
+                    operation=operation, expected_digest=payload.get("expected_digest", ""),
+                    item=payload.get("changes"),
+                    updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+            except ProjectModelError as exc:
+                if str(exc) == "project brief digest conflict":
+                    raise ConsoleConflict(str(exc)) from exc
+                if str(exc) == "project brief update failed":
+                    raise ConsoleError("SOURCE_WRITE_UNCERTAIN: reload and reconcile the same request") from exc
+                raise ConsoleError(str(exc)) from exc
+            return {"ok": True, "project_id": binding["project_id"], "operation": operation, **result}
         write_fields = {"operation", "project_id", "expected_digest", "acknowledge", "collection", "record_id", "changes"}
         if operation == "read":
             if set(payload) != {"operation", "project_id"}:

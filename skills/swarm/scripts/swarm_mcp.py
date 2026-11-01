@@ -33,7 +33,7 @@ DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
 HQ_SDK_MAX_BYTES = 544 * 1024
-HQ_SDK_SHA256 = "ff59037bc23d521cf1267c34f6e594656104056b068ae833df9a764b381b57c5"
+HQ_SDK_SHA256 = "effe8292b41526e9c232f6bed56088b00231e9ab3e607af48cefc9d226961491"
 
 
 def _startup_runtime_identity(root: Path, source: Path) -> dict[str, Any]:
@@ -74,7 +74,7 @@ def _startup_runtime_identity(root: Path, source: Path) -> dict[str, Any]:
 
 # Capture once. A later on-disk edit cannot relabel this already-running process.
 _STARTUP_RUNTIME = _startup_runtime_identity(REPO_ROOT, SCRIPT_ROOT)
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "d558ccb5671f322526f6a020d07ba349631ff9f09ac69c3bf1a863792532d2a6", "skills/swarm/assets/ui/swarm-hq-host.css": "024535e617172e74dba33eadc90bce8883d9e4ec543423d9cfa5a87097fbcf77", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250", "skills/swarm/assets/ui/supporters.json": "8bc13e8b25423df90e786b25d73a4d2e417e52d8fdbb0ee42f871e5e7cbe4ac4"}
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "8cdb7a58a22498980eebeb75f8c0eb0b5c4ebfb99f09e715d22cf4c0feb7bfac", "skills/swarm/assets/ui/swarm-hq-host.css": "d32a2414bafe9886ac84944c1329471be67ee5359d3a39b6e5b49404c71d5b12", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250", "skills/swarm/assets/ui/supporters.json": "8bc13e8b25423df90e786b25d73a4d2e417e52d8fdbb0ee42f871e5e7cbe4ac4"}
 
 SUPPORTER_LOGOS = {
     "bluprint-wordmark-alpha-990.png": "700c1fde2233f42ca4a1a87f94de375d5f92827ae26af7f7941ec7407961869f",
@@ -188,9 +188,9 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "swarm_project_tickets", "title": "Project tickets",
-        "description": "Read or explicitly create/edit project planning tickets, migrate legacy strings into typed records, or allocate retained typed records their existing Ledger display IDs. No host dispatch or completion authority.",
+        "description": "Read or create/edit project tickets, migrate legacy records, allocate IDs, read activity or logs, and read or add discussion. Comments use id/body/reply_to; attachments use id/name/type/data (base64). Discussion is stored in SWARM.md. No host dispatch or completion authority.",
         "inputSchema": {"type": "object", "properties": {
-            "operation": {"type": "string", "enum": ["read", "create", "update", "migrate_legacy", "allocate_ids"]},
+            "operation": {"type": "string", "enum": ["read", "create", "update", "migrate_legacy", "allocate_ids", "read_discussion", "add_comment", "add_attachment", "read_activity", "read_logs"]},
             "project_id": {"type": "string"}, "expected_digest": {"type": "string"},
             "acknowledge": {"type": "boolean", "enum": [True]},
             "collection": {"type": "string", "enum": ["goals", "milestones", "tasks", "blocks"]},
@@ -642,6 +642,7 @@ class SwarmProjection:
                 code = str(exc).split(":", 1)[0]
                 messages = {"PROJECT_CODE_REQUIRED": "Choose a project code of 1–4 letters.",
                             "TICKET_DESCRIPTION_TOO_LONG": "Description exceeds 16,384 UTF-8 bytes. Shorten it and try again.",
+                            "DISCUSSION_CAPACITY": "The project brief has no room for more updates. Copy your draft before leaving.",
                             "PROJECT_CODE_INVALID": "Use 1–4 letters for the project code.",
                             "SOURCE_WRITE_UNCERTAIN": "Save is unconfirmed. Keep this draft and reload to reconcile before retrying the same request.",
                             "RECORD_ID_RESERVED": "This draft identity is reserved for an earlier request. Keep its content and start a new draft.",

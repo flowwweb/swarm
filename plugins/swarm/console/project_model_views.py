@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -800,7 +801,7 @@ def prepare_ticket_sync_snapshot(path: Path, *, project_ids: Any, project_id: st
                 raise ProjectModelError("ticket sync requires retained identities for every record")
         payload = {"schema_version": 1, "local_project_id": project_id, "root_digest": root_digest,
                    "cloud_project_id": cloud_project_id, "source_digest": source_digest,
-                   "records": {kind: [{"identity": identities[row["id"].strip()]["display_id"], "record": row}
+                   "records": {kind: [{"identity": identities[row["id"].strip()]["display_id"], "record": {key: value for key, value in row.items() if key not in {"comments", "attachments"}}}
                                       for row in rows] for kind, rows in groups.items()}}
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
         if len(encoded.encode("utf-8")) > 32000:
@@ -911,6 +912,77 @@ def read_project_tickets(path: Path, *, project_ids: Any) -> dict[str, Any]:
     _, document, digest = _read_brief_for_edit(path, "", compare=False)
     _require_ticket_project(document, project_ids)
     return _ticket_result(document, digest)
+
+
+def ticket_discussion(path: Path, *, project_ids: Any, record_id: str, operation: str,
+                      expected_digest: str = "", item: Any = None,
+                      updated_at: str = "") -> dict[str, Any]:
+    """Local-only discussion stored with the ticket; no caller path or cloud identity is trusted."""
+    if operation not in {"read_discussion", "add_comment", "add_attachment"}:
+        raise ProjectModelError("unsupported ticket discussion operation")
+    with _brief_update_lock(path):
+        text, document, current = _read_brief_for_edit(path, "", compare=False)
+        _require_ticket_project(document, project_ids)
+        _, index = _ticket_index(document)
+        if not isinstance(record_id, str) or record_id not in index:
+            raise ProjectModelError("ticket discussion requires an existing local ticket")
+        record = index[record_id][1]
+        comments = record.get("comments", [])
+        attachments = record.get("attachments", [])
+        if not isinstance(comments, list) or not isinstance(attachments, list):
+            raise ProjectModelError("ticket discussion has invalid retained data")
+        for retained in attachments:
+            try:
+                raw = base64.b64decode(retained["data"], validate=True)
+                if (not raw or len(raw) > 65536 or retained["size"] != len(raw)
+                        or retained["sha256"] != hashlib.sha256(raw).hexdigest()
+                        or base64.b64encode(raw).decode("ascii") != retained["data"]):
+                    raise ValueError("attachment integrity mismatch")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ProjectModelError("retained attachment integrity mismatch") from exc
+        if operation == "read_discussion":
+            return {"source_digest": current, "comments": comments, "attachments": attachments,
+                    "provenance": "LOCAL_UNVERIFIED"}
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or _TICKET_TOKEN.fullmatch(item["id"]) is None:
+            raise ProjectModelError("ticket discussion item id is invalid")
+        if operation == "add_comment":
+            if set(item) != {"id", "body", "reply_to"} or not isinstance(item["body"], str) or not item["body"].strip() or len(item["body"].encode("utf-8")) > 8192 or not _flow_text(item["body"]):
+                raise ProjectModelError("comment requires bounded text and reply identity")
+            if item["reply_to"] is not None and not any(isinstance(row, dict) and row.get("id") == item["reply_to"] for row in comments):
+                raise ProjectModelError("reply references a missing comment")
+            values, data = comments, dict(item)
+        else:
+            if set(item) != {"id", "name", "type", "data"} or not isinstance(item["name"], str) or not item["name"].strip() or len(item["name"]) > 160 or any(ch in item["name"] for ch in "/\\\x00") or not _flow_text(item["name"]):
+                raise ProjectModelError("attachment name is invalid")
+            if not isinstance(item["type"], str) or item["type"] not in {"text/plain", "application/pdf", "image/png", "image/jpeg", "image/webp"} or not isinstance(item["data"], str) or len(item["data"]) > 87384:
+                raise ProjectModelError("attachment type or size is invalid")
+            try:
+                raw = base64.b64decode(item["data"], validate=True)
+            except ValueError as exc:
+                raise ProjectModelError("attachment data is invalid") from exc
+            if not raw or len(raw) > 65536 or base64.b64encode(raw).decode("ascii") != item["data"]:
+                raise ProjectModelError("attachment data is invalid")
+            values = attachments
+            data = {**item, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        matches = [row for row in values if isinstance(row, dict) and row.get("id") == item["id"]]
+        if matches:
+            existing = matches[0]
+            if len(matches) != 1 or any(existing.get(key) != value for key, value in data.items()):
+                raise ProjectModelError("ticket discussion item id already exists")
+            return {"source_digest": current, "item": existing, "replayed": True, "provenance": "LOCAL_UNVERIFIED"}
+        if current != expected_digest:
+            raise ProjectModelError("project brief digest conflict")
+        saved = {**data, "author_provenance": "LOCAL_UNVERIFIED", "created_at": updated_at}
+        values.append(saved)
+        record["comments" if operation == "add_comment" else "attachments"] = values
+        envelope = json.loads(next(_BRIEF_FENCE.finditer(text)).group("payload"))
+        source = read_brief_content(path.parent, envelope["brief_content"]).decode("utf-8") if "brief_content" in envelope else text
+        prospective = render_project_brief_markdown(source, document).encode("utf-8")
+        if len(prospective) > _MAX_BRIEF_BYTES - 65536:
+            raise ProjectModelError("DISCUSSION_CAPACITY: project brief capacity reserved for planning")
+        new_digest = _write_project_brief(path, text, document, updated_at)
+        return {"source_digest": new_digest, "item": saved, "replayed": False, "provenance": "LOCAL_UNVERIFIED"}
+
 
 
 def allocate_project_ticket_ids(path: Path, *, expected_digest: str, project_ids: Any,

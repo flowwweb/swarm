@@ -664,6 +664,8 @@ class ProjectTicketTests(unittest.TestCase):
         from unittest import mock
         doc = self.document()
         doc["blocks"] = []  # External host blocks do not have a portable planning parent.
+        doc["tasks"][0]["comments"] = [{"id":"private-comment", "body":"local text"}]
+        doc["tasks"][0]["attachments"] = [{"id":"private-file", "data":"eA=="}]
         self.path.write_text(markdown_fixture(doc), encoding="utf-8")
         seeded = self.write(self.call({"operation": "read"})["source_digest"], "create", "goals", "new-goal", {"label": "New"})
         self.call({"operation": "allocate_ids", "expected_digest": seeded["source_digest"], "acknowledge": True})
@@ -674,7 +676,9 @@ class ProjectTicketTests(unittest.TestCase):
         snapshot = views.prepare_ticket_sync_snapshot(self.path, **params)
         payload = json.loads(snapshot["value"])
         self.assertEqual(payload["source_digest"], seeded["source_digest"])
-        self.assertEqual([row["record"] for row in payload["records"]["task"]], self.document()["tasks"])
+        self.assertEqual([row["record"] for row in payload["records"]["task"]], [{k:v for k,v in row.items() if k not in {"comments", "attachments"}} for row in self.document()["tasks"]])
+        self.assertNotIn("private-comment", snapshot["value"])
+        self.assertNotIn("private-file", snapshot["value"])
         self.assertEqual(next(row["record"]["custom"] for row in payload["records"]["task"] if row["record"]["id"] == "t-legacy"), {"keep": True})
         self.assertEqual(self.path.read_bytes(), before)
         self.ticket_ledger = server.ProgressLedger(self.root / "ledger")

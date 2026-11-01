@@ -731,11 +731,16 @@ class SwarmMCPTests(unittest.TestCase):
         spec = next(t for t in tools if t["name"] == "swarm_project_tickets")
         self.assertEqual(spec["_meta"]["ui"]["visibility"], ["model", "app"])
         self.assertEqual(sum(t["name"] == spec["name"] for t in tools), 1)
-        self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "create", "update", "migrate_legacy", "allocate_ids"])
+        self.assertEqual(spec["inputSchema"]["properties"]["operation"]["enum"], ["read", "create", "update", "migrate_legacy", "allocate_ids", "read_discussion", "add_comment", "add_attachment", "read_activity", "read_logs"])
         for tool in tools:
             if tool["name"] in {"swarm_role_read", "swarm_role_save", "swarm_library_read", "swarm_flow_save", "swarm_flow_assign",
                                 "swarm_settings_read", "swarm_settings_save"}:
                 self.assertEqual(tool["_meta"]["ui"]["visibility"], ["app"])
+        from console.server import ConsoleError
+        with patch.object(app, "project_ticket_command", side_effect=ConsoleError("DISCUSSION_CAPACITY: reserved")):
+            capacity = ticket({"operation": "add_comment", "project_id": "project:alpha"})
+        self.assertTrue(capacity["isError"])
+        self.assertEqual(capacity["structuredContent"]["code"], "DISCUSSION_CAPACITY")
         read = {"operation": "read", "project_id": "project:alpha"}
         initial = ticket(read)
         self.assertFalse(initial["isError"])
