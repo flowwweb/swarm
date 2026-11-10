@@ -33,7 +33,7 @@ DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
 HQ_SDK_MAX_BYTES = 512 * 1024
-HQ_SDK_SHA256 = "c84cc90a95c5f4ff2a81920a8e9def2660c42c268c179a992cf0ffca2aa3570a"
+HQ_SDK_SHA256 = "198317a3ca8fb4302946024c5c549275ea1d01765a0fce8d7ee4cedc754fe0d3"
 
 
 def _startup_runtime_identity(root: Path, source: Path) -> dict[str, Any]:
@@ -74,13 +74,11 @@ def _startup_runtime_identity(root: Path, source: Path) -> dict[str, Any]:
 
 # Capture once. A later on-disk edit cannot relabel this already-running process.
 _STARTUP_RUNTIME = _startup_runtime_identity(REPO_ROOT, SCRIPT_ROOT)
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "8cdb7a58a22498980eebeb75f8c0eb0b5c4ebfb99f09e715d22cf4c0feb7bfac", "skills/swarm/assets/ui/swarm-hq-host.css": "d32a2414bafe9886ac84944c1329471be67ee5359d3a39b6e5b49404c71d5b12", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250", "skills/swarm/assets/ui/supporters.json": "8bc13e8b25423df90e786b25d73a4d2e417e52d8fdbb0ee42f871e5e7cbe4ac4"}
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "8cdb7a58a22498980eebeb75f8c0eb0b5c4ebfb99f09e715d22cf4c0feb7bfac", "skills/swarm/assets/ui/swarm-hq-host.css": "d32a2414bafe9886ac84944c1329471be67ee5359d3a39b6e5b49404c71d5b12", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250", "skills/swarm/assets/ui/supporters.json": "f92e40a5fe6bffd6b51be4a6dc3f7c52dfc799d2db7a7f269010bcb448d1ea47"}
 
 SUPPORTER_LOGOS = {
     "bluprint-wordmark-alpha-990.png": "700c1fde2233f42ca4a1a87f94de375d5f92827ae26af7f7941ec7407961869f",
-    "nemo-horizontal-canonical-on-dark.svg": "0a5823943d93fb8df3ef3283f7249d2015148a9e3cde345fde3f8dfae37a2fb2",
     "boatpedia-logo-dark.svg": "a6455b195453fa49caa651dcda73afe536a88d7b5999ef53d17707a21851744c",
-    "helm-lockup-white.svg": "0016c40141d10081755ab2d5752816e84cc9ed8c160379a51848b7e7ba6cfb4a",
     "rightwork-logo.svg": "6e5e0eab4ba317ab8eca7fb1c6a197f7ad9532ccbc2306370c96b029e789659a",
     "rightwork-canonical-white.svg": "866fefb211dafac9cea9ab4a12155cc0639145f1fef81c385af509190c6ccc2e",
     "unbake-logo.svg": "41cd55104f31dad02a3927ffbcfe3a3021de62db1b8918cffbd9c20011d471cc",

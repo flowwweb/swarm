@@ -6255,7 +6255,7 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_extended_windows_project_path_binds_structural_host_ctrl(self) -> None:
         now = 2_000_000_000_000
         self._add_host_project(
-            "project:swarm", "swarm", r"C:\Users\peikg\Documents\Codex\Projects\flowwweb\swarm",
+            "project:swarm", "swarm", r"C:\Users\example\Documents\Codex\Projects\flowwweb\swarm",
         )
         connection = sqlite3.connect(self.database)
         connection.execute("ALTER TABLE threads ADD COLUMN project_id TEXT")
@@ -6267,8 +6267,8 @@ class SwarmConsoleTests(unittest.TestCase):
         connection.executemany(
             f"INSERT INTO threads ({columns}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                ("structural-root", "private objective", r"\\?\C:\Users\peikg\Documents\Codex\Projects\flowwweb\swarm", now // 1000, now // 1000, now, now, "gpt-5.6-sol", "high", 1, 0, "", "main", "", "", "", 0, None),
-                ("structural-child", "private delegation", r"\\?\C:\Users\peikg\Documents\Codex\Projects\flowwweb\swarm", now // 1000, now // 1000, now, now, "gpt-5.6-terra", "high", 1, 0, "", "main", "subagent", "Ada", "", 0, None),
+                ("structural-root", "private objective", r"\\?\C:\Users\example\Documents\Codex\Projects\flowwweb\swarm", now // 1000, now // 1000, now, now, "gpt-5.6-sol", "high", 1, 0, "", "main", "", "", "", 0, None),
+                ("structural-child", "private delegation", r"\\?\C:\Users\example\Documents\Codex\Projects\flowwweb\swarm", now // 1000, now // 1000, now, now, "gpt-5.6-terra", "high", 1, 0, "", "main", "subagent", "Ada", "", 0, None),
             ],
         )
         connection.execute(

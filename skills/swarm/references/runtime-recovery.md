@@ -60,8 +60,12 @@ continue any independent authorized action.
 
 Use the existing retry-topology ledger and task handoff for material recovery
 decisions; do not add a second log, scheduler, polling loop, or state machine.
+Record the safe step, owner, artifact, failure class, attempts, recovery and
+outcome; include measured elapsed time and usage or mark coverage unavailable.
+Correlate repeats with the existing incident. CTRL records a useful KEEP or ADAPT
+lesson at a material boundary, not a retrospective for each routine error.
 Receipts contain safe error codes and evidence references, not secrets or raw
-prompts. Existing runtime exhaustion rules decide terminal BLOCKED; repeated
+prompts; retain local evidence when telemetry delivery is unavailable. Existing runtime exhaustion rules decide terminal BLOCKED; repeated
 narration or elapsed time is not exhaustion. Keep a genuine safety or user-only
 gate scoped to the affected operation and name who or what can release it.
 

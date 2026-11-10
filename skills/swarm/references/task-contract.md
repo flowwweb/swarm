@@ -214,11 +214,12 @@ first. `DIVERGED` means neither head is an ancestor of the other.
   and why. Run the affected proof and inspect the resulting staged paths/tree.
   If another owner's changes are staged, stop that commit and use the existing
   owner or isolated checkout; do not unstage their work.
-- Before every commit and every push, invoke `@ponytail-review` on the current
-  diff and review the outgoing commit range. Address or explicitly retain each
-  finding, then run the exact current-diff receipt command printed by Ponytail
-  Commit Guard. Never bypass a denial. Recheck the index/candidate after hooks;
-  changed content invalidates earlier proof, review and guard receipts.
+- Before every commit and every push, review the current diff and outgoing commit
+  range. `@ponytail-review` is optional unless explicitly required for the task.
+  Address or explicitly retain each finding, complete required checks, then run
+  the exact current-diff receipt command printed by Ponytail Commit Guard. Never
+  bypass a denial. Recheck the index/candidate after hooks; changed content
+  invalidates earlier proof, review and guard receipts.
 - Fetch the explicit remote. Verify its resolved fetch and push URLs and exact
   destination ref rather than trusting an `origin` label or implicit upstream.
   Use the repository's PR/protected-branch route and required checks; direct

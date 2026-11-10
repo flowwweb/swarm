@@ -223,6 +223,25 @@ class TopologyOptimizationContractTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError, "repeated correction tactic stopped"):
             correction.correction("same-incident", **facts)
 
+    def test_recovery_telemetry_correlates_and_redacts_without_inventing_cost(self) -> None:
+        swarm = Swarm(tasks={"task-a": Task("task-a", "lead", "ctrl", 1, {})})
+        secret = "Bearer " + "fixture-secret-value-12345"
+        swarm.recover(Role.CTRL, "task-a", secret)
+        with self.assertRaisesRegex(InvariantError, "REASSESS_ROOT_CAUSE"):
+            swarm.recover(Role.CTRL, "task-a", secret)
+        first, second = swarm.telemetry_events[-2:]
+        self.assertEqual(first["signature"], second["signature"])
+        self.assertEqual((first["attempts"], second["attempts"]), (1, 2))
+        self.assertEqual(second["action"], "REASSESS_ROOT_CAUSE")
+        self.assertIsNone(first["latency_ms"])
+        self.assertIsNone(first["token_count"])
+        self.assertNotIn(secret, json.dumps(swarm.telemetry_events))
+        self.assertEqual(first["coverage"], "in-process")
+        measured = Swarm(tasks={"task-b": Task("task-b", "lead", "ctrl", 1, {})})
+        measured.recover(Role.CTRL, "task-b", "transport", cost_receipt=AttemptCostReceipt("cost", token_count=7, latency_ms=12))
+        event = measured.telemetry_events[-1]
+        self.assertEqual((event["token_count"], event["latency_ms"]), (7, 12))
+
     def test_consolidation_and_human_external_routes_fail_closed_without_bound_receipts(self) -> None:
         swarm = Swarm()
         checkpoint = self.receipt(MaterialStateKind.PROOF, 1)

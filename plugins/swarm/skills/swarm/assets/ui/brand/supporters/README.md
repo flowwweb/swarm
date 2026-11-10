@@ -22,9 +22,8 @@ WHXTEVER's exact warm wordmark comes from
 the Nunito font license is retained in `NUNITO-OFL.txt`.
 Bluprint: `bluprint-wordmark-alpha-990.png` is a transparent 990 x 250
 raster rendered directly from the unchanged canonical SVG at
-`C:/Projects/bluprint/apps/editor/public/brand/bluprint-wordmark-alpha.svg`
-(public source: `https://bluprint.web.app/brand/bluprint-wordmark-alpha.svg`;
-SHA-256 `71a841154b492f18bc247870583854d0136f71f11e458e245294e5e454525f66`).
+`https://bluprint.web.app/brand/bluprint-wordmark-alpha.svg`
+(SHA-256 `71a841154b492f18bc247870583854d0136f71f11e458e245294e5e454525f66`).
 The PNG SHA-256 is `700c1fde2233f42ca4a1a87f94de375d5f92827ae26af7f7941ec7407961869f`.
 The 990 x 250 Chrome raster comparison had zero differing RGBA pixels; the
 original SVG was not changed. Theme color is applied in presentation CSS.

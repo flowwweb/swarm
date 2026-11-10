@@ -3055,6 +3055,12 @@ class Swarm:
         self._role(actor,{Role.LEAD,Role.CTRL}); t=self.tasks[task_id]
         if not dimension: raise InvariantError("recovery requires a typed dimension")
         decision=self.retry_topology_ledger.observe(action="recover",target=task_id,outcome=outcome,blocker_code=blocker_code or _sha256_text(dimension)[:16],material_receipt=material_receipt,cost_receipt=cost_receipt,user_paused=user_paused,user_controlled=user_controlled)
+        artifact=t.acceptance_contract.artifact if t.acceptance_contract else None
+        self._record("telemetry_events", {"kind":"recovery_attempt", "task_id":task_id,
+            "owner_digest":_sha256_text(t.owner), "artifact_digest":artifact.content_address() if artifact else None,
+            "signature":decision.signature_digest, "outcome":outcome.value, "attempts":decision.equivalent_attempts,
+            "action":decision.action.value, "latency_ms":decision.latency_ms, "token_count":decision.token_count,
+            "coverage":"in-process"})
         if decision.action is RetryTopologyAction.USER_CONTROLLED: return
         if decision.action is not RetryTopologyAction.CONTINUE:
             if decision.action is RetryTopologyAction.REASSESS_ROOT_CAUSE: self._record("events",("REASSESS_ROOT_CAUSE",task_id))

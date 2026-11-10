@@ -50,6 +50,9 @@ PACKAGING_IGNORED_FILE_NAMES = frozenset({".DS_Store", ".coverage", ".env", "Thu
 PACKAGING_IGNORED_SUFFIXES = frozenset({".log", ".pyc", ".pyo", ".sqlite", ".sqlite3"})
 DEVELOPMENT_ONLY_PATHS = frozenset(
     {
+        # Retained source provenance, excluded from the public package until artwork custody resolves.
+        "skills/swarm/assets/ui/brand/supporters/nemo-horizontal-canonical-on-dark.svg",
+        "skills/swarm/assets/ui/brand/supporters/helm-lockup-white.svg",
         "console/package-lock.json",
         "console/package.json",
         "docs/friction-audit.md",
@@ -64,6 +67,7 @@ DEVELOPMENT_ONLY_PATHS = frozenset(
 )
 DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
     {
+        ".codex/swarm",
         ".github",
         "console/node_modules",
         "console/tests",

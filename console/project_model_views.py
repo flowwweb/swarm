@@ -751,6 +751,10 @@ def _ticket_record(kind: str, record: Mapping[str, Any], groups: Mapping[str, li
         assignment = _ticket_assignment(record.get("assignment"))
     except ProjectModelError:
         assignment = None
+    try:
+        ownership = _milestone_ownership(record["ownership"]) if kind == "milestone" and "ownership" in record else None
+    except ProjectModelError:
+        ownership = None
     return {
         "id": identity,
         "kind": kind,
@@ -759,7 +763,7 @@ def _ticket_record(kind: str, record: Mapping[str, Any], groups: Mapping[str, li
         "rank": rank if isinstance(rank, (int, float)) and not isinstance(rank, bool) and math.isfinite(rank) else None,
         "priority": record.get("priority") if record.get("priority") in _TICKET_PRIORITIES else None,
         "parent": parent, "parent_status": status, "assignment": assignment,
-        "ownership": _milestone_ownership(record["ownership"]) if kind == "milestone" and "ownership" in record else None,
+        "ownership": ownership,
         "declared_state": state.strip() if isinstance(state, str) and state.strip() else None,
         "order": order,
     }

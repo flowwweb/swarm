@@ -43,7 +43,8 @@ repository file is not composed into their project instructions.
 
 ## Commits and pushes
 
-- Before every commit or push, run `@ponytail-review` on the current diff.
-- Address each finding or explicitly retain it with a reason.
+- Before every commit or push, review the current diff and outgoing commit range;
+  `@ponytail-review` is optional unless explicitly required for the task.
+- Address each finding or explicitly retain it with a reason, and complete the required checks.
 - Run the exact current-diff receipt command printed by Ponytail Commit Guard.
 - Never bypass, disable, or retry around the guard. Recheck the staged diff after hooks.

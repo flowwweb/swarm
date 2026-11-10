@@ -61,6 +61,14 @@ def main() -> int:
                 registered = json.load(response)
             if not registered.get("ok"):
                 raise ValueError("console refused original proof")
+        except urllib.error.HTTPError as exc:
+            try:
+                error = json.loads(exc.read(4097).decode("utf-8")) if exc.code == 400 else {}
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                error = {}
+            if isinstance(error, dict) and error.get("error") == "proof media requires an observed task":
+                parser.error("original event saved but console registration failed: proof media requires an observed project-bound task")
+            parser.error(f"original event saved but console registration failed: {exc}")
         except (OSError, ValueError, KeyError, urllib.error.URLError) as exc:
             parser.error(f"original event saved but console registration failed: {exc}")
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

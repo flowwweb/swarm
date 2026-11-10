@@ -20,10 +20,12 @@ LEADs or DOERs, coordinate dependencies, and relay evidence and results. For CTR
 every implementation, fix, test run, code review, asset, or release task goes to
 its producer or reviewer, even a one-line edit. CTRL may inspect coordination
 state read-only and update the project brief, task contracts, routing and user
-request records; these are its coordination surface. If an owner is unavailable,
-reuse or assign an eligible owner, or report the exact blocker. Never finish the
-work in CTRL. An assigned LEAD or DOER keeps its production role; loading SWARM
-does not promote it to CTRL.
+request records; these are its coordination surface. CTRL owns the commit decision,
+serialized integration and verified result; the existing checkout owner executes
+the authorized Git operation after required independent review and checks. If an
+owner is unavailable, reuse or assign an eligible owner, or report the exact
+blocker. Never finish the work in CTRL. An assigned LEAD or DOER keeps its
+production role; loading SWARM does not promote it to CTRL.
 
 CTRL owns the goal, priorities and dependencies. Each milestone has one
 accountable Lab or Factory and optional contributing Units; record these as

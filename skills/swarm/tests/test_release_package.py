@@ -446,6 +446,16 @@ class ReleasePackageTests(unittest.TestCase):
             (root / "README.md").write_text("# SWARM\n", encoding="utf-8")
             self.assertEqual(set(source_file_hashes(root)), {"README.md"})
 
+    def test_private_swarm_incidents_are_excluded_from_source_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private = root / ".codex" / "swarm" / "incidents.jsonl"
+            private.parent.mkdir(parents=True)
+            private.write_text("private fixture", encoding="utf-8")
+            (root / ".codex" / "product.toml").write_text("product fixture", encoding="utf-8")
+            self.assertEqual(set(source_file_hashes(root)), {".codex/product.toml"})
+            self.assertIn(".codex/swarm/incidents.jsonl", installed_file_hashes(root))
+
     def test_source_hashes_ignore_local_environment_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -2,7 +2,7 @@
   {
     "name": "Nemo",
     "href": "https://nemoboat.app",
-    "logo": "nemo-horizontal-canonical-on-dark.svg"
+    "logo": null
   },
   {
     "name": "Boatpedia",
@@ -17,7 +17,7 @@
   {
     "name": "Helm",
     "href": null,
-    "logo": "helm-lockup-white.svg"
+    "logo": null
   },
   {
     "name": "RightWork",

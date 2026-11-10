@@ -1656,11 +1656,66 @@ function usageChartMarkup(surface, svgId) {
   return '<div class="usage-chart" data-usage-chart="' + surface + '"><div class="usage-range" role="group" aria-label="Usage range"><button type="button" data-usage-range="1" aria-pressed="' + String(state.usageWindowHours === 1) + '">1h</button><button type="button" data-usage-range="24" aria-pressed="' + String(state.usageWindowHours === 24) + '">24h</button><button type="button" data-usage-range="168" aria-pressed="' + String(state.usageWindowHours === 168) + '">7d</button></div><svg id="' + svgId + '" viewBox="0 0 160 28" preserveAspectRatio="none" aria-label="Usage history unavailable"></svg></div>';
 }
 
+let overviewUsageView = "tokens";
+let overviewUsagePrevious = null;
+let overviewLimitsPrevious = new Map();
+let overviewLimitsAccount = null;
+function animateOverviewUsageValue(element) {
+  if (!state.profile?.preferences?.reduced_motion && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    element?.animate?.([{opacity: .55, transform: 'translateY(3px)'}, {opacity: 1, transform: 'translateY(0)'}], {duration: 240, easing: 'ease-out'});
+  }
+}
+function renderOverviewUsage() {
+  const host = $("#overview-usage-content");
+  if (!host) return;
+  $$('[data-overview-usage]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.overviewUsage === overviewUsageView)));
+  if (overviewUsageView === "limits") {
+    host.innerHTML = state.usageStatus === "loading" || state.usageStatus === "refreshing" ? '<p>Loading usage limits…</p>' : accountUsageDetails();
+    const rows = accountUsageDisplayWindows().filter(row => row.status === 'KNOWN');
+    const account = state.usageHistory?.account_limits?.account_key || null;
+    if (state.usageStatus === 'current' && account) {
+      const sections = host.querySelectorAll('section');
+      const next = new Map();
+      rows.forEach((row, index) => {
+        const key = [row.limit_id, row.window, row.reset_at_ms].join('|');
+        if (overviewLimitsAccount === account && overviewLimitsPrevious.has(key) && overviewLimitsPrevious.get(key) !== row.remaining_percent) animateOverviewUsageValue(sections[index]?.querySelector('.usage-detail-values strong'));
+        next.set(key, row.remaining_percent);
+      });
+      overviewLimitsAccount = account;
+      overviewLimitsPrevious = next;
+    } else if (!['loading', 'refreshing'].includes(state.usageStatus)) {
+      overviewLimitsAccount = null;
+      overviewLimitsPrevious = new Map();
+    }
+    return;
+  }
+  if (!host.querySelector('#overview-usage-total')) host.innerHTML = '<strong id="overview-usage-total">—</strong><p id="overview-usage-note"></p><svg id="overview-usage-graph" viewBox="0 0 320 138" preserveAspectRatio="none" role="img" aria-label="Token usage history unavailable"></svg>';
+  const reading = state.usageHistory?.usage_now;
+  const valid = state.usageStatus === 'current' && state.usageScopeKey === usageRequestKey()
+    && state.usageHistory?.ok === true && ['observed', 'partial'].includes(reading?.status)
+    && reading.source === 'persisted_local_token_deltas' && Number.isFinite(reading.tokens) && reading.tokens >= 0;
+  const total = $('#overview-usage-total');
+  const next = valid ? compactMetricNumber(reading.tokens) : '—';
+  const key = usageRequestKey();
+  const changed = valid && overviewUsagePrevious?.key === key && overviewUsagePrevious.value !== reading.tokens;
+  total.textContent = next;
+  if (changed) animateOverviewUsageValue(total);
+  if (valid) overviewUsagePrevious = {key, value: reading.tokens};
+  else if (!['loading', 'refreshing'].includes(state.usageStatus) || overviewUsagePrevious?.key !== key) overviewUsagePrevious = null;
+  $('#overview-usage-note').textContent = valid ? (reading.status === 'partial' ? 'Partial coverage · ' : 'Observed · ') + usageRangeLabel() : (state.usageStatus === 'loading' || state.usageStatus === 'refreshing' ? 'Loading usage…' : 'Token usage is unavailable for this period.');
+  const graph = $('#overview-usage-graph');
+  const values = valid ? usageHistorySeries() : [];
+  drawLine(graph, values, 'var(--orange)');
+  graph.hidden = values.length === 0;
+  graph.setAttribute('aria-label', values.length ? 'Observed token usage over time' : 'Token usage history unavailable');
+}
+
 function renderUsageCharts() {
   const detail = $("#metric-detail-dialog");
   const taskDetailOpen = detail?.open && detail.dataset.metric === "tbr";
   if (!taskDetailOpen) renderHighestUsageTasks();
   renderAccountUsage();
+  renderOverviewUsage();
   renderOverviewMetric("progress", tokenBurnRatePresentation());
   if (detail?.open && ["usage", "tbr"].includes(detail.dataset.metric)) renderMetricDetail(false);
   const values = usageHistorySeries();
@@ -1706,14 +1761,21 @@ function accountUsageGraph(row, includeForecast = true, window = null) {
   const points = Array.isArray(row?.history) ? row.history : [];
   if (points.length < 2 || points.some((point, index) => !Number.isFinite(point.sampled_at_ms)
     || !Number.isFinite(point.remaining_percent) || point.remaining_percent < 0 || point.remaining_percent > 100
-    || index > 0 && (point.sampled_at_ms <= points[index - 1].sampled_at_ms || point.sampled_at_ms - points[index - 1].sampled_at_ms > 120000))) return '';
+    || index > 0 && point.sampled_at_ms <= points[index - 1].sampled_at_ms)) return '';
+  const segments = [[points[0]]];
+  points.slice(1).forEach((point, index) => {
+    if (point.sampled_at_ms - points[index].sampled_at_ms > 120000) segments.push([]);
+    segments.at(-1).push(point);
+  });
   const last = points.at(-1), forecast = row.forecast || {};
-  const end = includeForecast && forecast.status === 'ESTIMATED' && Number.isFinite(forecast.exhaustion_at_ms) && Number.isFinite(row.reset_at_ms)
+  const end = includeForecast && segments.length === 1 && forecast.status === 'ESTIMATED' && Number.isFinite(forecast.exhaustion_at_ms) && Number.isFinite(row.reset_at_ms)
     && forecast.exhaustion_at_ms > last.sampled_at_ms && forecast.exhaustion_at_ms <= row.reset_at_ms ? forecast.exhaustion_at_ms : last.sampled_at_ms;
   const start = window?.after_ms ?? points[0].sampled_at_ms, span = Math.max(end, window?.before_ms ?? end) - start;
   const position = point => ((point.sampled_at_ms - start) / span * 160).toFixed(2) + ',' + (28 - point.remaining_percent / 100 * 28).toFixed(2);
-  return '<polyline fill="none" stroke="var(--orange)" stroke-width="1.5" points="' + points.map(position).join(' ') + '"/>'
-    + (end > last.sampled_at_ms ? '<path stroke="var(--orange)" stroke-dasharray="3 3" fill="none" d="M' + position(last) + ' L' + position({sampled_at_ms:end,remaining_percent:0}) + '"><title>Projected exhaustion if the recent rate continues</title></path>' : '');
+  const observed = segments.map(segment => segment.length > 1
+    ? '<polyline fill="none" stroke="var(--orange)" stroke-width="1.5" points="' + segment.map(position).join(' ') + '"/>'
+    : '<circle fill="var(--orange)" r="1" cx="' + position(segment[0]).replace(',', '" cy="') + '"/>').join('');
+  return observed + (end > last.sampled_at_ms ? '<path stroke="var(--orange)" stroke-dasharray="3 3" fill="none" d="M' + position(last) + ' L' + position({sampled_at_ms:end,remaining_percent:0}) + '"><title>Projected exhaustion if the recent rate continues</title></path>' : '');
 }
 
 function renderAccountUsage() {
@@ -6582,6 +6644,12 @@ function startPresence() {
 }
 
 document.addEventListener("click", async (event) => {
+  const overviewUsageTab = event.target.closest('[data-overview-usage]');
+  if (overviewUsageTab) {
+    overviewUsageView = overviewUsageTab.dataset.overviewUsage === 'limits' ? 'limits' : 'tokens';
+    renderOverviewUsage();
+    return;
+  }
   const diagnosticInspect = event.target.closest("[data-diagnostic-inspect]");
   if (diagnosticInspect) {
     inspectDiagnosticCheck(diagnosticInspect.dataset.diagnosticInspect);

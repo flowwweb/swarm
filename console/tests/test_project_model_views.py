@@ -889,6 +889,29 @@ class ProjectTicketTests(unittest.TestCase):
     def document(self):
         return views.parse_project_brief_markdown(self.path.read_text(encoding="utf-8"))[0]
 
+    def test_legacy_milestone_ownership_does_not_block_tickets_or_unrelated_edits(self):
+        legacy_values = ["Team Alpha", {"owner": "Team Alpha", "contributors": []}]
+        for legacy in legacy_values:
+            with self.subTest(legacy=legacy):
+                document = self.document()
+                next(row for row in document["milestones"] if row["id"] == "m-flat")["ownership"] = legacy
+                self.path.write_text(markdown_fixture(document), encoding="utf-8")
+                before = self.path.read_bytes()
+                result = self.call({"operation": "read"})
+                self.assertEqual(len(result["records"]), 7)
+                self.assertIsNone(self.by_id(result)["m-flat"]["ownership"])
+                self.assertEqual(self.path.read_bytes(), before)
+
+                result = self.write(result["source_digest"], "update", "tasks", "t-flat", {"label": "Unrelated label"})
+                milestone = next(row for row in self.document()["milestones"] if row["id"] == "m-flat")
+                self.assertEqual(milestone["ownership"], legacy)
+                result = self.write(result["source_digest"], "update", "milestones", "m-flat", {"label": "Renamed milestone"})
+                self.assertEqual(next(row for row in self.document()["milestones"] if row["id"] == "m-flat")["ownership"], legacy)
+                saved = self.path.read_bytes()
+                with self.assertRaisesRegex(server.ConsoleError, "milestone ownership requires"):
+                    self.write(result["source_digest"], "update", "milestones", "m-flat", {"ownership": legacy})
+                self.assertEqual(self.path.read_bytes(), saved)
+
     def test_milestone_unit_ownership_is_persisted_as_planning_only(self):
         initial = self.call({"operation": "read"})
         self.assertIsNone(self.by_id(initial)["m-flat"]["ownership"])
