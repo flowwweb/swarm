@@ -74,7 +74,7 @@ def _startup_runtime_identity(root: Path, source: Path) -> dict[str, Any]:
 
 # Capture once. A later on-disk edit cannot relabel this already-running process.
 _STARTUP_RUNTIME = _startup_runtime_identity(REPO_ROOT, SCRIPT_ROOT)
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "8cdb7a58a22498980eebeb75f8c0eb0b5c4ebfb99f09e715d22cf4c0feb7bfac", "skills/swarm/assets/ui/swarm-hq-host.css": "d32a2414bafe9886ac84944c1329471be67ee5359d3a39b6e5b49404c71d5b12", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250", "skills/swarm/assets/ui/supporters.json": "f92e40a5fe6bffd6b51be4a6dc3f7c52dfc799d2db7a7f269010bcb448d1ea47"}
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "8cdb7a58a22498980eebeb75f8c0eb0b5c4ebfb99f09e715d22cf4c0feb7bfac", "skills/swarm/assets/ui/swarm-hq-host.css": "81833ba3243d820222cd614b65c67d1cae63fed6d46e59231d77afcb7a14d3c6", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250", "skills/swarm/assets/ui/supporters.json": "f92e40a5fe6bffd6b51be4a6dc3f7c52dfc799d2db7a7f269010bcb448d1ea47"}
 
 SUPPORTER_LOGOS = {
     "bluprint-wordmark-alpha-990.png": "700c1fde2233f42ca4a1a87f94de375d5f92827ae26af7f7941ec7407961869f",
