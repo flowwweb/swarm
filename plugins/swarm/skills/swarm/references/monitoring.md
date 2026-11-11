@@ -207,3 +207,36 @@ message. If material evidence is pending, return the proof reminder first and
 surface or objectively withhold that evidence at the next safe message boundary.
 Do not let an ordinary heartbeat, unchanged status, or lane summary hide a new
 screenshot, generated image, mockup, comparison, or decisive proof receipt.
+
+## WATCHDOG binding and hands-off mode
+
+WATCHDOG is an optional alert-only sensor bound to an accountable LEAD or
+persistent SPECIALIST goal, never CTRL, a role or a worker. In hands-off mode an
+active durable goal continues without routine prompting; pause only for explicit
+user direction, a material handoff or review, the stopping condition, or a
+genuine human-authority, safety, destructive or required-gate blocker. Resource
+pressure is command-scoped: serialize only predictably large jobs, and keep
+active worktrees, databases, dependency trees and random-I/O caches on local
+storage.
+
+## CTRL human review feed
+
+At the next safe boundary surface each new material screenshot, generated result,
+mockup, comparison or proof inline, captioned with what it shows and its claim
+limit, or record why it is withheld. Paths, worker finals, manifests, and folders
+are provenance, not delivery; an undisposed material result blocks acceptance,
+archive and phase advance. Register each local evidence file with
+`python skills/swarm/scripts/swarm_proof.py <path> --evidence-id <id> --task-id
+<task> --kind <kind> --caption <caption>`; registration means available, not
+surfaced. Surface every requested mockup, screen, frame or design option as its
+own full-frame inline artifact; a composite may supplement them only when
+requested and never substitutes. At a selection boundary record one `SELECTED`
+candidate and mark the rest `REJECTED` ([decision-set.md](decision-set.md)).
+
+Emit only a material result, defensible progress change, inspectable proof,
+steerable decision, exact blocker, verdict, release state or direct answer. Never
+lead with task activity, role inventory, commands or paths. Keep one compact card
+per project with progress basis or `Unmeasured`. In progress is not done;
+source/static/local is not browser/deployed/human; `BLOCKED` is not accepted.
+Every return stays bound to the original objective, current profession and
+authority, deliverable and next acceptance gate.

@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime import RequestDue, Role, Swarm, WatchdogScope, WatchdogSignal
+from runtime.core import RotationReadback, rotation_next_step
 from runtime.request_ledger import RequestStore
 
 
@@ -132,6 +134,58 @@ def request_bridge(envelope: dict) -> dict:
     if operation == "audit": result.update({"unresolved_ids": audit.unresolved_ids, "orphaned_ids": audit.orphaned_ids, "unsurfaced_ids": audit.unsurfaced_ids, "idle_ids": audit.idle_ids, "blocked_ids": audit.blocked_ids, "provisional_stage_ids": audit.provisional_stage_ids,"integrity_signals":[{"request_id":item.request_id,"scope":item.scope.value,"signal":item.signal.value,"route":item.route.value} for item in audit.integrity_signals]})
     return result
 
+ROTATION_FIELDS = {"predecessor_id": str, "successor_id": str, "authorized": bool, "baseline_pinned": list,
+                   "pinned": (list, type(None)), "successor_ack": bool, "expected_title": str,
+                   "successor_title": (str, type(None)), "predecessor_archived": (bool, type(None)),
+                   "predecessor_in_flight": bool, "user_keep_pinned": bool, "capabilities": list}
+
+
+def predecessor_obligations(console_state: Path, predecessor_id: str) -> dict:
+    """Read the existing execution journal read-only: active Auto leases and unread results owed by a CTRL."""
+    uri = Path(console_state).resolve(strict=True).as_uri() + "?mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    try:
+        rows = connection.execute("SELECT snapshot_json FROM execution_dispatch_state").fetchall()
+    finally:
+        connection.close()
+    active = unread = 0
+    for (encoded,) in rows:
+        item = json.loads(encoded)
+        observables = dict(tuple(pair) for pair in item.get("artifact", {}).get("observables", ()))
+        if (item.get("artifact", {}).get("purpose") == "swarm-auto-continuation"
+                and observables.get("ctrl_id") == predecessor_id
+                and item.get("state") == "active" and not item.get("host_completed")):
+            active += 1
+        if (item.get("collecting_owner_id") == predecessor_id and item.get("request_digest")
+                and item.get("result_observation") != "READABLE"):
+            unread += 1
+    return {"active_leases": active, "unread_results": unread}
+
+
+def rotation_bridge(envelope: dict, console_state: Path | None = None) -> dict:
+    """Return the next rotation step from the caller's fresh host readback; never mutates the host.
+
+    With ``console_state``, retained Auto leases or unread results owed by the
+    predecessor block unpin/archive regardless of the caller's flag.
+    """
+    if not isinstance(envelope, dict) or set(envelope) != set(ROTATION_FIELDS):
+        raise ValueError("rotation readback requires exactly: " + ", ".join(sorted(ROTATION_FIELDS)))
+    for key, kind in ROTATION_FIELDS.items():
+        if type(envelope[key]) not in (kind if isinstance(kind, tuple) else (kind,)):
+            raise ValueError(f"rotation readback field has the wrong type: {key}")
+    for key in ("baseline_pinned", "pinned", "capabilities"):
+        if envelope[key] is not None and not all(isinstance(item, str) and item for item in envelope[key]):
+            raise ValueError(f"rotation readback list must hold task IDs or capability names: {key}")
+    journal = None if console_state is None else predecessor_obligations(console_state, envelope["predecessor_id"])
+    in_flight = envelope["predecessor_in_flight"] or bool(journal and (journal["active_leases"] or journal["unread_results"]))
+    read = RotationReadback(**{**envelope, "baseline_pinned": tuple(envelope["baseline_pinned"]),
+        "pinned": None if envelope["pinned"] is None else tuple(envelope["pinned"]),
+        "capabilities": frozenset(envelope["capabilities"]), "predecessor_in_flight": in_flight})
+    step = rotation_next_step(read)
+    return {"status": step.status, "step": step.step, "reason": step.reason, "reorder_to": list(step.reorder_to),
+            "journal": journal, "host_mutation_authorized_by_runtime": False}
+
+
 def register(swarm:Swarm, stage_id:str, decision_event_receipt:str, *, accepted_at:int, due:RequestDue):
     """Named live bridge; serialized callers cannot mint authority."""
     if not isinstance(swarm,Swarm): raise ValueError("register requires the current live Swarm")
@@ -140,17 +194,20 @@ def register(swarm:Swarm, stage_id:str, decision_event_receipt:str, *, accepted_
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("forward-test", "request", "jev"))
+    parser.add_argument("command", choices=("forward-test", "request", "jev", "rotate"))
+    parser.add_argument("--console-state", type=Path, help="rotate: read retained leases and unread results from this console journal")
     args = parser.parse_args()
     if args.command == "jev":
         from swarm_jev import main as jev_main
         return jev_main([])
     if args.command == "forward-test":
         print(json.dumps(forward_cases(), sort_keys=True))
-    if args.command == "request":
+    if args.command in {"request", "rotate"}:
         try:
-            envelope=json.load(sys.stdin); print(json.dumps(request_bridge(envelope),sort_keys=True,separators=(",",":")))
-        except (ValueError, OSError, json.JSONDecodeError) as error:
+            envelope=json.load(sys.stdin)
+            result=request_bridge(envelope) if args.command == "request" else rotation_bridge(envelope, args.console_state)
+            print(json.dumps(result,sort_keys=True,separators=(",",":"),ensure_ascii=True))
+        except (ValueError, OSError, sqlite3.Error, json.JSONDecodeError) as error:
             print(json.dumps({"error":str(error)},sort_keys=True,separators=(",",":"))); return 2
     return 0
 

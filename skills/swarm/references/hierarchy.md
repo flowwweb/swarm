@@ -208,7 +208,7 @@ authority.
 
 ## User-state custody and substantive lanes
 
-Host-facing naming follows [SKILL.md Step 0](../SKILL.md#start), including
+Host-facing naming follows [Step 0](#task-naming-pins-and-rotation), including
 explicit CTRL takeovers and verification of the actual host title. A generated
 intake title does not override that user request. The custody rules below
 protect user-selected state and retain independent host verification for runtime
@@ -400,7 +400,7 @@ records the transfer, and the new owner acknowledges before mutation. Peer
 coordination can exchange immutable handoffs but cannot mutate another owner's
 surface or bypass REVIEW.
 
-Host display names follow [SKILL.md Step 0](../SKILL.md#start): the root's
+Host display names follow [Step 0](#task-naming-pins-and-rotation): the root's
 CTRL titles use `<project emoji> <project>`: the emoji best suited to the project,
 one space and the project name. 🐙 is specific to `🐙 SWARM`, not a global CTRL
 default. No routine suffix is added for duplicate mains. Follow Step 0 for
@@ -419,3 +419,144 @@ current dependency graph. A visible LEAD exists only for a named durable mutable
 boundary that needs ownership, integration, resumption, or recursive staffing;
 a bounded ready artifact belongs to a DOER. A list dominated by leaf LEADs is a
 topology defect, not an ambitious swarm.
+
+## CTRL operating rules
+
+CTRL is the switchboard operator and orchestrator, not the producer: it holds
+user conversation, intake, routing, dependencies and result relay. Every
+implementation, fix, test run, code review, generated asset or release goes to
+its owner, even a one-line edit; if CTRL drifts into production it stops at the
+next safe boundary and hands the exact state to the eligible owner. CTRL may
+update the project brief, task contracts, routing and request records, and owns
+the commit decision and verified result; the checkout owner runs the authorized
+Git operation after review and checks. An assigned LEAD or DOER keeps its role;
+loading SWARM never promotes it to CTRL. Native tools are not bound to a runtime
+actor, so native role enforcement stays `UNVERIFIED`.
+
+Each milestone has one accountable Lab or Factory. Goals are on by default for
+every CTRL, Lab and Factory (`goals.use_goals`): the parent goal holds the
+outcome and each delegation is the next concrete block with artifact, scope,
+dependencies, acceptance and stop condition. An explicit persistence opt-out
+keeps intake and task contracts. Never staff recursively by default; at a
+milestone, stall or material change record KEEP or ADAPT with outcome, reason
+and cost basis.
+
+User messages are one ordered intent feed. A burst of messages is one logical
+turn: merge every compatible continuation, constraint, correction and approval,
+and replace or cancel only what the user names. After a tool run or owner turn,
+reconcile all unseen user messages before judging the output. Never require the
+user to repeat a message that arrived while work was running.
+
+The active-owner and no-duplicate guards protect user custody and topology; they
+are not execution gates. They stop a parent/master CTRL, peer or unsolicited
+replacement from hijacking a user-active CTRL, never the owning CTRL continuing
+authorized work. `active` status alone is neither progress nor a blocker, and a
+direct user instruction may reorient the existing owner within the same lane.
+
+## Intake and lanes
+
+After the Step 0 custody check, capture both intake answers before routing: the
+goal, and the most efficient safe way to complete it (a one-shot prompt may
+already contain both). Then inspect or create exactly one matching durable goal
+when `goals.use_goals = true`, recording objective, canonical artifact, owners,
+dependencies, accepting route, proof and claim limits; reuse a goal only when
+objective, surface and accepting route match.
+
+Structural authority is exactly `CTRL`, `LEAD`, and `DOER`, with no fixed
+depth: a LEAD may produce, recruit a DOER for a bounded artifact, or recruit a
+nested LEAD for an independent durable boundary. Materialize a visible task lane
+only on explicit user request under the host-creation rule above; otherwise
+reuse an eligible visible owner. Medium and large lanes are visible Codex tasks
+with their own cwd, owner and heartbeat; a missing due receipt is stall evidence,
+so reorient the existing owner first. Use a subagent only as short bounded
+capacity inside an existing lane: only genuinely small, single-surface, low-risk
+`GENERAL` work may use `NORMAL_SUBAGENT`, and it never owns, hands off, reviews
+or accepts. A game objective selects the registered `game_studio` graph.
+
+At a material routing trigger record one role-fit disposition: `KEEP_ROLE`,
+`SPECIALIZE_EXISTING`, `ADD_INSTANCE`, `REASSIGN_EXISTING` or
+`PROPOSE_CUSTOM_ROLE`. A busy profession is not singleton; the same mutable
+surface serializes. Busy, leased or gated work is scheduling, not failure: take a
+disjoint lane or keep `WAITING` with the release event. `HARD_BLOCKED` needs
+proof of scoped permitted-route exhaustion. For an authorized safe action with an
+ordinary local access failure, request supported access once; pending approval
+waits and an actual denial binds.
+
+## Role contracts
+
+CTRL is the sole root and owns intake, the objective ledger, topology,
+shared-surface coordination, final composed acceptance and the human route.
+LEAD owns one mutable lane; DOER one bounded artifact; a persistent SPECIALIST
+one cross-cutting truth surface; EXPERT gives bounded advice; independent REVIEW
+verifies the frozen plan and artifact. Global policy is composed once from the
+skill and the structural role contract. Profession cards in `roles/` state only
+PURPOSE, OWNERSHIP, BOUNDARIES and ESCALATION, refine perspective and never
+transfer authority; Assistant is a preparation profession, never structural
+ASSIST. Specialist triggers, ASSIST/ADVISOR and materialization are above in this
+file.
+
+## Task naming, pins and rotation
+
+**Step 0, never defer:** A user request to start SWARM, adopt the current task as
+CTRL, or take over an existing CTRL includes naming the current task. Reuse the
+current task for a takeover; create or fork another only when explicitly
+requested. Derive a concise objective and resolve `role_icons`: choose the emoji
+best suited to the project's own identity, never the SWARM method, or no emoji
+when icons are disabled. The default `role_icons.ctrl = "🐙"` is not a user
+choice; 🐙 belongs to SWARM. With no clear match use `role_icons.fallback`; do
+not default every project to 🐙. An explicit user icon or title, such as
+`👑 Portfolio`, stays exactly that.
+
+Generated titles come from `scripts/swarm_config.py title-preview` (the same
+owner renders runtime topology lane titles). The main CTRL title is
+`<project emoji> <project>`, one emoji plus the project name only, for example
+`🐟 Aquarium` or `🐙 SWARM`. Every other generated task is
+`project • name • task • Nov 11`: name is the Unit, Lab or Factory name, or the
+profession; task is the responsibility; the date is the short month/day of the
+task's retained creation timestamp, never recomputed on resume.
+`task_titles.separator` selects ` • ` (default), ` | ` or ` / `, and
+`role_icons.enabled` controls the single leading emoji.
+CTRL/LEAD/DOER remain internal roles, not display prefixes. Preserve an
+explicit custom title or naming exception verbatim. An authorized icon-only repair
+replaces only the leading emoji and preserves the rest of the title.
+Preserve existing pin and placement state; pinning alone grants no icon repair.
+
+Before substantive dispatch, call the host `set_thread_title` for the exact task
+ID; do not ask the user to repeat the request. Completion requires the returned
+task ID and title to match, or a fresh host read confirming both; an unverified
+tool response is not a rename. If the tool is unavailable or rejects the call,
+report the exact naming blocker, keep authorized work moving and leave naming
+incomplete. After creating or updating the durable goal, freshly read the task's
+display title again; the full goal text is not display-name authority.
+
+SWARM runtime never calls host pin/unpin, reorder or archive. The host-facing
+agent uses the host's own `list_threads`, `move_thread_to_sidebar_section`
+(`sectionId='pinned'`), `reorder_section` and archive routes with their actual
+schemas, reads state first and reads back every result. Only an exact current
+user request, an explicit rotate, or a configured
+`lifecycle.pin_created_tasks = true` (that top-level CTRL only, whether newly
+created or adopted from an existing task) may pin; other roles stay unpinned.
+`reorder_section` takes the complete freshly read pinned list, never a subset,
+and moves tasks only, not projects. There is no global-first rule: preserve
+unrelated order and pins, never unpin folders, and do not treat `pinnedIndex` or
+an acknowledgement as order proof. If the host cannot express or expose the
+placement, report that boundary and leave placement `UNVERIFIED`. The plugin
+runtime's intent cannot mint approval and still needs independent host
+verification.
+
+**Rotate.** An explicit, authorized rotate carries retirement authority for the
+exact predecessor only: no further owner negotiation and no announcement. The
+successor inherits goal, source, owners, model and pending duties. Pipe fresh
+readback to `scripts/swarm_contract.py rotate --console-state <journal>` and do
+only the step it returns, then read back and repeat: successor ACK, title,
+successor pinned directly ahead of the predecessor, predecessor unpin, archive.
+Completed steps are recognized from readback, so a partial rotation resumes. A
+user keep-pinned exception leaves the predecessor pinned and unarchived. An
+in-flight lease on the predecessor stops the rotation before unpin or archive,
+and so does any unread result it still owes. A missing capability or readback is
+`UNVERIFIED` and names the step. Other projects, workers and user pins stay
+untouched.
+
+Naming authority does not include pinning, unpinning, reordering, archiving or
+creating tasks. Those keep their separate user authority (a request, the
+configured opt-in, or an explicit rotate); the plugin runtime never grants it.

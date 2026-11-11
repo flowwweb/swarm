@@ -52,3 +52,30 @@ and injected transport must start, supervise, and stop App Server under the
 host's sandbox, approval, and credential policy. Enabling the adapter does not
 prove the Codex binary, model, provider, service tier, or host task API was
 available or used.
+
+## Auto lanes and result collection
+
+The console observer reconciles every admitted Auto lease in one pass. A lease
+whose scope or read fails records one metadata-only `LANE_RECONCILE_FAILED`
+trace (deduplicated while unchanged), keeps its lease, and never blocks a
+disjoint lane; retained-journal corruption still fails the whole pass closed.
+Leases carry a digest-only writer scope (root plus ancestors): equal, nested or
+unknown scopes serialize and are refused before any host grant, while a
+proven-disjoint root may dispatch in the same pass.
+
+Terminal status is not collection. On a terminal native read the observer
+records the collector's own result observation: `READABLE` with the SHA-256 of
+the final agent text (never the text), or `MISSING`/`UNREADABLE`. Every
+dispatched obligation stays in `auto_status.collection` until a readable digest
+exists; the display is bounded, the retained debt is not. Collection is not
+verification, a material receipt or acceptance, and a later material receipt
+never replaces the collected digest. Collection debt does not gate further
+dispatch.
+
+Coverage is limited to admitted native Auto dispatches. Lanes created or
+messaged through generic host tools, hidden subagents and external CLIs are not
+admitted and carry no collection duty or trace. The observer runs only while the
+console process is alive; an idle parent is not woken. A synchronous trusted
+`Stop`/`SubagentStop` `decision:block` hook is a candidate seam only: the shipped
+`Stop`/`SubagentStop` hooks are asynchronous telemetry, and host trust,
+invocation and wake behavior remain `UNVERIFIED`.

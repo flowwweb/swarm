@@ -47,6 +47,369 @@ from runtime import (  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
+    # --- Collection, lane isolation and writer-scope contracts (public callers) ---
+
+    def _lane_case(self, lanes, *, results=None):
+        """Real App/Store/Ledger with a native host stub serving several roots.
+
+        lanes: (ctrl_id, project_id, owner_thread_id, root). Only host reads,
+        sends and due Ledger facts are controlled; Store and connector are real.
+        """
+        self._confirm_root_ctrl()
+        roots = {}
+        with closing(sqlite3.connect(self.database)) as db:
+            for ctrl, project, owner, root in lanes:
+                Path(root).mkdir(parents=True, exist_ok=True)
+                if db.execute("SELECT 1 FROM projects WHERE id=?", (project,)).fetchone() is None:
+                    db.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", (project, project.split(":")[-1], "{}", 0, 0, 0))
+                    db.execute("INSERT INTO project_roots VALUES (?,?,?)", (project, 0, str(root)))
+                for thread, role in ((ctrl, "ctrl"), (owner, "")):
+                    roots[thread] = Path(root)
+                    if db.execute("SELECT 1 FROM threads WHERE id=?", (thread,)).fetchone() is None:
+                        db.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (thread, thread, str(root), 2_000_000_000, 2_000_000_000, 2_000_000_000_000,
+                             2_000_000_000_000, "gpt", "high", 1, 0, "", "main", "", "", role, 0))
+            db.commit()
+        host = {"sent": [], "grants": [], "due": set(),
+                "turns": {owner: [{"id": f"{owner}-before", "status": "completed", "items": []}] for _, _, owner, _ in lanes}}
+        def request(method, params):
+            if method == "wait_threads":
+                return {"timedOut": True}
+            thread = params["threadId"]
+            if method == "read_thread":
+                return {"thread": {"id": thread, "cwd": str(roots[thread])}, "page": {"order": "newest_first"},
+                        "turns": copy.deepcopy(host["turns"][thread][:2])}
+            self.assertEqual(method, "send_message_to_thread")
+            host["sent"].append(thread)
+            host["turns"][thread].insert(0, {"id": f"{thread}-turn-{len(host['sent'])}", "status": "inProgress",
+                "items": [{"type": "userMessage", "content": [{"type": "text", "text": params["prompt"]}]}]})
+            return {"threadId": thread}
+        def grant(state, digest):
+            host["grants"].append(state["ctrl_id"])
+            return console.HQAutoGrant("grant-" + state["ctrl_id"], state["project_id"], digest, state["ctrl_id"],
+                                       (console.HQCommandAction.AUTO,), int(time.time() * 1000) + 60000)
+        authority = SimpleNamespace(grant=grant, verify=lambda receipt, envelope, now: True)
+        transport = console.NativeCodexAppTaskTransport(request, clock_ms=lambda: int(time.time() * 1000))
+        app = console.App(self.codex_home, self.config, task_transport=transport, auto_authorization=authority)
+        app.auto_bridge = SimpleNamespace(run=mock.Mock(side_effect=AssertionError("private process fallback")),
+            reconcile=mock.Mock(side_effect=AssertionError("private read fallback")))
+        retained = app.progress_ledger
+        lifecycle = [self._auto_lifecycle()]
+        def receipts():
+            out = {}
+            for ctrl, _, owner, _ in lanes:
+                if ctrl in host["due"]:
+                    item = copy.deepcopy(self._auto_projection(event_id=host.get("event", {}).get(ctrl, "lifecycle-3"))["expected_receipts"]["expected-auto"])
+                    item["receipt"].update(receipt_id="expected-" + ctrl, task_id=owner, owner_id=owner)
+                    out["expected-" + ctrl] = item
+            return out
+        class LedgerFixture:
+            def __init__(self, ledger): self.ledger = ledger
+            def __getattr__(self, name): return getattr(self.ledger, name)
+            def replay(self):
+                projection = self.ledger.replay()
+                projection["expected_receipts"] = receipts()
+                return projection
+            def _bounded_tail_records(self): return lifecycle, False
+        app.progress_ledger = LedgerFixture(retained)
+        host["lifecycle"] = lifecycle
+        for ctrl, project, _, _ in lanes:
+            app.auto_command({"command": "ENABLE", "ctrl_id": ctrl, "project_id": project, "request_id": "enable-" + ctrl})
+        overview = {"nodes": [{"id": owner, "project_id": project, "controller_ids": [ctrl]} for ctrl, project, owner, _ in lanes]}
+        return app, host, overview
+
+    @staticmethod
+    def _finish_turn(host, owner, *, items=(), status="completed"):
+        host["turns"][owner][0]["status"] = status
+        host["turns"][owner][0]["items"].extend(copy.deepcopy(list(items)))
+
+    def _auto_rows(self, app, kind):
+        with closing(sqlite3.connect(app.store.path)) as db:
+            return db.execute("SELECT COUNT(*) FROM execution_event_receipts WHERE event_kind=?", (kind,)).fetchone()[0]
+
+    def test_native_auto_collection_binds_observed_result_digest_not_terminal_status(self):
+        app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
+        host["due"] = {"root"}
+        first = app.evaluate_auto_once(overview)
+        self.assertTrue(first["dispatched"], first)
+        state = app.store.auto_status("root", "project:alpha")
+        reservation_id = state["reservation_id"]
+        self.assertEqual([item["phase"] for item in state["collection"]["pending"]], ["AWAITING_TERMINAL"])
+        # Pause during flight: the running turn is still reconciled and collected.
+        app.auto_command({"command": "DISABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "pause-root"})
+        self.assertTrue(app.store.auto_status("root", "project:alpha")["stop_after_turn"])
+        self._finish_turn(host, "task", items=[{"type": "agentMessage", "phase": "analysis", "text": "private reasoning"},
+                                               {"type": "agentMessage", "text": "Readable bounded result."}])
+        app.store = console.ConsoleStore(app.store.path)  # Parent yields; retained state is rehydrated.
+        done = app.evaluate_auto_once(overview)
+        self.assertEqual(done["reason"], "RECONCILED")
+        item = app.store.load_execution_ledger().reservation(reservation_id)
+        expected = hashlib.sha256(json.dumps(["Readable bounded result."], ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual((item.result_observation, item.result_digest), ("READABLE", expected))
+        self.assertTrue(item.host_completed)
+        self.assertEqual(item.state, console.ExecutionDispatchState.ACTIVE, "collection is not acceptance")
+        self.assertFalse(item.material_receipt_id)
+        status = app.store.auto_status("root", "project:alpha")
+        self.assertEqual((status["collection"]["pending_count"], status["collection"]["collected_count"]), (0, 1))
+        self.assertFalse(status["enabled"])
+        self.assertIn("not verification or acceptance", status["collection"]["claim_limit"])
+        self.assertNotIn("Readable bounded result", json.dumps(item.snapshot()))
+        # Duplicate observation, restart and stale replays add no event, send or collection.
+        before = (self._auto_rows(app, "AUTO_OUTCOME"), item.snapshot())
+        app.store = console.ConsoleStore(app.store.path)
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "resume-root"})
+        self.assertEqual(app.evaluate_auto_once(overview)["reason"], "REPLAY")
+        self.assertEqual(before, (self._auto_rows(app, "AUTO_OUTCOME"),
+                                  app.store.load_execution_ledger().reservation(reservation_id).snapshot()))
+        self.assertEqual(host["sent"], ["task"])
+
+    def test_interrupted_auto_turn_with_only_commentary_keeps_collection_pending(self):
+        app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
+        host["due"] = {"root"}
+        self.assertTrue(app.evaluate_auto_once(overview)["dispatched"])
+        self._finish_turn(host, "task", status="interrupted", items=[
+            {"type": "agentMessage", "phase": "commentary", "text": "Still working on the assessment"}])
+        app.evaluate_auto_once(overview)
+        collection = console.ConsoleStore(app.store.path).auto_status("root", "project:alpha")["collection"]
+        self.assertEqual((collection["pending_count"], collection["collected_count"]), (1, 0))
+        self.assertEqual(collection["yield_status"], "UNREAD_RESULTS")
+        self.assertEqual(collection["pending"][0]["phase"], "TERMINAL_RESULT_MISSING")
+
+    def test_auto_turn_with_commentary_then_final_digests_only_the_answer(self):
+        app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
+        host["due"] = {"root"}
+        self.assertTrue(app.evaluate_auto_once(overview)["dispatched"])
+        reservation_id = app.store.auto_status("root", "project:alpha")["reservation_id"]
+        self._finish_turn(host, "task", items=[
+            {"type": "agentMessage", "phase": "commentary", "text": "Still working on the assessment"},
+            {"type": "agentMessage", "phase": "final_answer", "text": "Assessment complete."}])
+        app.evaluate_auto_once(overview)
+        stored = console.ConsoleStore(app.store.path)
+        item = stored.load_execution_ledger().reservation(reservation_id)
+        expected = hashlib.sha256(b'["Assessment complete."]').hexdigest()
+        self.assertEqual((item.result_observation, item.result_digest), ("READABLE", expected))
+        collection = stored.auto_status("root", "project:alpha")["collection"]
+        self.assertEqual((collection["pending_count"], collection["collected_count"]), (0, 1))
+
+    def test_native_auto_missing_or_unreadable_results_remain_every_unread_duty(self):
+        app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
+        host["due"] = {"root"}
+        self.assertTrue(app.evaluate_auto_once(overview)["dispatched"])
+        self._finish_turn(host, "task")  # Completed with no readable agent result.
+        self.assertEqual(app.evaluate_auto_once(overview)["reason"], "RECONCILED")
+        host["event"] = {"root": "lifecycle-4"}
+        host["lifecycle"].append(self._auto_lifecycle(sequence=4))
+        self.assertTrue(app.evaluate_auto_once(overview)["dispatched"])
+        self._finish_turn(host, "task", items=[{"type": "agentMessage", "text": 7}])
+        self.assertEqual(app.evaluate_auto_once(overview)["reason"], "RECONCILED")
+        restarted = console.ConsoleStore(app.store.path)
+        collection = restarted.auto_status("root", "project:alpha")["collection"]
+        self.assertEqual(collection["pending_count"], 2, "older unread duty must survive a newer turn")
+        self.assertEqual(sorted(item["phase"] for item in collection["pending"]),
+                         ["TERMINAL_RESULT_MISSING", "TERMINAL_RESULT_UNREADABLE"])
+        self.assertEqual(collection["yield_status"], "UNREAD_RESULTS")
+        with mock.patch.object(console, "COLLECTION_DISPLAY_LIMIT", 1):
+            bounded = restarted.auto_status("root", "project:alpha")["collection"]
+        self.assertEqual((len(bounded["pending"]), bounded["omitted"], bounded["pending_count"]), (1, 1, 2))
+        retained = [item for item in restarted.load_execution_ledger().reservations if item.collecting_owner_id == "root"]
+        self.assertEqual(len(retained), 2)
+        self.assertTrue(all(item.host_completed and not item.result_digest for item in retained))
+        self.assertEqual(host["sent"], ["task", "task"])
+
+    def test_collection_digest_is_idempotent_conflicts_fail_closed_and_material_receipt_stays_separate(self):
+        from runtime import DelegatedReturnReceipt, DelegatedReceiptVerdict
+        path = self.root / "collection.sqlite3"
+        store = console.ConsoleStore(path)
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("config", False, "model", "high", 1, "config-receipt"))
+        artifact = ArtifactIdentity("source", "revision", "result")
+        ledger.reserve("run", "task", "worker", artifact, observed_at_ms=2, collecting_owner_id="parent")
+        ledger.dispatch("run", "a" * 64, 100, observed_at_ms=3)
+        with self.assertRaisesRegex(InvariantError, "terminal"):
+            ledger.collect_result("run", "parent", observation="READABLE", result_digest="1" * 64, observed_at_ms=4)
+        adapter = console.CodexAppServerAdapter()
+        ledger.observe_event("run", adapter.translate_event({"method": "turn/completed",
+            "params": {"threadId": "thread", "turnId": "turn", "status": "completed"}}), observed_at_ms=5)
+        with self.assertRaisesRegex(InvariantError, "retained run"):
+            ledger.observe_event("run", adapter.translate_event({"method": "turn/completed",
+                "params": {"threadId": "thread", "turnId": "other", "status": "completed"}}), observed_at_ms=6)
+        with self.assertRaisesRegex(InvariantError, "collector"):
+            ledger.collect_result("run", "other", observation="READABLE", result_digest="1" * 64, observed_at_ms=6)
+        with self.assertRaisesRegex(InvariantError, "digest"):
+            ledger.collect_result("run", "parent", observation="READABLE", result_digest="", observed_at_ms=6)
+        self.assertTrue(ledger.collect_result("run", "parent", observation="MISSING", result_digest="", observed_at_ms=6))
+        self.assertEqual(ledger.collection_status("parent")["pending"][0]["phase"], "TERMINAL_RESULT_MISSING")
+        self.assertTrue(ledger.collect_result("run", "parent", observation="READABLE", result_digest="1" * 64, observed_at_ms=7))
+        self.assertFalse(ledger.collect_result("run", "parent", observation="READABLE", result_digest="1" * 64, observed_at_ms=8))
+        with self.assertRaisesRegex(InvariantError, "conflicts"):
+            ledger.collect_result("run", "parent", observation="READABLE", result_digest="2" * 64, observed_at_ms=8)
+        with self.assertRaisesRegex(InvariantError, "conflicts"):
+            ledger.collect_result("run", "parent", observation="MISSING", result_digest="", observed_at_ms=8)
+        store.persist_execution_ledger(ledger, now_ms=8)
+        # Collection X followed by material receipt Y: both edges are retained, neither replaces the other.
+        receipt = DelegatedReturnReceipt("material-y", "task", "worker", DelegatedReceiptVerdict.ACCEPT,
+            artifact, "Bounded result returned for independent verification.", observed_at=9)
+        ledger.record_material_receipt("run", receipt, observed_at_ms=9)
+        store.persist_execution_ledger(ledger, now_ms=9)
+        final = console.ConsoleStore(path).load_execution_ledger().reservation("run")
+        self.assertEqual((final.result_digest, final.material_receipt_id, final.state.value),
+                         ("1" * 64, "material-y", "material_receipt"))
+        # A material receipt before any terminal read is not collection.
+        early = console.ExecutionDispatchLedger(generations=ledger.generations)
+        early.reserve("early", "task-2", "worker", artifact, observed_at_ms=2, collecting_owner_id="parent")
+        early.dispatch("early", "b" * 64, 100, observed_at_ms=3)
+        early.record_material_receipt("early", DelegatedReturnReceipt("material-early", "task-2", "worker",
+            DelegatedReceiptVerdict.ACCEPT, artifact, "Bounded early receipt.", observed_at=4), observed_at_ms=4)
+        self.assertEqual(early.collection_status("parent")["pending"][0]["phase"], "AWAITING_TERMINAL")
+        # Persisted collection cannot regress or change.
+        regressed = console.ConsoleStore(path).load_execution_ledger()
+        regressed.reservation("run").result_digest = "3" * 64
+        regressed.reservation("run").updated_at_ms = 10
+        with self.assertRaisesRegex(console.ConsoleError, "collected result"):
+            console.ConsoleStore(path).persist_execution_ledger(regressed, now_ms=10)
+
+    def test_auto_three_lanes_refuse_busy_root_before_grant_and_dispatch_disjoint_root_same_pass(self):
+        beta = Path(self.temp.name) / "beta"
+        app, host, overview = self._lane_case([
+            ("root", "project:alpha", "task", self.alpha_root),
+            ("root-b", "project:alpha", "task-b", self.alpha_root),
+            ("root-c", "project:gamma", "task-c", beta)])
+        host["due"] = {"root"}
+        self.assertTrue(app.evaluate_auto_once(overview)["dispatched"])
+        self.assertEqual(host["grants"], ["root"])
+        host["due"] = {"root", "root-b", "root-c"}
+        result = app.evaluate_auto_once(overview)
+        self.assertTrue(result["dispatched"], result)
+        self.assertEqual(host["sent"], ["task", "task-c"], "disjoint root dispatches in the same pass")
+        self.assertEqual(host["grants"], ["root", "root-c"], "busy shared root is refused before any host grant")
+        self.assertTrue(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertFalse(app.store.auto_status("root-b", "project:alpha")["in_flight"])
+        self.assertTrue(app.store.auto_status("root-c", "project:gamma")["in_flight"])
+        # Both ready results reconcile in one pass; the shared root frees B only after A is terminal.
+        self._finish_turn(host, "task", items=[{"type": "agentMessage", "text": "A"}])
+        self._finish_turn(host, "task-c", items=[{"type": "agentMessage", "text": "C"}])
+        app.evaluate_auto_once(overview)
+        for ctrl, project in (("root", "project:alpha"), ("root-c", "project:gamma")):
+            self.assertEqual(app.store.auto_status(ctrl, project)["collection"]["collected_count"], 1)
+        self.assertEqual(host["sent"], ["task", "task-c", "task-b"])
+        self.assertTrue(app.store.auto_status("root-b", "project:alpha")["in_flight"])
+
+    def test_auto_archived_in_flight_lane_keeps_lease_and_trace_without_blocking_other_lanes(self):
+        beta = Path(self.temp.name) / "beta"
+        app, host, overview = self._lane_case([
+            ("root", "project:alpha", "task", self.alpha_root),
+            ("root-c", "project:gamma", "task-c", beta)])
+        host["due"] = {"root", "root-c"}
+        app.evaluate_auto_once(overview)
+        self.assertEqual(host["sent"], ["task", "task-c"])
+        lease = app.store.auto_status("root", "project:alpha")["reservation_id"]
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("UPDATE threads SET archived=1 WHERE id='root'"); db.commit()
+        self._finish_turn(host, "task-c", items=[{"type": "agentMessage", "text": "C"}])
+        result = app.evaluate_auto_once(overview)
+        self.assertEqual(result["reason"], "RECONCILED")
+        self.assertEqual([(item["ctrl_id"], item["reason"], item["reservation_id"]) for item in result["scope_rejections"]],
+                         [("root", "LANE_RECONCILE_FAILED", lease)])
+        self.assertNotIn("membership", json.dumps(result["scope_rejections"]), "failure trace stays metadata-only")
+        self.assertEqual(app.store.auto_status("root-c", "project:gamma")["collection"]["collected_count"], 1)
+        self.assertTrue(app.store.auto_status("root", "project:alpha")["in_flight"], "bad lane retains its lease")
+        failures = self._auto_rows(app, "AUTO_RECONCILE")
+        app.evaluate_auto_once(overview)
+        self.assertEqual(self._auto_rows(app, "AUTO_RECONCILE"), failures, "unchanged failure is deduplicated")
+        app.store.set_auto("other", "project:alpha", enabled=True, request_id="enable-other", now_ms=int(time.time() * 1000))
+        decision = self._auto_decision("other")
+        self.assertEqual(app.store.claim_auto_dispatch(decision, app._auto_generation(), now_ms=int(time.time() * 1000))["reason"],
+                         "IN_FLIGHT", "a retained bad lease still refuses unknown or shared writers")
+        self.assertEqual(host["sent"], ["task", "task-c"])
+
+    def test_auto_lane_failure_receipt_does_not_shadow_unreachable_release_evidence(self):
+        app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
+        host["due"] = {"root"}
+        app.evaluate_auto_once(overview)
+        lease = app.store.auto_status("root", "project:alpha")["reservation_id"]
+        app.store.retain_auto_control("AUTO_RECONCILE", "independent-host-absence",
+            {"ctrl_id": "root", "project_id": "project:alpha", "reservation_id": lease,
+             "failure_kind": "TURN_UNREACHABLE", "turn_started": True, "reachable": False}, now_ms=int(time.time() * 1000))
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("UPDATE threads SET archived=1 WHERE id='root'"); db.commit()
+        time.sleep(0.002)
+        self.assertEqual(app.evaluate_auto_once(overview)["scope_rejections"][0]["reason"], "LANE_RECONCILE_FAILED")
+        released = app.store.release_auto_dispatch("root", "project:alpha", lease, request_id="release-root",
+            recovery_authority="root", release_condition="independently confirmed host absence", now_ms=int(time.time() * 1000) + 5)
+        self.assertFalse(released["in_flight"])
+
+    def test_auto_status_latest_disposition_survives_other_lane_receipt_volume(self):
+        store = console.ConsoleStore(self.root / "console" / "auto-latest.sqlite3")
+        store.set_auto("root", "project:alpha", enabled=True, request_id="enable-root", now_ms=1)
+        store.retain_auto_control("AUTO_DECISION", "root-wait", {"ctrl_id": "root", "project_id": "project:alpha",
+            "decision_digest": "a" * 64, "disposition": {"disposition": "WAIT_USER", "release_condition": "user release"},
+            "material_progress": False}, now_ms=2)
+        for index in range(140):
+            store.retain_auto_control("AUTO_DECISION", f"other-{index}", {"ctrl_id": "other", "project_id": "project:beta",
+                "decision_digest": f"{index:064x}", "disposition": {"disposition": "RETRY_SAME"}, "material_progress": False},
+                now_ms=3 + index)
+        status = store.auto_status("root", "project:alpha")
+        self.assertEqual((status["last_disposition"], status["attention"]["kind"]), ("WAIT_USER", "WAIT_USER"))
+
+    def test_rotation_cli_blocks_retirement_on_retained_lease_or_unread_result(self):
+        store = console.ConsoleStore(self.root / "console" / "rotation.sqlite3")
+        store.set_auto("p2-old", "project:alpha", enabled=True, request_id="enable-old", now_ms=1)
+        claim = store.claim_auto_dispatch(self._auto_decision("p2-old"), self._auto_generation(), now_ms=2)
+        script = console.PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "swarm_contract.py"
+        envelope = dict(predecessor_id="p2-old", successor_id="p2-new", authorized=True,
+                        baseline_pinned=["p1", "p2-old"], pinned=["p1", "p2-new", "p2-old"], successor_ack=True,
+                        expected_title="Project 2", successor_title="Project 2", predecessor_archived=False,
+                        predecessor_in_flight=False, user_keep_pinned=False,
+                        capabilities=["title", "pin", "reorder", "unpin", "archive"])
+        def rotate():
+            run = subprocess.run([sys.executable, str(script), "rotate", "--console-state", str(store.path)],
+                                 input=json.dumps(envelope), capture_output=True, text=True, check=True)
+            return json.loads(run.stdout)
+        leased = rotate()
+        self.assertEqual((leased["status"], leased["step"], leased["journal"]),
+                         ("BLOCKED", "UNPIN", {"active_leases": 1, "unread_results": 1}))
+        result = console.AutoBridgeResult(True, "thread-1", "turn-1", "d" * 64, terminal=True, turn_started=True, reachable=True)
+        store.finish_auto_dispatch(claim["reservation_id"], result=result, disposition=None, now_ms=3,
+                                   collection={"result_observation": "MISSING", "result_digest": ""})
+        unread = rotate()
+        self.assertEqual((unread["status"], unread["journal"]), ("BLOCKED", {"active_leases": 0, "unread_results": 1}),
+                         "a terminal turn with no readable result is still an unread duty")
+        ledger = store.load_execution_ledger()
+        ledger.collect_result(claim["reservation_id"], "p2-old", observation="READABLE", result_digest="e" * 64, observed_at_ms=4)
+        store.persist_execution_ledger(ledger, now_ms=4)
+        ready = rotate()
+        self.assertEqual((ready["status"], ready["step"], ready["journal"]),
+                         ("NEXT", "UNPIN", {"active_leases": 0, "unread_results": 0}))
+
+    def test_auto_writer_scopes_serialize_shared_nested_and_legacy_roots(self):
+        store = console.ConsoleStore(self.root / "console" / "auto-scopes.sqlite3")
+        parent = self.alpha_root
+        nested = parent / "packages" / "inner"
+        sibling = Path(self.temp.name) / "sibling"
+        for path in (nested, sibling):
+            path.mkdir(parents=True)
+        def claim(ctrl, root, digest):
+            store.set_auto(ctrl, "project:" + ctrl, enabled=True, request_id="enable-" + ctrl, now_ms=1)
+            decision = self._auto_decision(ctrl, "project:" + ctrl)
+            decision["decision_digest"] = digest * 64
+            identity = store.auto_dispatch_identity(decision)
+            packet = None
+            if root is not None:
+                envelope = console.HQCommandEnvelope("auto-" + identity, identity, console.HQCommandAction.AUTO,
+                    "project:" + ctrl, "0" * 64, ctrl, console.HQTargetIntent.EXISTING_THREAD, "task", "c" * 64, 0,
+                    int(time.time() * 1000), int(time.time() * 1000) + 60000)
+                fields = {key: value for key, value in console.asdict(envelope).items() if key not in {"digest", "_task_creation_json"}}
+                packet = {"ctrl_id": ctrl, "project_id": "project:" + ctrl, "reservation_id": "auto-" + identity,
+                          "decision_digest": decision["decision_digest"], "envelope": fields, "grant": {}, "instruction_meta": {},
+                          **console._auto_writer_scope(root)}
+            return store.claim_auto_dispatch(decision, self._auto_generation(), now_ms=2, connector_packet=packet)
+        self.assertTrue(claim("a", parent, "1")["claimed"])
+        self.assertEqual(claim("b", nested, "2")["reason"], "IN_FLIGHT", "nested root overlaps its parent writer")
+        self.assertEqual(claim("c", parent, "3")["reason"], "IN_FLIGHT", "shared root serializes")
+        self.assertEqual(claim("d", None, "4")["reason"], "IN_FLIGHT", "unknown legacy scope serializes")
+        self.assertTrue(claim("e", sibling, "5")["claimed"], "disjoint sibling root may run concurrently")
+        self.assertEqual(len(store._auto_active()), 2)
+
     def test_mcp_read_serializes_many_long_tickets_without_truncation(self):
         from console import server
         from skills.swarm.scripts import swarm_mcp
@@ -127,9 +490,10 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertIn("{created:MMM D}", template["help"])
         self.assertEqual(by_key["task_titles.unit_template"]["source"], "project_override")
         self.assertEqual(by_key["task_titles.controller_template"]["default"], "{project}")
-        self.assertEqual(by_key["task_titles.unit_template"]["default"], "{project} · {unit} · {responsibility}")
+        self.assertEqual(by_key["task_titles.unit_template"]["default"], "{project} • {unit} • {responsibility} • {created:MMM D}")
+        self.assertEqual(by_key["task_titles.separator"]["default"], " • ")
         result = module.resolve_task_presentation(scoped, "unit", project="Garden", unit="Studio")
-        self.assertEqual(result["title"], "Garden · Studio")
+        self.assertEqual(result["title"], "Garden • Studio")
         self.assertFalse(result["host_mutation_authorized"])
         with self.assertRaises(module.ConfigError):
             module.validate({"task_titles": {"unit_template": "{private.path}"}}, partial=True)
@@ -12241,7 +12605,11 @@ class SwarmConsoleTests(unittest.TestCase):
             restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
             host["deny"] = True
             calls = list(host["calls"])
-            with self.assertRaises(ValueError): restarted.evaluate_auto_once(restarted._host_overview())
+            # A denied renewal is isolated to this lease (traced, lease retained), never a global abort.
+            denied = restarted.evaluate_auto_once(restarted._host_overview())
+            self.assertEqual([(item["reason"], item["failure_kind"]) for item in denied["scope_rejections"]],
+                             [("LANE_RECONCILE_FAILED", "InvariantError")])
+            self.assertTrue(restarted.store.auto_status("root", "project:alpha")["in_flight"])
             self.assertEqual(host["calls"], calls)
             self.assertEqual(app.store.auto_connector_packet(reservation_id), first_packet)
             self.assertEqual(ledger.replay()["connector_receipts"], {})

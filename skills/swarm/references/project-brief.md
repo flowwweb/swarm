@@ -76,3 +76,14 @@ The brief does not grant model, tool, browser, provider, destructive, host-task,
 Git, release, or acceptance authority. Codex host execution remains the only
 execution surface; external-provider wording in proof contracts describes real
 service evidence only.
+
+## Initialization and console start
+
+Initialize or adopt a project only on explicit request, with
+`scripts/swarm_init.py --root <exact-existing-root>`; initialization is not
+routing or host-binding proof. After Step 0, resolve exactly one root `SWARM.md`:
+a missing, invalid or digest-unbound brief leaves the project `UNREADY` and never
+authorizes a substitute README, prompt or hidden state. Then run
+`scripts/swarm_console.py --start --task-id <exact-host-task-id>` once; it
+follows `console.auto_start` and `console.open_on_start`, and a launcher failure
+never blocks work.

@@ -17,7 +17,7 @@ CTRL root, explicit dependencies, independent parallel lanes, and visible
 medium/large task ownership.
 
 For a new SWARM objective or an explicit CTRL takeover, complete
-[SKILL.md Step 0](../SKILL.md#start): apply the authorized role title through the
+[Step 0](hierarchy.md#task-naming-pins-and-rotation): apply the authorized role title through the
 host task tool and verify the exact returned task ID and title. Record an exact
 tool blocker if naming cannot complete; preserve custom names and separate
 pin/archive authority. The naming rule lives in Step 0, not in a second receipt
@@ -155,7 +155,7 @@ replace the user state.
 SWARM runtime never calls host pin/unpin. A newly created or adopted top-level
 CTRL is eligible for host pinning only when `lifecycle.pin_created_tasks = true` is
 explicitly configured or the user directly requests that exact pin. Follow
-[SKILL.md START](../SKILL.md#start) for the single host pin procedure and fresh
+[the pin and rotation procedure](hierarchy.md#task-naming-pins-and-rotation) for the single host pin procedure and fresh
 membership/order readback before archiving a predecessor CTRL. Existing user
 state is always preserved; naming alone and runtime policy never authorize
 that mutation.
@@ -295,6 +295,12 @@ at execution and acceptance: wrong-version, stale, unverified or wrong-class
 evidence cannot satisfy them. Source/unit/fixture proof remains that proof class,
 not installation, deployment, loaded-version, live-test or dogfood acceptance.
 
+Carry the task's scoped authorization through result collection. Read authorized
+artifacts with an ordinary call that omits elevation parameters. If the host
+prompts or denies the read, check the submitted arguments and that exact turn's
+effective sandbox and approval policy against the intended mode. Report the
+observed boundary for that owner and follow [runtime recovery](runtime-recovery.md).
+
 The deterministic ProofPlan binds changed surfaces, declared claims, authority
 boundaries, dependency reach, incidents, runtime signals, repository
 capabilities, consequence tier, exact commands and environments, gates, reviews, and claim coverage.
@@ -320,3 +326,20 @@ WATCHDOG is not a role or task-contract owner. When explicitly bound, its receip
 records only the goal, watched owner, due evidence digest, one of `CLEAR`,
 `ATTENTION`, or `BLOCKER`, and the validated accountable decision owner. It never
 records or authorizes a recovery decision.
+
+## Request reconciliation and write safety
+
+Before topology or work, run `swarm_contract.py request` `list` then `audit` on
+the exact repository and reconcile every unresolved request; a missing store is
+empty and unattached. New input accumulates or reprioritizes by default; only an
+explicit scoped cancellation or replacement supersedes matching open work, and
+unrelated open work remains preserved. Audit again before closeout or archive;
+unresolved, orphaned, invalid or provisional records block the claim, and
+missing receipts are `UNVERIFIED`, never an empty ledger.
+
+Explicit user direction outranks SWARM defaults; ask only the smallest decision
+that changes intent, canonical truth, scope, cost, risk or a reserved approval.
+Treat failed, timed-out, or non-atomic writes as untrusted: verify the exact
+target and intended diff scope, preserve pre-existing work, recover only the
+damaged target from a verified baseline/backup, reapply smaller patches and
+revalidate. Never broadly roll back a shared surface.

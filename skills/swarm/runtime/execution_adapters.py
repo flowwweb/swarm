@@ -470,7 +470,37 @@ class NativeCodexAppTaskTransport:
         turn = next((item for item in read["turns"] if item["id"] == turn_id), None)
         if turn is None or turn.get("status") not in {"inProgress", "completed", "failed", "interrupted"}:
             return None
-        return {"thread_id": thread_id, "turn_id": turn_id, "cwd": read["thread"]["cwd"], "status": turn["status"]}
+        observation, digest = observed_result(turn.get("items"))
+        return {"thread_id": thread_id, "turn_id": turn_id, "cwd": read["thread"]["cwd"], "status": turn["status"],
+                "result_observation": observation, "result_digest": digest}
+
+
+RESULT_OBSERVATIONS = frozenset({"READABLE", "MISSING", "UNREADABLE"})
+
+
+def observed_result(items: object) -> tuple[str, str]:
+    """Digest the readable final agent text of one turn; the text itself is never retained.
+
+    Terminal status says nothing about content: a turn with no final agent text is
+    MISSING, and malformed result items are UNREADABLE.
+    """
+    if not isinstance(items, list):
+        return "UNREADABLE", ""
+    texts, malformed = [], False
+    for item in items:
+        if not isinstance(item, Mapping) or item.get("type") != "agentMessage":
+            continue
+        if item.get("phase") not in (None, "final_answer"):
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            texts.append(text)
+        elif not isinstance(text, str):
+            malformed = True
+    if texts:
+        encoded = json.dumps(texts, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        return "READABLE", sha256(encoded).hexdigest()
+    return ("UNREADABLE" if malformed else "MISSING"), ""
 
 
 @dataclass(frozen=True)
@@ -1284,8 +1314,19 @@ class ExecutionReservation:
     service_tier_receipt_id: str = ""
     settings_task_id: str = ""
     provider_model_observation: dict[str, str] | None = None
+    collecting_owner_id: str = ""
+    result_observation: str = ""
+    result_digest: str = ""
 
     def __post_init__(self) -> None:
+        if self.collecting_owner_id:
+            _text(self.collecting_owner_id, "execution collecting owner")
+        if self.result_observation and (not self.collecting_owner_id or self.result_observation not in RESULT_OBSERVATIONS):
+            raise InvariantError("result observation requires a collecting owner and a typed outcome")
+        if (self.result_observation == "READABLE") != bool(self.result_digest):
+            raise InvariantError("a readable result requires exactly one observed digest")
+        if self.result_digest:
+            self.result_digest = _digest(self.result_digest, "observed result")
         for value, label in ((self.reservation_id, "execution reservation id"), (self.task_id, "execution task id"), (self.owner_id, "execution owner id")):
             _text(value, label)
         if self.project_id:
@@ -1368,6 +1409,9 @@ class ExecutionReservation:
             "host_turn_id": self.host_turn_id,
             "host_completed": self.host_completed,
             "material_receipt_id": self.material_receipt_id,
+            **({"collecting_owner_id": self.collecting_owner_id,
+                "result_observation": self.result_observation,
+                "result_digest": self.result_digest} if self.collecting_owner_id else {}),
             **({"provider_model_observation": dict(self.provider_model_observation)} if self.provider_model_observation else {}),
             "failure_kind": None if self.failure_kind is None else self.failure_kind.value,
             "retry_count": self.retry_count,
@@ -1415,6 +1459,9 @@ class ExecutionReservation:
             host_turn_id=str(payload.get("host_turn_id") or ""),
             host_completed=payload.get("host_completed", False),  # type: ignore[arg-type]
             material_receipt_id=str(payload.get("material_receipt_id") or ""),
+            collecting_owner_id=str(payload.get("collecting_owner_id") or ""),
+            result_observation=str(payload.get("result_observation") or ""),
+            result_digest=str(payload.get("result_digest") or ""),
             provider_model_observation=payload.get("provider_model_observation"),
             failure_kind=None if failure in (None, "") else ExecutionFailureKind(str(failure)),
             retry_count=int(payload.get("retry_count") or 0),
@@ -1490,10 +1537,11 @@ class ExecutionDispatchLedger:
         self._reservations[reservation.reservation_id] = reservation
         self._task_reservations[reservation.task_id] = reservation.reservation_id
 
-    def reserve(self, reservation_id: str, task_id: str, owner_id: str, artifact: ArtifactIdentity, *, observed_at_ms: int, project_id: str = "", settings_task_id: str = "") -> ExecutionReservation:
+    def reserve(self, reservation_id: str, task_id: str, owner_id: str, artifact: ArtifactIdentity, *, observed_at_ms: int, project_id: str = "", settings_task_id: str = "", collecting_owner_id: str = "") -> ExecutionReservation:
         if reservation_id in self._reservations or task_id in self._task_reservations:
             raise InvariantError("duplicate dispatch reservation is prohibited")
-        reservation = ExecutionReservation(reservation_id, task_id, owner_id, artifact, updated_at_ms=observed_at_ms, project_id=project_id, settings_task_id=settings_task_id)
+        reservation = ExecutionReservation(reservation_id, task_id, owner_id, artifact, updated_at_ms=observed_at_ms, project_id=project_id, settings_task_id=settings_task_id,
+            collecting_owner_id=collecting_owner_id)
         self._add_reservation(reservation)
         return reservation
 
@@ -1593,6 +1641,9 @@ class ExecutionDispatchLedger:
             raise InvariantError("host observation requires a typed readable event digest")
         if event.evidence_digest in self._event_digests:
             return False
+        if ((reservation.host_thread_id and event.thread_id != reservation.host_thread_id)
+                or (reservation.host_turn_id and event.turn_id != reservation.host_turn_id)):
+            raise InvariantError("host event conflicts with retained run")
         if reservation.state is not ExecutionDispatchState.ACTIVE:
             raise InvariantError("host events require an active retained reservation")
         self._event_digests.add(event.evidence_digest)
@@ -1612,6 +1663,53 @@ class ExecutionDispatchLedger:
                 reservation.service_tier_receipt_id = served_tier.receipt_id
                 reservation.service_tier_truth = ServiceTierTruth.CONFIRMED if actual_ok else ServiceTierTruth.UNVERIFIED
         reservation.updated_at_ms = observed_at_ms
+        return True
+
+    def collection_status(self, owner_id: str) -> dict[str, object]:
+        """Every dispatched obligation owed to one collector, oldest first; nothing is dropped."""
+        pending, collected = [], 0
+        for item in sorted(self.reservations, key=lambda value: (value.updated_at_ms, value.reservation_id)):
+            if item.collecting_owner_id != owner_id or not item.request_digest:
+                continue
+            if item.result_observation == "READABLE":
+                collected += 1
+                continue
+            terminal = item.host_completed or item.failure_kind is not None
+            phase = ("AWAITING_TERMINAL" if not terminal else
+                     "TERMINAL_RESULT_MISSING" if item.result_observation == "MISSING" else
+                     "TERMINAL_RESULT_UNREADABLE" if item.result_observation == "UNREADABLE" else
+                     "TERMINAL_UNREAD")
+            pending.append({"reservation_id": item.reservation_id, "task_id": item.task_id,
+                "owner_id": item.owner_id, "thread_id": item.host_thread_id, "turn_id": item.host_turn_id,
+                "phase": phase, "terminal_status": "" if not terminal else "failed" if item.failure_kind else "completed",
+                "material_receipt_id": item.material_receipt_id})
+        unread = any(item["phase"] != "AWAITING_TERMINAL" for item in pending)
+        return {"pending": pending, "pending_count": len(pending), "collected_count": collected,
+                "yield_status": "UNREAD_RESULTS" if unread else "AWAITING_RESULTS" if pending else "CLEAR",
+                "claim_limit": "Collected means an observed readable result digest; it is not verification or acceptance. "
+                               "Terminal status and ACK are not collection."}
+
+    def collect_result(self, reservation_id: str, collecting_owner_id: str, *, observation: str,
+                       result_digest: str, observed_at_ms: int) -> bool:
+        """Retain the collector's observed result outcome for one terminal run.
+
+        READABLE requires the observed digest and never changes afterwards; MISSING or
+        UNREADABLE stay unread debt and may later upgrade to READABLE.
+        """
+        item = self.reservation(reservation_id)
+        if not item.collecting_owner_id or item.collecting_owner_id != collecting_owner_id:
+            raise InvariantError("collection requires the retained collector")
+        if observation not in RESULT_OBSERVATIONS or (observation == "READABLE") != bool(result_digest):
+            raise InvariantError("collection requires a typed observation and a digest only for a readable result")
+        digest = _digest(result_digest, "observed result") if result_digest else ""
+        if not item.request_digest or not (item.host_completed or item.failure_kind is not None):
+            raise InvariantError("collection requires a dispatched terminal run")
+        if (item.result_observation, item.result_digest) == (observation, digest):
+            return False
+        if item.result_observation == "READABLE":
+            raise InvariantError("observed result conflicts with the retained collected digest")
+        item.result_observation, item.result_digest = observation, digest
+        item.updated_at_ms = max(observed_at_ms, item.updated_at_ms)
         return True
 
     def fail_transport(self, reservation_id: str, kind: ExecutionFailureKind, *, observed_at_ms: int, http_status: int = 0, detail: str = "") -> ExecutionReservation:

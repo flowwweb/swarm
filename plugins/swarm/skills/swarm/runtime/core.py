@@ -116,6 +116,98 @@ def close_pin_policy(
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user kept or changed pin/task/folder state")
     return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "closeout mutation not independently authorized")
 
+
+ROTATION_STEPS = ("ACK", "TITLE", "PIN", "UNPIN", "ARCHIVE")
+
+
+@dataclass(frozen=True)
+class RotationReadback:
+    """Fresh host readback for one explicitly authorized CTRL rotation.
+
+    ``None`` means the host did not expose that readback. ``baseline_pinned`` is the
+    complete pinned list read before the first step and retained by the caller.
+    """
+    predecessor_id: str
+    successor_id: str
+    authorized: bool
+    baseline_pinned: tuple[str, ...]
+    pinned: tuple[str, ...] | None
+    successor_ack: bool
+    expected_title: str
+    successor_title: str | None
+    predecessor_archived: bool | None
+    predecessor_in_flight: bool
+    user_keep_pinned: bool = False
+    capabilities: frozenset[str] = frozenset({"title", "pin", "reorder", "unpin", "archive"})
+
+
+@dataclass(frozen=True)
+class RotationStep:
+    status: str  # NEXT, COMPLETE, BLOCKED, UNVERIFIED
+    step: str
+    reason: str
+    reorder_to: tuple[str, ...] = ()
+
+
+def rotation_next_step(read: RotationReadback) -> RotationStep:
+    """Return the next idempotent rotation step from current state; never mutate the host.
+
+    An explicit rotate authorizes, for the exact predecessor only: successor ACK and
+    title, the successor taking the predecessor's pinned slot (every other pinned item
+    keeps its relative order), then predecessor unpin and archive. A completed step
+    is recognized from readback and skipped, so a partial transition resumes.
+    """
+    pred, succ = read.predecessor_id, read.successor_id
+    if not read.authorized or not pred or not succ or pred == succ:
+        return RotationStep("BLOCKED", "ACK", "explicit rotate authority for one exact predecessor and successor is required")
+    if pred not in read.baseline_pinned or succ in read.baseline_pinned:
+        return RotationStep("BLOCKED", "PIN", "baseline must show the pinned predecessor and an unpinned successor")
+    if not read.successor_ack:
+        return RotationStep("NEXT", "ACK", "successor must acknowledge project, goal, owners, model and pending duties")
+    if read.successor_title is None:
+        return RotationStep("UNVERIFIED", "TITLE", "host exposes no title readback")
+    if read.successor_title != read.expected_title:
+        if "title" not in read.capabilities:
+            return RotationStep("UNVERIFIED", "TITLE", "host title capability is unavailable")
+        return RotationStep("NEXT", "TITLE", "set and read back the successor title")
+    if read.predecessor_archived:
+        if read.pinned is None:
+            return RotationStep("UNVERIFIED", "ARCHIVE", "host exposes no pinned readback")
+        expected = tuple(succ if item == pred else item for item in read.baseline_pinned)
+        if read.pinned != expected:
+            return RotationStep("BLOCKED", "PIN", "archived predecessor left an unexpected pinned order")
+        return RotationStep("COMPLETE", "ARCHIVE", "successor holds the predecessor slot; predecessor archived")
+    if read.pinned is None:
+        return RotationStep("UNVERIFIED", "PIN", "host exposes no pinned readback")
+    others = tuple(item for item in read.baseline_pinned if item != pred)
+    slot = read.baseline_pinned.index(pred)
+    if pred in read.pinned:
+        # Successor sits directly ahead of the predecessor, so unpinning leaves it in that slot.
+        target = others[:slot] + (succ, pred) + others[slot:]
+        if read.pinned != target:
+            if tuple(item for item in read.pinned if item not in {pred, succ}) != others:
+                return RotationStep("BLOCKED", "PIN", "unrelated pinned order changed since baseline; preserve user order")
+            if not {"pin", "reorder"} <= read.capabilities:
+                return RotationStep("UNVERIFIED", "PIN", "host pin or reorder capability is unavailable")
+            return RotationStep("NEXT", "PIN", "pin the successor, then reorder with the complete list", target)
+        if read.user_keep_pinned:
+            return RotationStep("COMPLETE", "UNPIN", "user keep-pinned exception: predecessor left pinned and unarchived")
+        if read.predecessor_in_flight:
+            return RotationStep("BLOCKED", "UNPIN", "predecessor retains an unresolved in-flight lease")
+        if "unpin" not in read.capabilities:
+            return RotationStep("UNVERIFIED", "UNPIN", "host unpin capability is unavailable")
+        return RotationStep("NEXT", "UNPIN", "unpin the exact predecessor and read back the pinned list")
+    expected = others[:slot] + (succ,) + others[slot:]
+    if read.pinned != expected:
+        return RotationStep("BLOCKED", "UNPIN", "pinned order after unpin does not match the predecessor slot")
+    if read.user_keep_pinned:
+        return RotationStep("BLOCKED", "UNPIN", "predecessor was unpinned despite a user keep-pinned exception")
+    if read.predecessor_in_flight:
+        return RotationStep("BLOCKED", "ARCHIVE", "predecessor retains an unresolved in-flight lease")
+    if read.predecessor_archived is None or "archive" not in read.capabilities:
+        return RotationStep("UNVERIFIED", "ARCHIVE", "host archive capability or readback is unavailable")
+    return RotationStep("NEXT", "ARCHIVE", "archive the exact predecessor and read back its state")
+
 BUILT_IN_PROFESSION_TOKENS = frozenset(
     {profession_id.upper() for profession_id in BUILT_IN_PROFESSIONS}
     | {label.upper() for label in BUILT_IN_PROFESSIONS.values()}

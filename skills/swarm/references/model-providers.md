@@ -51,3 +51,14 @@ keeps computer-use work on the configured GPT-6 models, including Luna. Spark
 is text-only during its research preview and is not a large-goal fallback. Its
 separate small-work toggle is off by default; even when enabled, it is limited
 to the allowlist in [config.md](config.md#spark-small-work-policy).
+
+## Model selection and Spark
+
+Preserve every explicit user-selected Codex model, service tier, and reasoning
+level exactly across CTRL and all assignments. SWARM may recommend a change but
+never applies one unless the user explicitly asks; if the host cannot honor a
+selection, report the exact blocker instead of substituting. Spark is opt-in
+(`boost.spark_enabled` with the `spark_simple_work` strategy) for read-only
+inspection, narrow search, formatting, copy edits or one obvious local check
+under the `simple` workload and shell-only access; anything else stays on the
+configured role model. Count Spark use only from the host's actual model receipt.

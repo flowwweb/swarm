@@ -101,7 +101,8 @@ class CtrlCommunicationContractTests(unittest.TestCase):
             "in progress is not done", "blocked` is not accepted",
         ):
             self.assertIn(phrase,combined)
-        self.assertIn("source/static/local is not browser/deployed/human",skill.lower())
+        self.assertIn("source/static/local is not browser/deployed/human",monitoring.lower())
+        self.assertIn("never promote one another",skill.lower())
         self.assertIn("unchanged work stays quiet",monitoring.lower())
 
     def test_canonical_and_plugin_policy_surfaces_are_identical(self):

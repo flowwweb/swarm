@@ -25,6 +25,8 @@ from build_package import (
     installed_file_hashes,
     is_git_repository_root,
     release_identity,
+    runtime_file_bytes,
+    COMPACT_ENTRIES,
     source_file_hashes,
     validate_plugin_manifest,
     validate_canonical_paths,
@@ -48,11 +50,13 @@ def _compare(expected: dict[str, str], actual: dict[str, str]) -> int:
 
 
 def verify(source: Path, installed: Path) -> int:
-    source_files = (
-        release_identity(source).files
-        if is_git_repository_root(source)
-        else source_file_hashes(source)
-    )
+    if is_git_repository_root(source):
+        source_files = release_identity(source).files
+    else:
+        source_files = source_file_hashes(source)
+        for name in COMPACT_ENTRIES.keys() & source_files.keys():
+            payload = runtime_file_bytes(name, (source / name).read_bytes())
+            source_files[name] = hashlib.sha256(payload).hexdigest()
     validate_plugin_manifest(source, source_files)
     return _compare(source_files, declared_files(installed))
 
@@ -112,7 +116,8 @@ def _declared_skill_file_hashes(root: Path) -> dict[str, str]:
             if not _source_included(repository_relative):
                 continue
             relative = normalise_relative_path(candidate.relative_to(root))
-            files[relative] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            payload = runtime_file_bytes(repository_relative.as_posix(), candidate.read_bytes())
+            files[relative] = hashlib.sha256(payload).hexdigest()
     if "SKILL.md" not in files:
         raise ValueError("canonical skill is missing SKILL.md")
     return dict(sorted(files.items()))
@@ -159,13 +164,16 @@ def install_agent_skill(project_root: Path) -> int:
             destination_file.parent.mkdir(parents=True, exist_ok=True)
             if _is_reparse_path(destination_file.parent):
                 raise ValueError("Agent Skills destination parent contains a link or junction")
-            shutil.copy2(source_file, destination_file)
-        copied_files = _skill_file_hashes(destination)
+            name = source_file.relative_to(REPOSITORY_ROOT).as_posix()
+            if name in COMPACT_ENTRIES:
+                destination_file.write_bytes(runtime_file_bytes(name, source_file.read_bytes()))
+            else:
+                shutil.copy2(source_file, destination_file)
+        return _compare(source_files, _skill_file_hashes(destination))
     except Exception:
         if destination.exists() and not _is_reparse_path(destination):
             shutil.rmtree(destination)
         raise
-    return _compare(source_files, copied_files)
 
 
 LOWER_HEX_40 = re.compile(r"[0-9a-f]{40}\Z")

@@ -460,3 +460,18 @@ glob or broad purge, and must exclude undecided, current, selected, sole, or
 user-controlled evidence. This lifecycle adds no worker, process, or service;
 selection metadata remains part of the normal handoff and does not bypass
 independent review or declared proof.
+
+## Proof plans and gate results
+
+Every artifact-producing lane declares its typed lane kind, immutable
+`ArtifactIdentity`, bound LEAD, deterministic `ProofPlan` and independent
+`ACCEPTANCE` route; unknown input broadens proof. Gate results are `PASS`,
+`FAIL` or `TIMEOUT`; a timeout never passes and permits at most one typed
+transient retry. Missing, failed, timed-out, wrong-artifact, uncovered-claim or
+source-only receipts stay open, and provider, deployed, device and human claims
+stay `UNVERIFIED` without an isolated host verifier observation. Load the review
+contract before accepting visual, browser, provider, deployed, device, security,
+consequential, or release work. Choose reuse, delete, or consolidate before
+adding; correct doctrine at its lowest layer and consolidate rather than add
+incident clauses. For a material capability choice load
+[proven-solutions.md](proven-solutions.md).

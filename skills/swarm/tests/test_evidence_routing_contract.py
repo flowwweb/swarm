@@ -26,7 +26,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         root = Path(__file__).parents[1]
-        cls.skill = "\n".join((root / name).read_text(encoding="utf-8") for name in ("SKILL.md", "references/hierarchy.md", "references/monitoring.md", "references/review-contract.md"))
+        cls.skill = "\n".join((root / name).read_text(encoding="utf-8") for name in ("SKILL.md", "references/hierarchy.md", "references/monitoring.md", "references/review-contract.md", "references/design-guide.md"))
 
     def setUp(self):
         self.swarm = Swarm()

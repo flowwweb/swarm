@@ -10,8 +10,12 @@ PLUGIN_SKILL = REPOSITORY_ROOT / "plugins" / "swarm" / "skills" / "swarm" / "SKI
 class UserIntentFeedContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.skill = SKILL.read_text(encoding="utf-8")
-        cls.plugin_skill = PLUGIN_SKILL.read_text(encoding="utf-8")
+        # The intent-feed rules moved from the root into hierarchy.md and task-contract.md.
+        relocated = ("references/hierarchy.md", "references/task-contract.md")
+        cls.root = SKILL.read_text(encoding="utf-8")
+        cls.plugin_root = PLUGIN_SKILL.read_text(encoding="utf-8")
+        cls.skill = "\n".join([cls.root, *((SKILL.parent / name).read_text(encoding="utf-8") for name in relocated)])
+        cls.plugin_skill = "\n".join([cls.plugin_root, *((PLUGIN_SKILL.parent / name).read_text(encoding="utf-8") for name in relocated)])
 
     def test_message_bursts_merge_compatible_intent(self):
         for text in (self.skill, self.plugin_skill):
@@ -36,7 +40,9 @@ class UserIntentFeedContractTests(unittest.TestCase):
             self.assertIn("reorient the existing owner within the same lane", text)
 
     def test_plugin_entrypoint_matches_canonical_skill(self):
+        self.assertEqual(self.root, self.plugin_root)
         self.assertEqual(self.skill, self.plugin_skill)
+        self.assertIn("one ordered feed", self.root)
 
 
 if __name__ == "__main__":

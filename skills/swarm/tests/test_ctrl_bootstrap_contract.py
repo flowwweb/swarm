@@ -13,22 +13,24 @@ LEGACY_TITLE = "🐙CTRL - <project> - <detailed descriptor>"
 
 class CtrlBootstrapContractTests(unittest.TestCase):
     def test_post_goal_title_verification_preserves_latest_user_preference(self) -> None:
-        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        hierarchy = (SKILL_ROOT / "references/hierarchy.md").read_text(encoding="utf-8")
+        # Step 0 now lives in the task-triggered hierarchy reference; the root points there.
+        root = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        skill = hierarchy = (SKILL_ROOT / "references/hierarchy.md").read_text(encoding="utf-8")
+        self.assertIn("references/hierarchy.md#task-naming-pins-and-rotation", root)
         step_zero = skill.split("**Step 0, never defer:**", 1)[1].split("After the Step 0 custody check", 1)[0]
         self.assertRegex(step_zero, r"(?s)After creating or updating the durable goal.*freshly read.*exact task's.*display title before dispatch")
         self.assertIn("full goal text is not display-name authority", step_zero)
         self.assertRegex(step_zero, r"(?s)Preserve an explicit user title;.*repair only an authorized generated-title mismatch.*verify the result.*failed rename incomplete")
         self.assertRegex(step_zero, r"(?s)expressly requested `👑 Portfolio`\s+stays exactly that")
         self.assertIn("CTRL/LEAD/DOER remain internal roles, not display prefixes", step_zero)
-        self.assertIn("[SKILL.md Step 0](../SKILL.md#start)", hierarchy)
+        self.assertIn("[Step 0](#task-naming-pins-and-rotation)", hierarchy)
         self.assertIn("do not override host display names", hierarchy)
-        for text in (skill, hierarchy):
+        for text in (root, hierarchy):
             self.assertNotIn("<role emoji><PROFESSION> LEAD -", text)
             self.assertNotIn("<role emoji><PROFESSION> DOER -", text)
 
     def test_step_zero_precedes_all_substantive_work(self) -> None:
-        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        skill = (SKILL_ROOT / "references/hierarchy.md").read_text(encoding="utf-8")
         self.assertIn("**Step 0, never defer:**", skill)
         self.assertIn(NEW_TITLE, skill)
         step_zero = skill.split("**Step 0, never defer:**", 1)[1].split("After the Step 0 custody check", 1)[0]
@@ -55,7 +57,9 @@ class CtrlBootstrapContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 text = path.read_text(encoding="utf-8")
                 if path.name == "task-contract.md":
-                    self.assertIn("[SKILL.md Step 0](../SKILL.md#start)", text)
+                    self.assertIn("[Step 0](hierarchy.md#task-naming-pins-and-rotation)", text)
+                elif path.name == "SKILL.md":
+                    self.assertIn("references/hierarchy.md#task-naming-pins-and-rotation", text)
                 else:
                     self.assertIn(NEW_TITLE, text)
                 self.assertNotIn(LEGACY_TITLE, text)
@@ -72,7 +76,7 @@ class CtrlBootstrapContractTests(unittest.TestCase):
         self.assertIn("Fail the intake contract", intake[76]["expected_output"])
 
     def test_project_icons_do_not_inherit_the_default_octopus(self) -> None:
-        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        skill = (SKILL_ROOT / "references/hierarchy.md").read_text(encoding="utf-8")
         config = (SKILL_ROOT / "references/config.md").read_text(encoding="utf-8")
         normalized = " ".join(skill.split())
         self.assertIn('default `role_icons.ctrl = "🐙"` is not an explicit user icon choice', normalized)
@@ -83,7 +87,7 @@ class CtrlBootstrapContractTests(unittest.TestCase):
         self.assertNotIn("🐙 <objective>", skill + config)
 
     def test_authorized_icon_only_repair_preserves_custody_and_explicit_choices(self) -> None:
-        skill = " ".join((SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8").split())
+        skill = " ".join((SKILL_ROOT / "references/hierarchy.md").read_text(encoding="utf-8").split())
         self.assertIn("replace only its leading emoji; preserve the rest of the title exactly", skill)
         self.assertIn("Explicit user icon choices, naming exceptions and icon opt-outs remain protected", skill)
         self.assertIn("Do not infer icon-repair authority from pinning alone", skill)

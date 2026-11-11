@@ -9,10 +9,16 @@ import os
 from pathlib import Path, PurePosixPath
 
 from build_package import (
+    COMPACT_ENTRIES,
+    COMPACT_WORD_CAP,
     _is_reparse_path,
     _tracked_product_paths,
     canonical_worktree_bytes,
+    compact_entry,
+    compact_link_errors,
+    compact_word_count,
     installed_file_hashes,
+    runtime_file_bytes,
     is_git_repository_root,
     source_file_hashes,
     validate_plugin_manifest,
@@ -20,6 +26,49 @@ from build_package import (
 
 
 MIRROR_RELATIVE = Path("plugins") / "swarm"
+# Entries read in place (no install transform) must themselves stay compact.
+NATIVE_ENTRIES = ("AGENTS.md",)
+
+
+def write_compact_entries(root: Path) -> None:
+    """Regenerate each compact copy from its human-edited source (on canonical change only)."""
+    for source, output in COMPACT_ENTRIES.items():
+        payload = compact_entry((root / PurePosixPath(source)).read_bytes(), source)
+        target = root / PurePosixPath(output)
+        if not target.is_file() or target.read_bytes() != payload:
+            target.write_bytes(payload)
+
+
+def entry_guidance_violations(root: Path, cap: int = COMPACT_WORD_CAP) -> list[str]:
+    """Stale compact copies, entries over the word cap, and unresolved relative links."""
+    violations = []
+    entries: list[tuple[str, bytes, Path]] = []
+    for source, output in COMPACT_ENTRIES.items():
+        try:
+            expected = compact_entry((root / PurePosixPath(source)).read_bytes(), source)
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            violations.append(f"{source}: {error}")
+            continue
+        target = root / PurePosixPath(output)
+        if not target.is_file() or target.read_bytes() != expected:
+            violations.append(f"{output}: stale or missing; run --write")
+        entries.append((output, expected, (root / PurePosixPath(source)).parent))
+    for relative in NATIVE_ENTRIES:
+        path = root / PurePosixPath(relative)
+        try:
+            entries.append((relative, path.read_bytes().replace(b"\r\n", b"\n"), path.parent))
+        except OSError:
+            violations.append(f"{relative}: missing")
+    for name, payload, base in entries:
+        try:
+            words = compact_word_count(payload)
+        except UnicodeDecodeError:
+            violations.append(f"{name}: not valid UTF-8")
+            continue
+        if words > cap:
+            violations.append(f"{name}: {words} words exceeds {cap}")
+        violations.extend(f"{name}: {error}" for error in compact_link_errors(payload, base))
+    return violations
 
 
 @dataclass(frozen=True)
@@ -46,6 +95,7 @@ def _expected_source(root: Path) -> SourceSnapshot:
         if hashlib.sha256(payload).hexdigest() != observation:
             raise ValueError(f"canonical product file changed during mirror snapshot: {relative}")
         canonical = canonical_worktree_bytes(root, relative, payload)
+        canonical = runtime_file_bytes(relative, canonical)
         payloads[relative] = canonical
         files[relative] = hashlib.sha256(canonical).hexdigest()
     validate_plugin_manifest(root, files)
@@ -140,6 +190,14 @@ def main() -> int:
     action.add_argument("--check", action="store_true", help="fail when the tracked mirror drifts")
     action.add_argument("--write", action="store_true", help="synchronize the tracked mirror")
     args = parser.parse_args()
+    if args.write:
+        try:
+            write_compact_entries(args.source.resolve())
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            parser.error(f"compact entry generation failed: {error}")
+    violations = entry_guidance_violations(args.source.resolve())
+    if violations:
+        parser.error("entry guidance: " + "; ".join(violations))
     try:
         count = check_mirror(args.source) if args.check else write_mirror(args.source)
     except ValueError as error:

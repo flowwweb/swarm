@@ -11,7 +11,7 @@ import sys
 import tomllib
 import unicodedata
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from string import Formatter
 from typing import Any
@@ -48,9 +48,10 @@ DEFAULTS: dict[str, Any] = {
     },
     "task_titles": {
         "controller_template": "{project}",
-        "unit_template": "{project} · {unit} · {responsibility}",
-        "lead_template": "{project} · {role} · {responsibility}",
-        "worker_template": "{project} · {role} · {responsibility}",
+        "unit_template": "{project} • {unit} • {responsibility} • {created:MMM D}",
+        "lead_template": "{project} • {role} • {responsibility} • {created:MMM D}",
+        "worker_template": "{project} • {role} • {responsibility} • {created:MMM D}",
+        "separator": " • ",
         "controller_show_emoji": True,
         "unit_show_emoji": True,
         "lead_show_emoji": True,
@@ -295,6 +296,9 @@ class ConfigError(Exception):
 
 TITLE_CATEGORIES = ("controller", "unit", "lead", "worker")
 TITLE_VARIABLES = ("{project}", "{unit}", "{role}", "{responsibility}", "{created:MMM D}")
+TITLE_SEPARATORS = (" • ", " | ", " / ")
+# Template segment delimiters: the bullet, plus the legacy middle dot for existing templates.
+TITLE_SEGMENT_DELIMITERS = ("•", "·")
 TITLE_PIN_KEYS = dict(zip(TITLE_CATEGORIES, ("pin_created_tasks", "pin_created_units", "pin_created_leads", "pin_created_workers")))
 
 
@@ -312,6 +316,20 @@ def _title_template_parts(template: Any) -> list[tuple[str, str | None, str | No
                 or (field != "created" and (field not in {"project", "unit", "role", "responsibility"} or spec))):
             raise ConfigError("task title template contains an unsupported variable or format")
     return parts
+
+
+def _created_month_day(created: str | None) -> str:
+    """Render 'Nov 11' from the retained creation timestamp's own calendar date.
+
+    The full timestamp stays the caller's retained value; the label never uses
+    the current clock or a timezone conversion, so resume renders the same text.
+    """
+    text = (created or "").strip()
+    try:
+        day = datetime.fromisoformat(text.replace("Z", "+00:00")).date() if "T" in text else date.fromisoformat(text)
+    except (ValueError, TypeError) as exc:
+        raise ConfigError("created title variable requires the retained ISO creation timestamp") from exc
+    return "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()[day.month - 1] + " " + str(day.day)
 
 
 def resolve_task_presentation(effective: dict[str, Any], category: str, *, project: str,
@@ -338,18 +356,28 @@ def resolve_task_presentation(effective: dict[str, Any], category: str, *, proje
             raise ConfigError("existing task title must be nonempty")
         return {"title": existing_title, **intent}
     settings = effective["task_titles"]
-    fragments = []
+    separator = settings.get("separator", DEFAULTS["task_titles"]["separator"])
+    if separator not in TITLE_SEPARATORS:
+        raise ConfigError("task_titles.separator must be ' • ', ' | ', or ' / '")
+    # Split the template, never the rendered values, so a value containing a
+    # delimiter stays intact. Empty segments are omitted.
+    segments, fragments = [], []
     for literal, field, _, _ in _title_template_parts(settings[category + "_template"]):
-        fragments.append(literal)
+        pieces = literal
+        for delimiter in TITLE_SEGMENT_DELIMITERS[1:]:
+            pieces = pieces.replace(delimiter, TITLE_SEGMENT_DELIMITERS[0])
+        *closed, open_piece = pieces.split(TITLE_SEGMENT_DELIMITERS[0])
+        for piece in closed:
+            fragments.append(piece)
+            segments.append("".join(fragments).strip())
+            fragments = []
+        fragments.append(open_piece)
         if field == "created":
-            try:
-                day = date.fromisoformat(created or "")
-            except (ValueError, TypeError) as exc:
-                raise ConfigError("created title variable requires the retained ISO creation date") from exc
-            fragments.append(("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()[day.month - 1]) + " " + str(day.day))
+            fragments.append(_created_month_day(created))
         elif field is not None:
             fragments.append(values[field].strip())
-    title = " · ".join(segment.strip() for segment in "".join(fragments).split("·") if segment.strip())
+    segments.append("".join(fragments).strip())
+    title = separator.join(segment for segment in segments if segment)
     if not title or len(title) > 160:
         raise ConfigError("resolved task title must contain 1-160 characters")
     icons = effective["role_icons"]
@@ -512,6 +540,8 @@ def validate(raw: dict[str, Any], *, partial: bool = False) -> None:
         if key in titles:
             _title_template_parts(titles[key])
         _boolean(titles, category + "_show_emoji", "task_titles")
+    if "separator" in titles and titles["separator"] not in TITLE_SEPARATORS:
+        raise ConfigError("task_titles.separator must be ' • ', ' | ', or ' / '")
 
     execution = _expect_table(raw, "execution")
     _expect_keys(execution, set(DEFAULTS["execution"]), "execution")

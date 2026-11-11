@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class RoutingContractTests(unittest.TestCase):
     def test_visible_lane_is_not_replaced_by_subagent(self) -> None:
-        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        skill = (ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")  # moved from the root
         hierarchy = (ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
         self.assertIn("Materialize a visible task lane", skill)
         self.assertIn("Use a subagent only as short bounded capacity", skill)
@@ -26,8 +26,10 @@ class RoutingContractTests(unittest.TestCase):
         for text in (skill, providers):
             self.assertIn("explicit user", text)
             self.assertIn("reasoning level", text)
-            self.assertIn("exact blocker", text)
-        self.assertIn("never applies one unless the user explicitly asks", skill)
+        self.assertRegex(skill, r"(?s)Recommend a change; apply it\s+only when the user asks")
+        self.assertRegex(skill, r"(?s)report the\s+blocker instead of substituting")
+        self.assertIn("exact blocker", providers)
+        self.assertIn("never applies one unless the user explicitly asks", providers)
         self.assertIn("must not silently lower, raise, replace, or reinterpret", providers)
 
     def test_recursive_lead_and_leaf_subagent_contract_is_explicit(self) -> None:

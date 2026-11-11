@@ -114,7 +114,10 @@ class SwarmSkillStructureTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("Visible lane names use a concise responsibility or artifact", skill)
+        # Superseded: lane names now follow project • name • task • creation date.
+        self.assertNotIn("Visible lane names use a concise responsibility or artifact", skill)
+        self.assertIn("`project • name • task • Nov 11`", skill)
+        self.assertIn("never recomputed on resume", skill)
         self.assertIn("CTRL/LEAD/DOER remain internal roles, not display prefixes", skill)
         self.assertRegex(skill, r"Preserve an\s+explicit custom title or naming exception")
         self.assertIn("A visible LEAD exists only for a named durable mutable", hierarchy)
@@ -317,7 +320,8 @@ class SwarmSkillStructureTests(unittest.TestCase):
         )
 
     def test_ctrl_operator_boundary_preserves_small_direct_work_and_delegates_visuals(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
+        # The operator boundary moved from the root into its owning references.
+        skill = doctrine() + (SKILL_ROOT / "references" / "skills-catalog.md").read_text(encoding="utf-8")
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
         task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(encoding="utf-8")
         evals = json.loads(EVALS.read_text(encoding="utf-8"))
@@ -345,7 +349,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
     def test_progress_is_material_event_driven_and_liveness_is_separate(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
         task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(encoding="utf-8")
-        self.assertIn("Load [task-contract.md]", skill)
+        self.assertIn("[task-contract.md](references/task-contract.md)", skill)
         self.assertRegex(task_contract, r"(?is)existing typed owner result.*append one canonical material event")
         self.assertRegex(task_contract, r"(?is)never call a model or schedule a report solely for the.*Project progress feed")
         self.assertRegex(task_contract, r"(?is)Exact duplicate content/state/proof.*no-ops")

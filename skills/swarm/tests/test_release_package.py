@@ -39,6 +39,51 @@ SPEC.loader.exec_module(verifier)
 
 
 class ReleasePackageTests(unittest.TestCase):
+    def test_compact_entry_word_cap_freshness_and_links(self):
+        self.assertEqual(mirror_sync.entry_guidance_violations(REPOSITORY_ROOT), [])
+        self.assertEqual(package_builder.COMPACT_WORD_CAP, 420)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = root / "skills/swarm/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("<!-- compact -->\nRead [guide](guide.md).\n<!-- /compact -->\n")
+            agents = root / "AGENTS.md"
+            agents.write_bytes(("word\u2003" * 420).encode())
+            mirror_sync.write_compact_entries(root)
+            self.assertIn("missing link target", str(mirror_sync.entry_guidance_violations(root)))
+            (skill.parent / "guide.md").write_text("# Guide")
+            self.assertEqual(mirror_sync.entry_guidance_violations(root), [])
+            agents.write_bytes(agents.read_bytes() + b"extra")
+            self.assertIn("421 words exceeds 420", str(mirror_sync.entry_guidance_violations(root)))
+            agents.write_bytes(b"ok")
+            skill.write_bytes(skill.read_bytes() + b"Human-only detail")
+            self.assertIn("stale", str(mirror_sync.entry_guidance_violations(root)))
+            run = subprocess.run([sys.executable, str(BUILDER_PATH.parent / "sync_plugin_mirror.py"),
+                                  "--source", str(root), "--check"], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 2)
+            self.assertIn("stale", run.stderr)
+
+    def test_compact_entry_in_zip_and_project_install(self):
+        native = "skills/swarm/SKILL.md"
+        expected = (REPOSITORY_ROOT / "skills/swarm/swarm.min.md").read_bytes()
+        self.assertEqual((REPOSITORY_ROOT / "plugins/swarm" / native).read_bytes(), expected)
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root = self.make_plugin(parent)
+            shutil.copyfile(REPOSITORY_ROOT / native, root / native)
+            subprocess.run(["git", "-C", str(root), "commit", "-qam", "compact fixture"], check=True)
+            payload, metadata = build_package_bytes(root)
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                self.assertEqual(archive.read(native), expected)
+                self.assertNotIn("skills/swarm/swarm.min.md", archive.namelist())
+            self.assertEqual(metadata["files"][native], hashlib.sha256(expected).hexdigest())
+            project = parent / "project"
+            project.mkdir()
+            verifier.install_agent_skill(project)
+            installed = project / ".agents" / native
+            self.assertEqual(installed.read_bytes(), expected)
+            self.assertFalse((installed.parent / "swarm.min.md").exists())
+
     def test_actual_configured_desktop_entry_serves_hq(self):
         entry = json.loads((REPOSITORY_ROOT / '.mcp.json').read_bytes())['mcpServers']['swarm']
         requests = [

@@ -63,8 +63,70 @@ DEVELOPMENT_ONLY_PATHS = frozenset(
         "scripts/select_ci_scope.py",
         "scripts/optimize_images.py",
         "scripts/test_optimize_images.py",
+        # Generated review copy of the shipped compact entry; never shipped itself.
+        "skills/swarm/swarm.min.md",
     }
 )
+# Human-edited instruction source -> generated compact copy. Packages and the
+# plugin mirror ship the compact text under the native entry filename.
+COMPACT_ENTRIES = {"skills/swarm/SKILL.md": "skills/swarm/swarm.min.md"}
+COMPACT_WORD_CAP = 420
+_COMPACT_BLOCK = re.compile(r"^<!-- compact -->\n(.*?)\n<!-- /compact -->$", re.S | re.M)
+_MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+
+
+def compact_entry(source: bytes, source_name: str) -> bytes:
+    """Frontmatter plus the source's marked `<!-- compact -->` blocks, bound to the source digest."""
+    text = source.decode("utf-8").replace("\r\n", "\n")
+    frontmatter = ""
+    if text.startswith("---\n"):
+        end = text.index("\n---\n", 4) + 5
+        frontmatter, text = text[:end], text[end:]
+    blocks = [block.strip("\n") for block in _COMPACT_BLOCK.findall(text)]
+    if not blocks:
+        raise ValueError(f"instruction source has no compact blocks: {source_name}")
+    digest = hashlib.sha256(source.replace(b"\r\n", b"\n")).hexdigest()[:16]
+    header = f"<!-- generated from {source_name} sha256:{digest}; edit the source, not this file -->"
+    return (frontmatter + header + "\n\n" + "\n\n".join(blocks) + "\n").encode("utf-8")
+
+
+def runtime_file_bytes(name: str, payload: bytes) -> bytes:
+    """Historical source and already-compiled installs contain no compact directives."""
+    if name in COMPACT_ENTRIES and b"<!-- compact -->" in payload:
+        compiled = compact_entry(payload, name)
+        if compact_word_count(compiled) > COMPACT_WORD_CAP:
+            raise ValueError(f"{name}: generated entry exceeds {COMPACT_WORD_CAP} words")
+        return compiled
+    return payload
+
+
+def compact_word_count(payload: bytes) -> int:
+    """Words = Unicode-whitespace-separated tokens of the full UTF-8 Markdown, frontmatter included."""
+    return len(payload.decode("utf-8").split())
+
+
+def _heading_slugs(text: str) -> set[str]:
+    slugs = set()
+    for line in text.splitlines():
+        if line.startswith("#"):
+            title = line.lstrip("#").strip().lower()
+            slugs.add(re.sub(r"\s", "-", re.sub(r"[^\w\s-]", "", title)))
+    return slugs
+
+
+def compact_link_errors(payload: bytes, base: Path) -> list[str]:
+    """Relative links and anchors in a compact entry must resolve from the entry's directory."""
+    errors = []
+    for target in _MARKDOWN_LINK.findall(payload.decode("utf-8")):
+        if re.match(r"^[a-z][a-z0-9+.-]*:", target):
+            continue
+        path, _, anchor = target.partition("#")
+        resolved = base / PurePosixPath(path) if path else None
+        if resolved is None or not resolved.is_file():
+            errors.append(f"missing link target: {target}")
+        elif anchor and anchor not in _heading_slugs(resolved.read_text(encoding="utf-8")):
+            errors.append(f"missing link anchor: {target}")
+    return errors
 DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
     {
         ".codex/swarm",
@@ -491,6 +553,7 @@ def _capture_snapshot(root: Path, commit: str, tree: str) -> GitSnapshot:
         if object_type != "blob" or mode not in {"100644", "100755"}:
             raise ValueError(f"unsupported tracked source entry: {archive_name} ({mode} {object_type})")
         blob = _git_bytes(root, "cat-file", "blob", object_id)
+        blob = runtime_file_bytes(archive_name, blob)
         blob_ids[archive_name] = object_id
         blobs[archive_name] = blob
         files[archive_name] = hashlib.sha256(blob).hexdigest()

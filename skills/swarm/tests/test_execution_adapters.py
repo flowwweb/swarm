@@ -264,7 +264,7 @@ class ExecutionAdapterTests(unittest.TestCase):
 
     def test_codex_adapter_consumes_topology_packet_as_instruction_only_and_never_emits_host_call(self) -> None:
         plan = TopologyMaterializationPlan((
-            LaneMaterialization("ctrl", Role.CTRL, "Ship", icon="🐙"),
+            LaneMaterialization("ctrl", Role.CTRL, "Ship", icon="🐙", project="SWARM"),
             LaneMaterialization(
                 "doer",
                 Role.DOER,
@@ -274,6 +274,8 @@ class ExecutionAdapterTests(unittest.TestCase):
                 "💻",
                 artifact_id="adapter",
                 direct_production=True,
+                project="SWARM",
+                created="2026-11-11T09:30:00+07:00",
             ),
         ))
         packet = Swarm().topology_dispatch_preflight("ctrl", "thread-ctrl").prepare(plan, ready_lane_ids=("doer",))
@@ -398,10 +400,11 @@ class ExecutionAdapterTests(unittest.TestCase):
         from pathlib import Path
         reference = (Path(__file__).parents[1] / "references/chatgpt-routing.md").read_text(encoding="utf-8")
         skill = (Path(__file__).parents[1] / "SKILL.md").read_text(encoding="utf-8")
-        route = skill.split("ChatGPT is an optional host-owned route", 1)[1].split("Spark is a separate", 1)[0]
+        # The root routing rule moved into chatgpt-routing.md; the root keeps the pointer.
+        route = " ".join(reference.split("ChatGPT is an optional host-owned route", 1)[1].split())
         self.assertIn("With Usage Saver on, cloud-suitable blocks", route)
         self.assertIn("keeps the block pending, never an automatic Codex/imagegen or Work", route)
-        self.assertIn("[chatgpt-routing.md](references/chatgpt-routing.md)", route)
+        self.assertIn("[chatgpt-routing.md](references/chatgpt-routing.md)", skill)
         self.assertNotIn("capability falls back to local Codex", route)
         for required in ("only when Usage Saver is off", "kind: chatgpt",
                          "`list_threads`", "`read_thread`", "`send_message_to_thread`",

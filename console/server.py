@@ -128,6 +128,11 @@ CONSOLE_STATE_DIR_ENV = "SWARM_CONSOLE_DATA_DIR"
 CONSOLE_STATE_FILENAME = "console-state.sqlite3"
 USAGE_SAVER_TUNNEL_METADATA_KEY = "usage-saver-tunnel:v1"
 TOKEN_SAMPLE_SECONDS = 60
+COLLECTION_DISPLAY_LIMIT = 16
+AUTO_LANE_FAILURE = "LANE_RECONCILE_FAILED"
+# Retained-journal corruption stays global and fail-closed; it is never isolated as one lane's wait.
+AUTO_INTEGRITY_MARKERS = ("digest mismatch", "digest conflicts", "restore failed closed",
+                          "retained Auto packet conflicts", "retained content")
 AUTO_BRIDGE_TIMEOUT_SECONDS = 60
 AUTO_CTRL_OVERRIDE_KEY = "_auto"
 AUTO_PURPOSE = "swarm-auto-continuation"
@@ -434,6 +439,26 @@ def _require_flow_projection_budget(definitions: list, assignments: list) -> Non
 def _auto_digest(payload: Any) -> str:
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _auto_writer_scope(root: Path) -> dict[str, Any]:
+    """Digest-only writer scope: the observed root plus every ancestor, so nesting is detectable."""
+    path = Path(root)
+    return {"writer_scope": _auto_digest(_normalized_project_path(str(path))),
+            "writer_ancestors": sorted(_auto_digest(_normalized_project_path(str(parent))) for parent in path.parents)}
+
+
+def _writer_scopes_overlap(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
+    """Equal, nested or unknown scopes overlap; only proven-disjoint roots may run concurrently."""
+    def scope(value):
+        if not isinstance(value, dict) or not isinstance(value.get("writer_scope"), str):
+            return None
+        ancestors = value.get("writer_ancestors")
+        return value["writer_scope"], set(ancestors) if isinstance(ancestors, list) else None
+    a, b = scope(left), scope(right)
+    if a is None or b is None or a[1] is None or b[1] is None:
+        return True
+    return a[0] == b[0] or a[0] in b[1] or b[0] in a[1]
 
 
 def _codex_app_server_executable() -> tuple[str, str]:
@@ -2885,13 +2910,16 @@ class ConsoleStore:
     @staticmethod
     def _validate_execution_reservation_advance(retained: dict[str, Any], incoming: dict[str, Any]) -> None:
         """Reject stale or regressive reservation snapshots before the retained CAS write."""
-        for field in ("reservation_id", "task_id", "owner_id", "project_id", "settings_task_id"):
+        for field in ("reservation_id", "task_id", "owner_id", "project_id", "settings_task_id", "collecting_owner_id"):
             if retained.get(field, "") != incoming.get(field, ""):
                 raise ConsoleError("execution reservation conflicts with retained identity")
         retained_artifact = json.dumps(retained.get("artifact"), sort_keys=True, separators=(",", ":"))
         incoming_artifact = json.dumps(incoming.get("artifact"), sort_keys=True, separators=(",", ":"))
         if retained_artifact != incoming_artifact:
             raise ConsoleError("execution reservation conflicts with retained identity")
+        if retained.get("result_observation") == "READABLE" and (
+                incoming.get("result_observation"), incoming.get("result_digest")) != ("READABLE", retained.get("result_digest")):
+            raise ConsoleError("execution collected result cannot regress or change")
         if bool(retained.get("host_completed")) and not bool(incoming.get("host_completed")):
             next_turn = (
                 str(incoming.get("state") or "") == "active"
@@ -3043,6 +3071,14 @@ class ConsoleStore:
                 self._retain_auto_event(connection, event_kind=kind, identity=identity, payload=payload, now_ms=now_ms)
             connection.commit()
 
+    @staticmethod
+    def _collection_view(ledger: ExecutionDispatchLedger, owner_id: str) -> dict[str, Any]:
+        """Bound only the displayed list; every unread duty stays retained and counted."""
+        status = ledger.collection_status(owner_id)
+        pending = status["pending"]
+        return {**status, "pending": pending[:COLLECTION_DISPLAY_LIMIT],
+                "omitted": max(0, len(pending) - COLLECTION_DISPLAY_LIMIT)}
+
     def ingest_execution_provider_result(self, reservation_id: str, result_bytes: bytes, *,
                                          receipt: DelegatedReturnReceipt, provider_session_id: str,
                                          thread_id: str, turn_id: str, now_ms: int) -> dict[str, Any]:
@@ -3186,6 +3222,17 @@ class ConsoleStore:
             and item.state is ExecutionDispatchState.ACTIVE and not item.host_completed
         ]
 
+    def auto_writer_busy(self, scope: dict[str, Any] | None, ledger: ExecutionDispatchLedger | None = None) -> bool:
+        """True when any active lease may share a writer with this scope.
+
+        Only host-observed roots that are neither equal nor nested run concurrently;
+        a lease or candidate without a retained scope serializes conservatively.
+        """
+        for active, _ in self._auto_active(ledger):
+            if _writer_scopes_overlap(scope, self.auto_connector_packet(active.reservation_id)):
+                return True
+        return False
+
     @classmethod
     def _retain_auto_event(
         cls, connection: sqlite3.Connection, *, event_kind: str, identity: str,
@@ -3214,12 +3261,16 @@ class ConsoleStore:
             row = connection.execute("SELECT revision, fields_json, updated_at_ms FROM ctrl_overrides WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
             fields = {} if row is None else json.loads(str(row["fields_json"]))
             settings = self._auto_settings(fields, ctrl_id=ctrl_id, project_id=project_id)
+            # Filter by this lane before limiting, so other lanes' volume cannot hide its latest disposition.
             receipt_rows = connection.execute(
                 "SELECT event_kind, payload_json FROM execution_event_receipts "
                 "WHERE event_kind IN ('AUTO_DECISION', 'AUTO_OUTCOME', 'AUTO_RELEASE') "
-                "ORDER BY retained_at_ms DESC, event_kind DESC LIMIT 128"
+                "AND instr(payload_json, ?) > 0 AND instr(payload_json, ?) > 0 "
+                "ORDER BY retained_at_ms DESC, event_kind DESC LIMIT 128",
+                ('"ctrl_id":' + json.dumps(ctrl_id, ensure_ascii=True), '"project_id":' + json.dumps(project_id, ensure_ascii=True)),
             ).fetchall()
-        active = [(item, binding) for item, binding in self._auto_active() if binding["ctrl_id"] == ctrl_id and binding["project_id"] == project_id]
+        ledger = self.load_execution_ledger()
+        active = [(item, binding) for item, binding in self._auto_active(ledger) if binding["ctrl_id"] == ctrl_id and binding["project_id"] == project_id]
         if len(active) > 1:
             raise ConsoleError("multiple retained Auto continuation leases fail closed")
         latest = None
@@ -3246,11 +3297,11 @@ class ConsoleStore:
         elif result["last_disposition"] in {"WAIT_USER", "TERMINAL_BLOCKED"}:
             result["attention"] = {"kind": result["last_disposition"], "reason": result["release_condition"], "recovery_authority": result["responsible_authority"]}
         result["claim_limit"] = "Auto host completion is not material progress, proof, review, or acceptance."
+        result["collection"] = self._collection_view(ledger, ctrl_id)
         if reservation is not None:
             result["task_id"] = binding["task_id"]
-            result["speed_control"] = self.load_execution_ledger().speed_application(reservation.reservation_id)
+            result["speed_control"] = ledger.speed_application(reservation.reservation_id)
         elif latest is not None and latest.get("reservation_id"):
-            ledger = self.load_execution_ledger()
             result["speed_control"] = ledger.speed_application(latest["reservation_id"])
         else:
             result["speed_control"] = None
@@ -3344,7 +3395,8 @@ class ConsoleStore:
             if not state["enabled"] or state["stop_after_turn"]:
                 return {"claimed": False, "reason": "AUTO_OFF", "idempotency_key": identity}
             ledger = self.load_execution_ledger()
-            if self._auto_active(ledger): return {"claimed": False, "reason": "IN_FLIGHT", "idempotency_key": identity}
+            if self.auto_writer_busy(connector_packet, ledger):
+                return {"claimed": False, "reason": "IN_FLIGHT", "idempotency_key": identity}
             existing = next((item for item in ledger.reservations if item.reservation_id == reservation_id), None)
             artifact = ArtifactIdentity(
                 f"auto:{values['project_id']}:{values['goal_id']}", digests["decision_digest"], AUTO_PURPOSE,
@@ -3359,7 +3411,8 @@ class ConsoleStore:
                 return {"claimed": False, "reason": "REPLAY", "idempotency_key": identity}
             self._observe_auto_speed(ledger, generation, scoped_generations, project_id=values["project_id"], task_id=values["task_id"])
             ledger.reserve(reservation_id, f"auto-operation-{identity}", values["owner_id"], artifact, observed_at_ms=now_ms,
-                           project_id=values["project_id"], settings_task_id=values["task_id"])
+                           project_id=values["project_id"], settings_task_id=values["task_id"],
+                           collecting_owner_id=values["ctrl_id"])
             ledger.dispatch(reservation_id, digests["instruction_digest"], request_bytes, observed_at_ms=now_ms)
             # The lease and its recovery input must survive or roll back together.
             self.persist_execution_ledger(ledger, now_ms=now_ms, _auto_events=tuple(events))
@@ -3432,7 +3485,8 @@ class ConsoleStore:
             connection.commit()
         return fresh
 
-    def finish_auto_dispatch(self, reservation_id: str, *, result: AutoBridgeResult, disposition: dict[str, Any] | None, now_ms: int) -> dict[str, Any]:
+    def finish_auto_dispatch(self, reservation_id: str, *, result: AutoBridgeResult, disposition: dict[str, Any] | None, now_ms: int,
+                             collection: dict[str, str] | None = None) -> dict[str, Any]:
         reservation_id = _auto_id(reservation_id, "reservation_id")
         if not isinstance(result, AutoBridgeResult):
             raise ConsoleError("Auto completion requires a typed bridge result")
@@ -3460,12 +3514,19 @@ class ConsoleStore:
                 ledger.observe_event(reservation_id, event, observed_at_ms=now_ms, served_tier=result.service_tier_receipt)
             elif not result.turn_started:
                 ledger.fail_transport(reservation_id, ExecutionFailureKind.TIMEOUT, observed_at_ms=now_ms)
+            if collection is not None and result.terminal and reservation.collecting_owner_id:
+                # The collector's own read of the terminal turn; status alone never collects.
+                ledger.collect_result(reservation_id, reservation.collecting_owner_id,
+                    observation=str(collection.get("result_observation") or "UNREADABLE"),
+                    result_digest=str(collection.get("result_digest") or ""), observed_at_ms=now_ms)
             reservation.updated_at_ms = now_ms
             self.persist_execution_ledger(ledger, now_ms=now_ms)
             payload = {"ctrl_id": binding["ctrl_id"], "project_id": binding["project_id"], "reservation_id": reservation_id,
                 "thread_id": reservation.host_thread_id, "turn_id": reservation.host_turn_id,
                 "bridge": {"ok": result.ok, "failure_kind": result.failure_kind, "turn_started": result.turn_started, "terminal": result.terminal, "reachable": result.reachable},
                 "disposition": disposition or {}, "material_progress": False}
+            if reservation.result_observation:
+                payload["collection"] = {"observation": reservation.result_observation, "result_digest": reservation.result_digest}
             with closing(self._connect()) as connection:
                 outcome_phase = "terminal" if result.terminal else "uncertain" if result.turn_started else "prestart"
                 self._retain_auto_event(connection, event_kind="AUTO_OUTCOME", identity=f"{reservation_id}:{outcome_phase}", payload=payload, now_ms=now_ms)
@@ -3504,8 +3565,10 @@ class ConsoleStore:
                     "SELECT event_kind, payload_json FROM execution_event_receipts "
                     "WHERE event_kind IN ('AUTO_OUTCOME', 'AUTO_RECONCILE') ORDER BY retained_at_ms DESC"
                 ).fetchall()
+            # A local lane-failure trace is not a host read and cannot shadow host evidence.
             latest_host_read = next(
-                (payload for row in rows if (payload := json.loads(str(row["payload_json"]))).get("reservation_id") == reservation_id),
+                (payload for row in rows if (payload := json.loads(str(row["payload_json"]))).get("reservation_id") == reservation_id
+                 and payload.get("reason") != AUTO_LANE_FAILURE),
                 None,
             )
             bridge = latest_host_read.get("bridge") if isinstance(latest_host_read, dict) and isinstance(latest_host_read.get("bridge"), dict) else {}
@@ -12541,6 +12604,7 @@ class App:
             connector._validate_authorization(envelope, grant, now)
             fields = {key: value for key, value in asdict(envelope).items() if key not in {"digest", "_task_creation_json"}}
             prepared_packet = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
+                **_auto_writer_scope(root),
                 "reservation_id": reservation_id, "decision_digest": candidate["decision_digest"] if fresh else packet["decision_digest"],
                 "envelope": fields, "grant": asdict(grant), "instruction_meta": meta}
         if fresh:
@@ -12598,7 +12662,8 @@ class App:
             "responsible_authority": state["ctrl_id"]}
         completed = self.store.finish_auto_dispatch(reservation_id, result=AutoBridgeResult(
             ok, result.thread_id, result.turn_id, failure_kind="" if ok else "NATIVE_TURN_FAILED",
-            turn_started=True, terminal=True, reachable=True), disposition=disposition, now_ms=int(time.time() * 1000))
+            turn_started=True, terminal=True, reachable=True), disposition=disposition, now_ms=int(time.time() * 1000),
+            collection={key: str(observed.get(key) or "") for key in ("result_observation", "result_digest")})
         return {"dispatched": preparing, "reason": "NATIVE_DELIVERED" if preparing else "RECONCILED",
                 "state": completed, "work_completed": False, "bridge_ok": ok}
 
@@ -12609,24 +12674,52 @@ class App:
         overview = overview or self._host_overview()
         projection = self.progress_ledger.replay()
         waiting = None
+        dispatched = None
         rejections = []
+        native = isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport)
         def observed(result):
             return {**result, "scope_rejections": list(rejections)} if rejections else result
         for state in states:
-            if isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport):
+            if state["in_flight"]:
+                # Isolate each admitted lease: its failure is traced and its lease retained,
+                # while disjoint lanes keep reconciling. Claims still refuse shared writers.
                 try:
-                    self._native_auto_scope(state["ctrl_id"], state["project_id"])
+                    if native:
+                        self._native_auto_scope(state["ctrl_id"], state["project_id"])
+                    else:
+                        self._auto_scope(state["ctrl_id"], state["project_id"])
+                    result = self._native_auto_dispatch(state, None)
+                except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError) as error:
+                    if isinstance(error, ConsoleError) and any(marker in str(error) for marker in AUTO_INTEGRITY_MARKERS):
+                        raise  # Journal integrity failure is never a scoped wait.
+                    failure = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
+                        "reservation_id": state.get("reservation_id", ""), "reason": AUTO_LANE_FAILURE,
+                        "failure_kind": type(error).__name__, "material_progress": False}
+                    self.store.retain_auto_control("AUTO_RECONCILE", _auto_digest(failure), failure,
+                        now_ms=int(time.time() * 1000))
+                    rejections.append(failure)
+                    waiting = waiting or {"dispatched": False, "reason": AUTO_LANE_FAILURE, "work_completed": False}
+                    continue
+                if result.get("reason") == "RECONCILED":
+                    waiting = result
+                else:
+                    waiting = waiting or result
+                continue
+            if native:
+                try:
+                    root = self._native_auto_scope(state["ctrl_id"], state["project_id"])
                 except ConsoleError as error:
-                    if state["in_flight"]:
-                        raise  # An admitted global lease must not be bypassed.
                     rejections.append({"ctrl_id": state["ctrl_id"], "project_id": state["project_id"], "reason": str(error)})
                     waiting = waiting or {"dispatched": False, "reason": "AUTO_SCOPE_REJECTED", "work_completed": False}
                     continue
             else:
                 self._auto_scope(state["ctrl_id"], state["project_id"])
-            if state["in_flight"]:
-                return observed(self._native_auto_dispatch(state, None))
             if not state["enabled"] or state["stop_after_turn"]:
+                continue
+            if native and self.store.auto_writer_busy(_auto_writer_scope(root)):
+                # Refuse a shared or nested writer before selection or any host grant.
+                waiting = waiting or {"dispatched": False, "reason": "IN_FLIGHT", "work_completed": False,
+                                      "state": self.store.auto_status(state["ctrl_id"], state["project_id"])}
                 continue
             try:
                 configured, candidate = self._configured_auto_candidate(state, projection)
@@ -12650,11 +12743,11 @@ class App:
                     "state": {**self.store.auto_status(state["ctrl_id"], state["project_id"]), "replayed": not fresh}}
                 continue
             result = self._native_auto_dispatch(state, candidate)
-            if not result["dispatched"] and result.get("reason") == "REPLAY":
+            if result["dispatched"]:
+                dispatched = dispatched or result  # Keep evaluating disjoint lanes in the same pass.
+            else:
                 waiting = waiting or result
-                continue
-            return observed(result)
-        return observed(waiting or {"dispatched": False, "reason": "NO_DUE_DECISION"})
+        return observed(dispatched or waiting or {"dispatched": False, "reason": "NO_DUE_DECISION"})
 
     def _host_overview(self, *, refresh: bool = False) -> dict[str, Any]:
         with self.overview_lock:
