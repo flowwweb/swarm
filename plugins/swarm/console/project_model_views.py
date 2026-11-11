@@ -79,6 +79,14 @@ class ProjectModelError(ValueError):
     pass
 
 
+class ProjectBriefMissing(ProjectModelError):
+    """The saved project has no brief at its canonical location."""
+
+
+class ProjectBriefPathRejected(ProjectModelError):
+    """The existing brief path did not pass the link/reparse guard."""
+
+
 def create_flow_draft() -> dict[str, Any]:
     steps = (("brief", "Define the outcome"), ("approach", "Choose the smallest useful approach"),
              ("produce", "Produce one bounded increment"), ("check", "Check the increment"), ("accept", "Obtain acceptance"))
@@ -263,7 +271,7 @@ def _brief_regular_path(path: Path):
     for item in (*reversed(path.parents), path):
         info = item.lstat()
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-            raise ProjectModelError("brief content links/reparse points are not admissible")
+            raise ProjectBriefPathRejected("brief content links/reparse points are not admissible")
         if not (stat.S_ISREG(info.st_mode) if item == path else stat.S_ISDIR(info.st_mode)):
             raise ProjectModelError("brief content path is not regular")
     return path.stat()
@@ -637,7 +645,15 @@ def _mutate_project_brief(
 
 
 def _read_brief_for_edit(path: Path, expected_digest: str, *, compare: bool = True) -> tuple[str, dict[str, Any], str]:
-    if path.name != "SWARM.md" or path.is_symlink() or not path.is_file():
+    if path.name != "SWARM.md" or path.is_symlink():
+        raise ProjectModelError("project brief path must be an existing regular SWARM.md")
+    try:
+        path.lstat()
+    except FileNotFoundError as exc:
+        raise ProjectBriefMissing("project brief path must be an existing regular SWARM.md") from exc
+    except OSError as exc:
+        raise ProjectModelError("project brief path must be an existing regular SWARM.md") from exc
+    if not path.is_file():
         raise ProjectModelError("project brief path must be an existing regular SWARM.md")
     try:
         text = path.read_bytes().decode("utf-8")

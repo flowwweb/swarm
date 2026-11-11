@@ -94,6 +94,8 @@ from runtime.core import (  # noqa: E402
 from runtime.incidents import IncidentLedger  # noqa: E402
 from project_model_views import (  # noqa: E402
     ProjectModelError,
+    ProjectBriefMissing,
+    ProjectBriefPathRejected,
     parse_project_brief_markdown,
     project_schema1_views,
     validate_flow_definition,
@@ -11197,6 +11199,16 @@ class App:
                 if str(exc) == "project brief update failed":
                     raise ConsoleError("SOURCE_WRITE_UNCERTAIN: reload and reconcile the same request") from exc
                 raise ConsoleError(str(exc)) from exc
+            except FileNotFoundError as exc:
+                if operation != "read_discussion":
+                    raise
+                try:
+                    (Path(binding["root"]) / "SWARM.md").lstat()
+                except FileNotFoundError:
+                    raise ConsoleError("project brief unavailable") from ProjectBriefMissing("project brief missing")
+                except OSError:
+                    raise ConsoleError("ticket discussion unavailable") from exc
+                raise ConsoleError("ticket discussion unavailable") from exc
             return {"ok": True, "project_id": binding["project_id"], "operation": operation, **result}
         write_fields = {"operation", "project_id", "expected_digest", "acknowledge", "collection", "record_id", "changes"}
         if operation == "read":

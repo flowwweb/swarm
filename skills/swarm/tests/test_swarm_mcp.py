@@ -458,6 +458,61 @@ class SwarmMCPTests(unittest.TestCase):
         self.assertEqual(result["code"], "TICKET_REJECTED")
         self.assertIn("could not be saved", result["message"])
 
+    def test_ticket_read_unavailable_causes_are_distinct_and_preserve_guards(self):
+        import stat
+        from types import SimpleNamespace
+        from console.server import App, ConsoleError
+        from console.tests.test_console import SwarmConsoleTests
+        fixture = SwarmConsoleTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        fixture._write_project_brief(fixture.alpha_root, 'project:alpha', extra={'tasks': [{'id': 'task-a', 'label': 'Task'}]})
+        brief = fixture.alpha_root / 'SWARM.md'
+        original = brief.read_bytes()
+        projection = mcp.SwarmProjection()
+        projection._app = App(fixture.codex_home, fixture.config)
+        read = {'operation': 'read', 'project_id': 'project:alpha'}
+        discussion = {**read, 'operation': 'read_discussion', 'record_id': 'task-a'}
+        initial = projection.call('swarm_project_tickets', read)
+        self.assertTrue(initial['ok'])
+        self.assertTrue(projection.call('swarm_project_tickets', discussion)['ok'])
+        real_lstat = Path.lstat
+        def reparse_root(path, *args, **kwargs):
+            if path == fixture.alpha_root:
+                return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+            return real_lstat(path, *args, **kwargs)
+        with patch.object(Path, 'lstat', reparse_root):
+            rejected = projection.call('swarm_project_tickets', discussion)
+            write = projection.call('swarm_project_tickets', {**discussion, 'operation': 'add_comment',
+                'expected_digest': initial['source_digest'], 'acknowledge': True,
+                'changes': {'id': 'comment-a', 'body': 'Draft', 'reply_to': None}})
+        self.assertEqual(write['code'], 'TICKET_REJECTED')
+        self.assertEqual(rejected['code'], 'PROJECT_BRIEF_PATH_REJECTED')
+        self.assertEqual(rejected['state'], 'UNAVAILABLE')
+        self.assertNotIn('could not be saved', rejected['message'])
+        self.assertEqual(brief.read_bytes(), original)
+        def denied_brief(path, *args, **kwargs):
+            if path == brief:
+                raise PermissionError('private path')
+            return real_lstat(path, *args, **kwargs)
+        with patch.object(Path, 'lstat', denied_brief):
+            denied = projection.call('swarm_project_tickets', read)
+        self.assertEqual(denied['code'], 'TICKET_READ_FAILED')
+        self.assertNotIn('private path', json.dumps(denied))
+        brief.unlink()
+        missing = projection.call('swarm_project_tickets', read)
+        self.assertEqual(missing['code'], 'PROJECT_BRIEF_MISSING')
+        self.assertEqual(missing['state'], 'UNAVAILABLE')
+        self.assertIn('SWARM.md', missing['message'])
+        self.assertFalse(brief.exists())
+        self.assertEqual(projection.call('swarm_project_tickets', discussion)['code'], 'PROJECT_BRIEF_MISSING')
+        for operation in ('read_activity', 'read_logs'):
+            self.assertEqual(projection.call('swarm_project_tickets', {**discussion, 'operation': operation})['code'], 'PROJECT_BRIEF_MISSING')
+        with patch.object(projection._app, 'project_ticket_command', side_effect=ConsoleError('private unknown fault')):
+            unknown = projection.call('swarm_project_tickets', discussion)
+        self.assertEqual(unknown['code'], 'TICKET_READ_FAILED')
+        self.assertNotIn('private unknown fault', json.dumps(unknown))
+
     def test_current_milestone_compaction_preserves_exact_basis_without_borrowing_project_progress(self):
         milestone = {"state": "KNOWN", "reason": None, "name": "Milestone", "source": "ledger_active_task_manifest",
             "cursor": {"event_seq": 3}, "milestone_id": "m", "task_id": "t", "project_id": "p", "ctrl_id": "c",

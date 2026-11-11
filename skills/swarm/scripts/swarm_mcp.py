@@ -626,17 +626,24 @@ class SwarmProjection:
                         "message": "No valid ticket binding. Check the retained task, block and project."}
 
         if name == "swarm_project_tickets":
-            from console.server import ConsoleError, ConsoleConflict
+            from console.server import ConsoleError, ConsoleConflict, ProjectBriefMissing, ProjectBriefPathRejected
             try:
                 return app.project_ticket_command(arguments)
             except ConsoleConflict:
                 return {"ok": False, "state": "CONFLICT", "code": "SOURCE_CONFLICT", "project_id": arguments["project_id"],
                         "message": "The project changed. Keep your draft and reload before saving."}
             except ConsoleError as exc:
-                if arguments["operation"] == "read":
-                    return {"ok": False, "state": "REJECTED", "code": "TICKET_READ_FAILED",
+                if arguments["operation"] in {"read", "read_discussion", "read_activity", "read_logs"}:
+                    cause = exc.__cause__
+                    if isinstance(cause, ProjectBriefMissing):
+                        code, state, message = "PROJECT_BRIEF_MISSING", "UNAVAILABLE", "SWARM.md was not found at the saved project root."
+                    elif isinstance(cause, ProjectBriefPathRejected):
+                        code, state, message = "PROJECT_BRIEF_PATH_REJECTED", "UNAVAILABLE", "The saved project path could not be read because it contains a link or reparse point."
+                    else:
+                        code, state, message = "TICKET_READ_FAILED", "REJECTED", "Tickets could not be read. Your records have not been changed."
+                    return {"ok": False, "state": state, "code": code,
                             "project_id": arguments["project_id"],
-                            "message": "Tickets could not be read. Your records have not been changed. Check runtime compatibility before retrying."}
+                            "message": message}
                 code = str(exc).split(":", 1)[0]
                 messages = {"PROJECT_CODE_REQUIRED": "Choose a project code of 1–4 letters.",
                             "TICKET_DESCRIPTION_TOO_LONG": "Description exceeds 16,384 UTF-8 bytes. Shorten it and try again.",
