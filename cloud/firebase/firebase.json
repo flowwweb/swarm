@@ -1,0 +1,18 @@
+{
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "functions": {
+    "source": ".",
+    "runtime": "nodejs22",
+    "ignore": ["**/!(index.mjs|package.json|package-lock.json|server|project|web-registration.mjs|web-config-http.mjs|account-http.mjs|account-factory.mjs|account-api.mjs|account-service.mjs|device-service.mjs|project-factory.mjs|project-api.mjs|project-service.mjs|account-protocol.mjs)"]
+  },
+  "hosting": {
+    "public": "web/dist",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      { "source": "/api/config", "function": { "functionId": "webConfig", "region": "europe-west4" } },
+      { "source": "/api/account", "function": { "functionId": "account", "region": "europe-west4" } }
+    ]
+  }
+}
