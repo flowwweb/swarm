@@ -78,7 +78,7 @@ class CtrlBootstrapContractTests(unittest.TestCase):
         self.assertIn('default `role_icons.ctrl = "🐙"` is not an explicit user icon choice', normalized)
         self.assertIn("🐙 belongs to SWARM", normalized)
         self.assertIn("use `role_icons.fallback`; do not default every project to 🐙", normalized)
-        for title in ("🐟 Nemo", "📐 Blüprint", "⚓ Helm", "🐙 SWARM"):
+        for title in ("🐟 Aquarium", "📐 Skëtch", "⚓ Harbor", "🐙 SWARM"):
             self.assertIn(title, skill)
         self.assertNotIn("🐙 <objective>", skill + config)
 
@@ -90,7 +90,7 @@ class CtrlBootstrapContractTests(unittest.TestCase):
         self.assertIn("Preserve existing pin and placement state", skill)
         payload = json.loads((SKILL_ROOT / "evals/evals.json").read_text(encoding="utf-8"))
         repair = next(entry for entry in payload["evals"] if entry["id"] == 96)
-        for title in ("🐟 Nemo", "📐 Blüprint design desk", "👑 Helm", "🐙 SWARM"):
+        for title in ("🐟 Aquarium", "📐 Skëtch design desk", "👑 Harbor", "🐙 SWARM"):
             self.assertIn(title, repair["expected_output"])
         self.assertIn("default configuration is not an explicit octopus preference", repair["expected_output"])
         self.assertIn("preserve pins, order, identity and topology", repair["expected_output"])

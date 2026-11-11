@@ -6682,7 +6682,7 @@ class SwarmConsoleTests(unittest.TestCase):
             handler.headers["Origin"] = origin
         if token:
             handler.headers["X-Swarm-Token"] = token
-        handler.server = SimpleNamespace(app=SimpleNamespace(token="secret", config_path=self.config))
+        handler.server = SimpleNamespace(app=SimpleNamespace(token="secret", config_path=self.config, codex_home=self.codex_home))
         return handler
 
     def _storage_handler(self, *, result: dict | None = None, error: Exception | None = None):

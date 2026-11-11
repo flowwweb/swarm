@@ -5220,6 +5220,7 @@ proofFeed.items.push({
       const box = element.getBoundingClientRect();
       return { top: Math.round(box.top), right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom), height: Math.round(box.height) };
     }), { top: 0, right: 0, bottom: 0, height: 1024 });
+    await page.waitForFunction(() => document.activeElement?.id === "message-draft");
     assert.equal(await page.evaluate(() => document.activeElement?.id), "message-draft");
     assert.deepEqual(await page.locator("#message-recipient option").allTextContents(), ["No observed conversations"]);
     assert.equal(await page.locator("#message-recipient").isDisabled(), true);

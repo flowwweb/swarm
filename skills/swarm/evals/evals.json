@@ -1269,8 +1269,8 @@
     },
     {
       "id": 96,
-      "prompt": "The user asks to correct project icons on pinned CTRLs. A generated 🐙 Nemo title and a custom-worded 🐙 Blüprint design desk title have no explicit icon preference; Helm explicitly uses 👑, a project has icons disabled, and 🐙 SWARM is already correct. The default role_icons.ctrl is 🐙. Repair only the authorized icons.",
-      "expected_output": "Use project context to set 🐟 Nemo and 📐 Blüprint design desk, replacing only the leading emoji and preserving the custom wording. Keep the expressly selected 👑 Helm, the icon-disabled project and 🐙 SWARM unchanged. The default configuration is not an explicit octopus preference. Verify each exact task ID/title through the host; preserve pins, order, identity and topology. Do not rename or mutate unrelated tasks. An unavailable rename remains unverified while useful work continues.",
+      "prompt": "The user asks to correct project icons on pinned CTRLs. A generated 🐙 Aquarium title and a custom-worded 🐙 Skëtch design desk title have no explicit icon preference; Harbor explicitly uses 👑, a project has icons disabled, and 🐙 SWARM is already correct. The default role_icons.ctrl is 🐙. Repair only the authorized icons.",
+      "expected_output": "Use project context to set 🐟 Aquarium and 📐 Skëtch design desk, replacing only the leading emoji and preserving the custom wording. Keep the expressly selected 👑 Harbor, the icon-disabled project and 🐙 SWARM unchanged. The default configuration is not an explicit octopus preference. Verify each exact task ID/title through the host; preserve pins, order, identity and topology. Do not rename or mutate unrelated tasks. An unavailable rename remains unverified while useful work continues.",
       "files": [],
       "assertions": [
         "Project identity or subject determines the default CTRL emoji; 🐙 is SWARM-specific",
