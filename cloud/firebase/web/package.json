@@ -1,0 +1,6 @@
+{
+  "name": "swarm-web-auth",
+  "private": true,
+  "type": "module",
+  "dependencies": { "firebase": "12.15.0" }
+}
