@@ -29,7 +29,7 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_package import installed_file_hashes, validate_plugin_manifest
+from build_package import PACKAGE_METADATA_PATH, installed_file_hashes, validate_plugin_manifest
 
 import verify_plugin_install
 
@@ -171,7 +171,7 @@ def _atomic_write(path: Path, contents: bytes) -> None:
 
 
 def _safe_extract(package: Path, destination: Path) -> tuple[dict[str, str], dict[str, object]]:
-    expected, _raw_metadata, metadata = verify_plugin_install._package_metadata(package)
+    expected, raw_metadata, metadata = verify_plugin_install._package_metadata(package)
     destination.mkdir(parents=True)
     with zipfile.ZipFile(package) as archive:
         for relative in expected:
@@ -179,6 +179,7 @@ def _safe_extract(package: Path, destination: Path) -> tuple[dict[str, str], dic
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(relative) as source, target.open("xb") as output:
                 shutil.copyfileobj(source, output, length=1024 * 1024)
+    (destination / PACKAGE_METADATA_PATH).write_bytes(raw_metadata)
     actual = installed_file_hashes(destination)
     validate_plugin_manifest(destination, actual)
     if actual != expected:
@@ -204,6 +205,14 @@ def _verify_snapshot(snapshot: Path) -> dict[str, object]:
     validate_plugin_manifest(source, actual)
     if actual != files or _files_digest(actual) != manifest.get("files_digest"):
         raise RollbackError("rollback cache snapshot hash mismatch")
+    metadata_digest = manifest.get("package_metadata_sha256")
+    if metadata_digest is not None:
+        try:
+            raw_metadata = (source / PACKAGE_METADATA_PATH).read_bytes()
+        except OSError as error:
+            raise RollbackError("rollback package metadata unavailable") from error
+        if _sha256(raw_metadata) != metadata_digest:
+            raise RollbackError("rollback package metadata hash mismatch")
     marketplace = snapshot / "marketplace" / ".agents" / "plugins" / "marketplace.json"
     try:
         marketplace_data = json.loads(marketplace.read_text(encoding="utf-8"))
@@ -282,6 +291,7 @@ def prepare_snapshot(
             "source_tree": metadata.get("tree"),
             "files": dict(sorted(files.items())),
             "files_digest": _files_digest(files),
+            "package_metadata_sha256": _sha256((plugin_root / PACKAGE_METADATA_PATH).read_bytes()),
             "selection": {
                 "config_path": str(config.resolve()),
                 "config_sha256": _sha256(config_bytes),
@@ -302,7 +312,7 @@ def prepare_snapshot(
             shutil.rmtree(staging)
 
 
-def _copy_cache_atomic(source: Path, target: Path, expected: dict[str, str]) -> str:
+def _copy_cache_atomic(source: Path, target: Path, expected: dict[str, str], metadata_digest: str | None = None) -> str:
     if target.exists():
         try:
             actual = installed_file_hashes(target)
@@ -311,6 +321,13 @@ def _copy_cache_atomic(source: Path, target: Path, expected: dict[str, str]) -> 
             raise RollbackError("existing rollback cache path conflicts with the snapshot") from error
         if actual != expected:
             raise RollbackError("existing rollback cache path conflicts with the snapshot")
+        if metadata_digest is not None:
+            try:
+                metadata_matches = _sha256((target / PACKAGE_METADATA_PATH).read_bytes()) == metadata_digest
+            except OSError:
+                metadata_matches = False
+            if not metadata_matches:
+                raise RollbackError("existing rollback cache metadata conflicts with the snapshot")
         return "unchanged"
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.with_name(f".{target.name}.swarm-{os.getpid()}-{time.time_ns()}.tmp")
@@ -322,6 +339,8 @@ def _copy_cache_atomic(source: Path, target: Path, expected: dict[str, str]) -> 
         validate_plugin_manifest(staging, actual)
         if actual != expected:
             raise RollbackError("staged rollback cache hash mismatch")
+        if metadata_digest is not None and _sha256((staging / PACKAGE_METADATA_PATH).read_bytes()) != metadata_digest:
+            raise RollbackError("staged rollback cache metadata hash mismatch")
         os.replace(staging, target)
         return "restored"
     finally:
@@ -364,7 +383,7 @@ def restore_snapshot(snapshot: Path, codex_home: Path, *, config_request=None) -
     target["marketplaces"][MARKETPLACE] = {"source_type": "local", "source": str(snapshot / "marketplace")}
     target["plugins"]["swarm@flowwweb"] = selected["plugins"]["swarm@flowwweb"]
     cache_target = codex_home.resolve() / "plugins" / "cache" / MARKETPLACE / PLUGIN / version
-    cache_action = _copy_cache_atomic(snapshot / "marketplace" / "plugins" / PLUGIN, cache_target, expected)
+    cache_action = _copy_cache_atomic(snapshot / "marketplace" / "plugins" / PLUGIN, cache_target, expected, manifest.get("package_metadata_sha256"))
     result = config_request("config/batchWrite", {
         "filePath": str(config), "expectedVersion": layer["version"], "reloadUserConfig": False,
         "edits": [

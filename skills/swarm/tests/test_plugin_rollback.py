@@ -8,6 +8,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+import zipfile
 from unittest.mock import patch
 from pathlib import Path
 
@@ -24,6 +25,32 @@ SPEC.loader.exec_module(rollback)
 
 
 class PluginRollbackTests(unittest.TestCase):
+    def test_package_metadata_survives_materialization_and_is_bound_on_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config, package, snapshot, manifest = self.prepare(root)
+            source = snapshot / "marketplace" / "plugins" / "swarm"
+            with zipfile.ZipFile(package) as archive:
+                raw_metadata = archive.read(build_package.PACKAGE_METADATA_PATH)
+            metadata = source / build_package.PACKAGE_METADATA_PATH
+            self.assertEqual(metadata.read_bytes(), raw_metadata)
+            self.assertEqual(manifest["package_metadata_sha256"], hashlib.sha256(raw_metadata).hexdigest())
+            mcp_spec = importlib.util.spec_from_file_location("swarm_mcp_identity_tested", SCRIPT_PATH.with_name("swarm_mcp.py"))
+            assert mcp_spec and mcp_spec.loader
+            mcp = importlib.util.module_from_spec(mcp_spec)
+            mcp_spec.loader.exec_module(mcp)
+            identity = mcp._startup_runtime_identity(source, source / "skills/swarm/scripts/swarm_mcp.py")
+            self.assertEqual(identity["package_state"], "PACKAGED_MATCH")
+            rollback.restore_snapshot(snapshot, config.parent, config_request=self.native_config(config))
+            cache = config.parent / "plugins" / "cache" / "flowwweb" / "swarm" / manifest["version"]
+            self.assertEqual((cache / build_package.PACKAGE_METADATA_PATH).read_bytes(), raw_metadata)
+            (cache / build_package.PACKAGE_METADATA_PATH).write_bytes(b"changed")
+            with self.assertRaisesRegex(rollback.RollbackError, "cache metadata conflicts"):
+                rollback.restore_snapshot(snapshot, config.parent, config_request=self.native_config(config))
+            metadata.write_bytes(b"changed")
+            with self.assertRaisesRegex(rollback.RollbackError, "package metadata hash mismatch"):
+                rollback._verify_snapshot(snapshot)
+
     def native_config(self, config: Path, *, conflict=False, malformed=False, fail=False):
         calls = []
 
@@ -70,6 +97,7 @@ class PluginRollbackTests(unittest.TestCase):
             "skills/swarm/references/review-contract.md": "# Review\n",
             "skills/swarm/references/task-contract.md": "# Task\n",
             "skills/swarm/runtime/core.py": "# runtime\n",
+            "skills/swarm/scripts/swarm_mcp.py": "# fixture MCP\n",
         }
         for relative, contents in files.items():
             path = root / relative
