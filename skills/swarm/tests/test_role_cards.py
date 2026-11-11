@@ -104,7 +104,7 @@ class RoleCardTests(unittest.TestCase):
         guidance = (REPOSITORY_ROOT / "AGENTS.md").read_text(encoding="utf-8")
         # Role composition moved to hierarchy.md; the root loads only the assigned card.
         self.assertEqual(hierarchy.count("Global policy is composed once"), 1)
-        self.assertIn("loads only its own `roles/<profession>.md` card", skill)
+        self.assertIn("Load only your own `roles/<profession>.md` card", skill)
         self.assertNotIn("Global policy is composed once", cards)
         recovery = "references/runtime-recovery.md"
         self.assertIn(f"[runtime-recovery.md]({recovery})", skill)

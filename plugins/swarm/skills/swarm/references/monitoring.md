@@ -221,6 +221,8 @@ storage.
 
 ## CTRL human review feed
 
+CTRL is the human review feed, not a management log. Lead with the user outcome and the smallest decisive inline proof, followed by remaining risk. For visual claims use a fresh representative capture. For other claims use a compact excerpt, table, or before/after proof. Surface each result once.
+
 At the next safe boundary surface each new material screenshot, generated result,
 mockup, comparison or proof inline, captioned with what it shows and its claim
 limit, or record why it is withheld. Paths, worker finals, manifests, and folders
@@ -230,12 +232,12 @@ archive and phase advance. Register each local evidence file with
 <task> --kind <kind> --caption <caption>`; registration means available, not
 surfaced. Surface every requested mockup, screen, frame or design option as its
 own full-frame inline artifact; a composite may supplement them only when
-requested and never substitutes. At a selection boundary record one `SELECTED`
+requested and never substitutes. For one decision set, surface each option promptly. Create a consolidated decision gallery only on explicit request, and include the complete inventory and exact omissions. Links alone cannot accept the set. At a selection boundary record one `SELECTED`
 candidate and mark the rest `REJECTED` ([decision-set.md](decision-set.md)).
 
 Emit only a material result, defensible progress change, inspectable proof,
 steerable decision, exact blocker, verdict, release state or direct answer. Never
-lead with task activity, role inventory, commands or paths. Keep one compact card
+lead with task activity, role inventory, commands, paths, or a tool run. Keep one compact card
 per project with progress basis or `Unmeasured`. In progress is not done;
 source/static/local is not browser/deployed/human; `BLOCKED` is not accepted.
 Every return stays bound to the original objective, current profession and

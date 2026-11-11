@@ -10,7 +10,7 @@ class WatchdogContractTests(unittest.TestCase):
         self.hierarchy = (root / "references" / "hierarchy.md").read_text(encoding="utf-8")
 
     def test_watchdog_is_optional_alert_only_and_has_exactly_three_checks(self):
-        self.assertIn("optional alert-only sensor bound to an accountable LEAD or persistent SPECIALIST goal, never CTRL", self.monitoring)
+        self.assertIn("optional alert-only sensor bound to an accountable LEAD or persistent SPECIALIST goal, never CTRL", " ".join(self.monitoring.split()))
         self.assertIn("WATCHDOG", self.core)
         self.assertIn("An unbound goal has no watchdog clock, check, receipt, or alert", self.monitoring)
         self.assertEqual(self.monitoring.count("1. **Progress:**"), 1)

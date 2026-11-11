@@ -18,7 +18,7 @@ class InternalApprovalFallbackContractTests(unittest.TestCase):
         hierarchy = " ".join(hierarchy.split())
         recovery = " ".join(recovery.split())
 
-        self.assertRegex(skill, r"(?is)ordinary\s+local access failure.*requests supported sandbox or access\s+approval once.*Pending approval\s+waits")
+        self.assertRegex(skill, r"(?is)ordinary calls for authorized reads.*effective policy.*only where the effective policy supports an approval request.*request it once.*Pending approval\s+waits")
         self.assertIn("before host-gate fallback or blocker classification", hierarchy)
         self.assertIn("Pending approval waits; it is not failed capacity or route exhaustion", hierarchy)
         self.assertIn("Pending approval waits; do not cancel the request, repeat it, count waiting as route exhaustion, or report a terminal blocker", recovery)

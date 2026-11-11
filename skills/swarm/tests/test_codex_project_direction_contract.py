@@ -99,7 +99,7 @@ class CodexProjectDirectionContractTests(unittest.TestCase):
             Path("assets") / "swarm-config.toml",
         ):
             self.assertEqual(
-                (SKILL_ROOT / relative).read_bytes(),
+                (SKILL_ROOT / ("swarm.min.md" if relative == Path("SKILL.md") else relative)).read_bytes(),
                 (PLUGIN_ROOT / "skills" / "swarm" / relative).read_bytes(),
                 relative.as_posix(),
             )

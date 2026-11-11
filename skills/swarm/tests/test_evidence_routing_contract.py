@@ -26,7 +26,8 @@ class EvidenceRoutingContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         root = Path(__file__).parents[1]
-        cls.skill = "\n".join((root / name).read_text(encoding="utf-8") for name in ("SKILL.md", "references/hierarchy.md", "references/monitoring.md", "references/review-contract.md", "references/design-guide.md"))
+        cls.skill = "\n".join((root / name).read_text(encoding="utf-8") for name in ("SKILL.md", "references/hierarchy.md", "references/monitoring.md", "references/review-contract.md", "references/design-guide.md", "references/task-contract.md"))
+        cls.skill = " ".join(cls.skill.split())
 
     def setUp(self):
         self.swarm = Swarm()
@@ -154,9 +155,9 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.swarm.advance_ctrl_phase(Role.CTRL,"implementation")
 
     def test_live_feed_doctrine_requires_prompt_surface_and_receipts(self):
-        self.assertRegex(self.skill, r"(?is)human review feed.*next safe boundary.*surfaced once.*blocks acceptance")
-        self.assertRegex(self.skill, r"(?is)one decision set, surface each promptly.*Do not create a consolidated decision gallery unless the user explicitly requests.*supplemental to the separately surfaced candidates.*complete inventory and exact omissions.*Links or an inventory alone cannot accept a decision set")
-        self.assertRegex(self.skill, r"(?is)Every CTRL heartbeat.*material-evidence ledger.*Pending material evidence.*first reminder")
+        self.assertRegex(self.skill, r"(?is)human review feed.*Surface each result once.*next safe boundary.*blocks acceptance")
+        self.assertRegex(self.skill, r"(?is)full-frame inline artifact.*composite may supplement them only when requested and never substitutes.*decision set, surface each option promptly.*consolidated decision gallery only on explicit request.*complete inventory and exact omissions.*Links alone cannot accept the set")
+        self.assertRegex(self.skill, r"(?is)each CTRL heartbeat.*inspect `ctrl_feed_due`.*material evidence is pending.*proof reminder first")
 
     def test_heartbeat_reminds_ctrl_to_surface_pending_material_proof(self):
         self.swarm.register_ctrl_evidence(Role.DOER,"covers","pending-shot","screenshot","pending.png")
@@ -328,11 +329,11 @@ class EvidenceRoutingContractTests(unittest.TestCase):
             self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(stale,))
 
     def test_routing_distinguishes_visible_lanes_from_bounded_subagents(self):
-        self.assertRegex(self.skill, r"(?is)Materialize a visible task lane.*durable ownership.*interruption-safe resumption")
+        self.assertRegex(self.skill, r"(?is)Independent ownership or interruption-safe resumption.*Materialize a visible task lane only on explicit user request.*reuse an eligible visible owner")
         self.assertRegex(self.skill, r"(?is)Use a subagent only as short bounded capacity inside an existing lane")
-        self.assertIn("never substitutes for a qualifying durable task", self.skill)
-        self.assertIn("`CTRL_DIRECT` is retired; all production uses `CTRL_DELEGATED`", self.skill)
-        self.assertIn("separate bounded producer, not CTRL", self.skill)
+        self.assertIn("A subagent never replaces a warranted LEAD or DOER", self.skill)
+        self.assertIn("CTRL_DELEGATED for every production task; CTRL_DIRECT is retired", self.skill)
+        self.assertIn("accountable producer distinct from CTRL, even for small edits", self.skill)
         self.assertNotIn("each delegated or non-CTRL task delegates", self.skill)
         self.assertNotIn("Default to CTRL working directly or one atomic owner", self.skill)
 

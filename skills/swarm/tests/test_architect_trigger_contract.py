@@ -7,8 +7,8 @@ class SpecialistTriggerContractTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         core = (root / "SKILL.md").read_text(encoding="utf-8")
         hierarchy = (root / "references" / "hierarchy.md").read_text(encoding="utf-8")
-        self.assertIn("role choice | [hierarchy.md](references/hierarchy.md)", core)
-        self.assertIn("Load the hierarchy reference for specialist trigger", hierarchy)
+        self.assertIn("role choice: [hierarchy.md](references/hierarchy.md)", core)
+        self.assertIn("Specialist triggers, ASSIST/ADVISOR and materialization", hierarchy)
         self.assertRegex(hierarchy, r"(?is)initial topology.*first mutable handoff")
         self.assertRegex(hierarchy, r"(?is)24 registered profession cards.*allowlisted perspectives.*profession\s+is not singleton")
         self.assertRegex(hierarchy, r"(?is)Task size.*alone do not justify.*stop the next affected mutation")

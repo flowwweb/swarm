@@ -337,7 +337,7 @@ unrelated open work remains preserved. Audit again before closeout or archive;
 unresolved, orphaned, invalid or provisional records block the claim, and
 missing receipts are `UNVERIFIED`, never an empty ledger.
 
-Explicit user direction outranks SWARM defaults; ask only the smallest decision
+Explicit user direction outranks SWARM defaults; proceed with reversible work under standing authorization and ask only the smallest decision
 that changes intent, canonical truth, scope, cost, risk or a reserved approval.
 Treat failed, timed-out, or non-atomic writes as untrusted: verify the exact
 target and intended diff scope, preserve pre-existing work, recover only the

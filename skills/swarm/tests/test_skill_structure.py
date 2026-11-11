@@ -13,7 +13,7 @@ EVALS = SKILL_ROOT / "evals" / "evals.json"
 
 
 def doctrine() -> str:
-    return "\n".join(
+    text = "\n".join(
         (SKILL_ROOT / relative).read_text(encoding="utf-8")
         for relative in (
             "SKILL.md",
@@ -24,6 +24,8 @@ def doctrine() -> str:
             "references/design-guide.md",
         )
     )
+    return " ".join(text.split())
+
 
 sys.path.insert(0, str(SKILL_ROOT / "scripts"))
 from verify_plugin_install import verify
@@ -93,8 +95,8 @@ class SwarmSkillStructureTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("`UNVERIFIED` is an open acceptance failure", skill)
-        self.assertIn("shallowest structure", skill)
+        self.assertIn("An unverified required claim stays open and blocks acceptance", skill)
+        self.assertIn("shallowest useful shape", skill)
         self.assertIn("canonical state", skill)
         self.assertIn("independent REVIEW", skill)
         self.assertIn("persistent SPECIALIST", hierarchy)
@@ -207,7 +209,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         skill = doctrine()
         self.assertNotIn("accepting owner inventories every visible task it created or superseded", skill)
         self.assertIn("SWARM runtime never calls host pin/unpin", skill)
-        self.assertIn("configured top-level CTRL opt-in may pin", skill)
+        self.assertIn("`lifecycle.pin_created_tasks = true` (that top-level CTRL only", skill)
 
     def test_topology_and_evolution_are_general_subtractive_contracts(self) -> None:
         skill = doctrine()
@@ -255,9 +257,9 @@ class SwarmSkillStructureTests(unittest.TestCase):
         review = (SKILL_ROOT / "references" / "review-contract.md").read_text(encoding="utf-8")
         design = (SKILL_ROOT / "references" / "design-guide.md").read_text(encoding="utf-8")
 
-        self.assertIn("Review and correction must be materially worthwhile", skill)
-        self.assertIn("observable improvement that outweighs the work", skill)
-        self.assertIn("Design may refine granular craft", skill)
+        self.assertIn("For every non-design finding, state the concrete consequence", skill)
+        self.assertIn("expected benefit must justify the combined investigation", skill)
+        self.assertIn("Design review is the explicit exception", skill)
         self.assertIn("Apply a significance gate outside design", review)
         self.assertIn("optional notes, never another correction loop", review)
         self.assertRegex(review,r"The act of reviewing is not evidence that\s+a change is valuable")
@@ -326,7 +328,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(encoding="utf-8")
         evals = json.loads(EVALS.read_text(encoding="utf-8"))
 
-        self.assertIn("CTRL is the operator/orchestrator, not the producer", skill)
+        self.assertIn("CTRL is the switchboard operator and orchestrator, not the producer", skill)
         self.assertIn("CTRL is an operator, not a producer", hierarchy)
         self.assertIn("image-generation", skill)
         self.assertIn("IMAGEGEN", hierarchy)
@@ -339,7 +341,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("accountable producer distinct from CTRL", task_contract)
         self.assertIn("Every agent may request a role skill", skill)
         self.assertIn("`NORMAL_SUBAGENT`", skill)
-        self.assertIn("medium and large lanes are visible Codex tasks", skill)
+        self.assertIn("Medium and large lanes are visible Codex tasks", skill)
         self.assertRegex(hierarchy,r"`CTRL -> SUBAGENT` is not a\s+substitute")
         visual_eval = next(item for item in evals["evals"] if item["id"] == 90)
         self.assertIn("mockup", visual_eval["prompt"].casefold())

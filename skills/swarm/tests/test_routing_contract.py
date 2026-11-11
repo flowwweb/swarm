@@ -12,7 +12,7 @@ class RoutingContractTests(unittest.TestCase):
         skill = (ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")  # moved from the root
         hierarchy = (ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
         self.assertIn("Materialize a visible task lane", skill)
-        self.assertIn("Use a subagent only as short bounded capacity", skill)
+        self.assertIn("Use a subagent only as short bounded capacity inside an existing lane", " ".join(skill.split()))
         self.assertIn("interruption-safe resumption", hierarchy)
         self.assertRegex(
             hierarchy,
@@ -26,8 +26,8 @@ class RoutingContractTests(unittest.TestCase):
         for text in (skill, providers):
             self.assertIn("explicit user", text)
             self.assertIn("reasoning level", text)
-        self.assertRegex(skill, r"(?s)Recommend a change; apply it\s+only when the user asks")
-        self.assertRegex(skill, r"(?s)report the\s+blocker instead of substituting")
+        self.assertRegex(skill, r"(?s)Change one only when asked")
+        self.assertRegex(skill, r"(?s)report a blocker instead of substituting")
         self.assertIn("exact blocker", providers)
         self.assertIn("never applies one unless the user explicitly asks", providers)
         self.assertIn("must not silently lower, raise, replace, or reinterpret", providers)
@@ -41,7 +41,7 @@ class RoutingContractTests(unittest.TestCase):
             combined,
             r"Structural authority is exactly `CTRL`, `LEAD`, and\s+`DOER`",
         )
-        self.assertRegex(combined, r"(?:a )?LEAD may produce directly")
+        self.assertIn("may produce directly, recruit a DOER", " ".join(combined.split()))
         self.assertIn("nested LEAD", combined)
         self.assertIn("may_need_recruitment", combined)
         self.assertIn("requires_recursive_delegation", combined)

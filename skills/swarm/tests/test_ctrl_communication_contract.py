@@ -92,7 +92,7 @@ class CtrlCommunicationContractTests(unittest.TestCase):
         task=(ROOT/"references"/"task-contract.md").read_text(encoding="utf-8")
         review=(ROOT/"references"/"review-contract.md").read_text(encoding="utf-8")
         monitoring=(ROOT/"references"/"monitoring.md").read_text(encoding="utf-8")
-        combined="\n".join((skill,task,review,monitoring)).lower()
+        combined=" ".join(" ".join((skill,task,review,monitoring)).lower().split())
         for phrase in (
             "reuse, delete, or consolidate", "temporary higher reasoning",
             "root-cause question", "distinctive product edge", "unmeasured",
@@ -111,7 +111,7 @@ class CtrlCommunicationContractTests(unittest.TestCase):
             "references/task-contract.md", "references/review-contract.md",
             "references/monitoring.md",
         ):
-            self.assertEqual((ROOT/relative).read_text(encoding="utf-8"),(PLUGIN_ROOT/relative).read_text(encoding="utf-8"),relative)
+            self.assertEqual((ROOT / ("swarm.min.md" if relative == "SKILL.md" else relative)).read_bytes(), (PLUGIN_ROOT / relative).read_bytes(),relative)
 
 
 if __name__=="__main__":

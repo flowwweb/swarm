@@ -24,7 +24,7 @@ class VisualApprovalContractTests(unittest.TestCase):
         self.assertRegex(skill, r"(?is)taste-led generation.*clear user direction permits generation.*reserved choice requires candidates")
 
     def test_mockup_requests_require_separate_imagegen_bitmaps_unless_user_requests_composite(self) -> None:
-        skill = "\n".join(path.read_text(encoding="utf-8") for path in ROOT_POLICY)
+        skill = " ".join(" ".join(path.read_text(encoding="utf-8") for path in ROOT_POLICY).split())
 
         self.assertRegex(
             skill,

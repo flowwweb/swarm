@@ -160,7 +160,7 @@ Classify runtime proof by the authority and transport actually exercised, not
 the number of clients or tabs. Mocks, request interception, fixtures, and
 in-memory substitutes prove only that substituted boundary; name it in the
 receipt and leave local-session, emulator, provider, network, deployed, or
-device boundaries that were not exercised `UNVERIFIED`.
+device boundaries that were not exercised `UNVERIFIED`. An unverified required claim stays open and blocks acceptance.
 
 Before accepting a visual claim, inspect the exact final rendered frame before
 trusting DOM geometry or receipts. The claimed primary substrate and relevant

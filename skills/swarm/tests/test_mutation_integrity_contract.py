@@ -5,9 +5,9 @@ from pathlib import Path
 class MutationIntegrityContractTests(unittest.TestCase):
     def test_failed_writes_keep_recovery_exact_and_non_destructive(self):
         root = (Path(__file__).parents[1] / "SKILL.md").read_text(encoding="utf-8")
-        self.assertRegex(root, r"(?s)treat a failed write\s+as untrusted and recover only its exact target")
+        self.assertRegex(root, r"(?s)recover a failed write only at its exact target")
         skill = (Path(__file__).parents[1] / "references" / "task-contract.md").read_text(encoding="utf-8")
-        self.assertRegex(skill, r"(?is)failed, timed-out, or non-atomic writes? as untrusted.*exact target.*diff scope.*preserve pre-existing.*verified baseline/backup.*smaller patches.*never broadly roll back")
+        self.assertRegex(" ".join(skill.split()), r"(?is)failed, timed-out, or non-atomic writes? as untrusted.*exact target.*diff scope.*preserve pre-existing.*verified baseline/backup.*smaller patches.*never broadly roll back")
 
     def test_user_action_precedence_requires_host_owned_mutation_receipts(self):
         root = Path(__file__).parents[1]
@@ -32,13 +32,13 @@ class MutationIntegrityContractTests(unittest.TestCase):
         self.assertRegex(skill_step_zero, r"(?is)separate user authority.*plugin runtime never grants it")
         self.assertIn("Preserve existing pin and placement state", skill_step_zero)
         self.assertIn("[Step 0](hierarchy.md#task-naming-pins-and-rotation)", task_contract)
-        self.assertRegex(skill_step_zero, r"(?is)configured `lifecycle.pin_created_tasks = true`.*top-level CTRL only")
-        self.assertIn("whether\nnewly created or adopted from an existing task", skill_step_zero)
+        self.assertRegex(skill_step_zero, r"(?is)configured\s+`lifecycle.pin_created_tasks = true`.*top-level CTRL only")
+        self.assertIn("whether newly created or adopted from an existing task", " ".join(skill_step_zero.split()))
         self.assertNotRegex(skill_step_zero, r"(?is)unpinning still needs an exact\s+current user request")
         self.assertRegex(skill_step_zero, r"(?is)explicit, authorized rotate.*exact predecessor only")
         self.assertRegex(skill_step_zero, r"(?is)user keep-pinned exception leaves the predecessor\s+pinned and unarchived")
         self.assertRegex(skill_step_zero, r"(?is)in-flight lease on the predecessor stops")
-        self.assertRegex(skill_step_zero, r"(?is)plugin runtime.*independent host\s+verification.*cannot mint\s+approval")
+        self.assertRegex(skill_step_zero, r"(?is)runtime.s intent cannot mint approval.*independent host\s+verification")
         combined = "\n".join((skill, task_contract))
         for forbidden in ("AUTO_PIN", "TEMPORARY_REVIEW_PIN", "concrete ready-review handoff"):
             self.assertNotIn(forbidden, combined)
@@ -50,11 +50,12 @@ class MutationIntegrityContractTests(unittest.TestCase):
         skill = (root / "references" / "hierarchy.md").read_text(encoding="utf-8")
         self.assertNotIn("before pinned project folders", skill)
         self.assertNotIn("first `sections.itemKeys` position", skill)
-        self.assertIn("There\nis no global-first rule", skill)
-        self.assertRegex(skill, r"(?s)pinnedIndex.*mutation acknowledgement alone do not prove\s+relative order")
-        self.assertIn("Preserve unrelated order and pins", skill)
-        self.assertRegex(skill, r"(?s)move_thread_to_sidebar_section.*sectionId='pinned'.*freshly read the complete pinned task list and pass the complete list, never a\s+subset")
-        self.assertRegex(skill, r"(?s)reorder_section.*moves tasks only, not projects; never unpin folders to\s+simulate")
+        self.assertIn("There is no global-first rule", " ".join(skill.split()))
+        self.assertIn("do not treat `pinnedIndex` or an acknowledgement as order proof",
+                      " ".join(skill.split()))
+        self.assertIn("preserve unrelated order and pins", " ".join(skill.split()))
+        self.assertRegex(skill, r"(?s)move_thread_to_sidebar_section.*sectionId='pinned'.*complete freshly read pinned list, never a subset")
+        self.assertRegex(skill, r"(?s)reorder_section.*moves tasks only, not projects.*never unpin folders")
         self.assertRegex(skill, r"(?s)Discovery omissions do not prove.*invent a method or arguments")
         self.assertRegex(skill, r"(?s)report that boundary and leave placement `UNVERIFIED`")
         self.assertNotIn("current host may append", skill)
@@ -119,10 +120,14 @@ class MutationIntegrityContractTests(unittest.TestCase):
         self.assertIn("`O:\\`", combined)
         self.assertRegex(combined, r"(?is)large sequential artifacts.*immutable evidence.*archives.*installers.*release bundles")
         self.assertRegex(combined, r"(?is)active worktrees.*databases.*dependency trees.*random-I/O-heavy caches.*local")
-        self.assertRegex(combined, r"(?is)10 GiB.*not.*freeze gate")
+        policy = " ".join(combined.split())
+        self.assertIn("an operating reserve is distinct from an individual operation's minimum or critical safety floor", policy)
+        self.assertIn("Slow or stop only the specific unsafe operation", policy)
+        self.assertIn("constraints expire at closure; retain receipts as history, not limits on other work", policy)
+        self.assertIn("pressure alone never authorizes deletion", policy)
         self.assertRegex(combined, r"(?is)stale or rebuildable residue.*(?:incrementally|bounded\s+increments).*free space")
         self.assertRegex(combined, r"(?is)never\s+touches active or\s+growing logs.*current sessions.*databases.*dirty product work")
-        self.assertRegex(combined, r"(?is)live[-\s]+process(?:-referenced|.*paths referenced)")
+        self.assertRegex(combined, r"(?is)paths referenced\s+by a live process")
 
     def test_storage_lane_and_senior_lane_heartbeat_contracts_are_explicit(self):
         root = Path(__file__).parents[1]

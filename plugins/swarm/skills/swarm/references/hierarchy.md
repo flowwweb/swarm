@@ -184,13 +184,11 @@ review, or acceptance. Do not disguise a subagent as durable ownership. Artifact
 configured capacity, shared keywords, and a visually complete tree never
 justify a lane.
 
-An ordinary local access failure on an authorized safe action requires one
-supported sandbox or access approval request by the eligible owner before
-host-gate fallback or blocker classification. Pending approval waits; it is not
+Use ordinary calls for authorized reads. If access actually fails, check that turn’s effective policy. For a genuine access prerequisite, only where the effective policy supports an approval request may the eligible owner request it once before host-gate fallback or blocker classification. Pending approval waits; it is not
 failed capacity or route exhaustion. An actual denial remains binding, with its
 exact action and reason retained. Keep unaffected bounded owner work moving;
 user-reserved choices retain their normal approval gates. CTRL coordinates the
-request and result, never performs the producer's action.
+request and result, never performs the producer's action. Internal delegation never grants external, provider, destructive, or user-reserved authority.
 
 Choose the evidence-backed initial topology before the first mutable handoff.
 Recompute it only when material task evidence changes an ownership, dependency,
@@ -453,35 +451,6 @@ replacement from hijacking a user-active CTRL, never the owning CTRL continuing
 authorized work. `active` status alone is neither progress nor a blocker, and a
 direct user instruction may reorient the existing owner within the same lane.
 
-## Intake and lanes
-
-After the Step 0 custody check, capture both intake answers before routing: the
-goal, and the most efficient safe way to complete it (a one-shot prompt may
-already contain both). Then inspect or create exactly one matching durable goal
-when `goals.use_goals = true`, recording objective, canonical artifact, owners,
-dependencies, accepting route, proof and claim limits; reuse a goal only when
-objective, surface and accepting route match.
-
-Structural authority is exactly `CTRL`, `LEAD`, and `DOER`, with no fixed
-depth: a LEAD may produce, recruit a DOER for a bounded artifact, or recruit a
-nested LEAD for an independent durable boundary. Materialize a visible task lane
-only on explicit user request under the host-creation rule above; otherwise
-reuse an eligible visible owner. Medium and large lanes are visible Codex tasks
-with their own cwd, owner and heartbeat; a missing due receipt is stall evidence,
-so reorient the existing owner first. Use a subagent only as short bounded
-capacity inside an existing lane: only genuinely small, single-surface, low-risk
-`GENERAL` work may use `NORMAL_SUBAGENT`, and it never owns, hands off, reviews
-or accepts. A game objective selects the registered `game_studio` graph.
-
-At a material routing trigger record one role-fit disposition: `KEEP_ROLE`,
-`SPECIALIZE_EXISTING`, `ADD_INSTANCE`, `REASSIGN_EXISTING` or
-`PROPOSE_CUSTOM_ROLE`. A busy profession is not singleton; the same mutable
-surface serializes. Busy, leased or gated work is scheduling, not failure: take a
-disjoint lane or keep `WAITING` with the release event. `HARD_BLOCKED` needs
-proof of scoped permitted-route exhaustion. For an authorized safe action with an
-ordinary local access failure, request supported access once; pending approval
-waits and an actual denial binds.
-
 ## Role contracts
 
 CTRL is the sole root and owns intake, the objective ledger, topology,
@@ -501,16 +470,15 @@ file.
 CTRL, or take over an existing CTRL includes naming the current task. Reuse the
 current task for a takeover; create or fork another only when explicitly
 requested. Derive a concise objective and resolve `role_icons`: choose the emoji
-best suited to the project's own identity, never the SWARM method, or no emoji
-when icons are disabled. The default `role_icons.ctrl = "🐙"` is not a user
+best suited to the project's own identity, never the SWARM method, or `<objective>` when icons are disabled. The default `role_icons.ctrl = "🐙"` is not a user
 choice; 🐙 belongs to SWARM. With no clear match use `role_icons.fallback`; do
 not default every project to 🐙. An explicit user icon or title, such as
 `👑 Portfolio`, stays exactly that.
 
 Generated titles come from `scripts/swarm_config.py title-preview` (the same
 owner renders runtime topology lane titles). The main CTRL title is
-`<project emoji> <project>`, one emoji plus the project name only, for example
-`🐟 Aquarium` or `🐙 SWARM`. Every other generated task is
+`<project emoji> <project>`, one leading emoji plus the project name only, with exactly one space and no CTRL label or suffix, for example
+`🐟 Aquarium`, `📐 Skëtch`, `🧱 TÖWERS`, `⚓ Harbor` or `🐙 SWARM`. Every other generated task is
 `project • name • task • Nov 11`: name is the Unit, Lab or Factory name, or the
 profession; task is the responsibility; the date is the short month/day of the
 task's retained creation timestamp, never recomputed on resume.
@@ -519,7 +487,7 @@ task's retained creation timestamp, never recomputed on resume.
 CTRL/LEAD/DOER remain internal roles, not display prefixes. Preserve an
 explicit custom title or naming exception verbatim. An authorized icon-only repair
 replaces only the leading emoji and preserves the rest of the title.
-Preserve existing pin and placement state; pinning alone grants no icon repair.
+Explicit user icon choices, naming exceptions and icon opt-outs remain protected. Preserve existing pin and placement state; pinning alone grants no icon repair.
 
 Before substantive dispatch, call the host `set_thread_title` for the exact task
 ID; do not ask the user to repeat the request. Completion requires the returned
@@ -527,12 +495,12 @@ task ID and title to match, or a fresh host read confirming both; an unverified
 tool response is not a rename. If the tool is unavailable or rejects the call,
 report the exact naming blocker, keep authorized work moving and leave naming
 incomplete. After creating or updating the durable goal, freshly read the task's
-display title again; the full goal text is not display-name authority.
+display title before dispatch. Preserve an explicit user title; repair only an authorized generated-title mismatch, verify the result and leave a failed rename incomplete. The full goal text is not display-name authority. Verify the successor title again before declaring handover complete.
 
 SWARM runtime never calls host pin/unpin, reorder or archive. The host-facing
 agent uses the host's own `list_threads`, `move_thread_to_sidebar_section`
 (`sectionId='pinned'`), `reorder_section` and archive routes with their actual
-schemas, reads state first and reads back every result. Only an exact current
+schemas. Discovery omissions do not prove a capability unavailable; check the supported host routes and never invent a method or arguments. The host reads state first and reads back every result. Only an exact current
 user request, an explicit rotate, or a configured
 `lifecycle.pin_created_tasks = true` (that top-level CTRL only, whether newly
 created or adopted from an existing task) may pin; other roles stay unpinned.
@@ -560,3 +528,28 @@ untouched.
 Naming authority does not include pinning, unpinning, reordering, archiving or
 creating tasks. Those keep their separate user authority (a request, the
 configured opt-in, or an explicit rotate); the plugin runtime never grants it.
+
+## Intake and lanes
+
+After the Step 0 custody check, capture both intake answers before routing: What is the goal for this task? What is the most efficient safe way to complete it? Use answers already in the request. Then inspect or create exactly one matching durable goal
+when `goals.use_goals = true`, recording objective, canonical artifact, owners,
+dependencies, accepting route, proof and claim limits; reuse a goal only when
+objective, surface and accepting route match. A pending creation receipt reserves that identity.
+
+Structural authority is exactly `CTRL`, `LEAD`, and `DOER`, with no fixed
+depth: a LEAD may produce, recruit a DOER for a bounded artifact, or recruit a
+nested LEAD for an independent durable boundary. Materialize a visible task lane
+only on explicit user request under the host-creation rule above; otherwise
+reuse an eligible visible owner. Medium and large lanes are visible Codex tasks
+with their own cwd, owner and heartbeat; a missing due receipt is stall evidence,
+so reorient the existing owner first. Use a subagent only as short bounded
+capacity inside an existing lane: only genuinely small, single-surface, low-risk
+`GENERAL` work may use `NORMAL_SUBAGENT`, and it never owns, hands off, reviews
+or accepts. A game objective selects the registered `game_studio` graph.
+
+At a material routing trigger record one role-fit disposition: `KEEP_ROLE`,
+`SPECIALIZE_EXISTING`, `ADD_INSTANCE`, `REASSIGN_EXISTING` or
+`PROPOSE_CUSTOM_ROLE`. A busy profession is not singleton; the same mutable
+surface serializes. Busy, leased or gated work is scheduling, not failure: take a
+disjoint lane or keep `WAITING` with the release event. `HARD_BLOCKED` needs
+proof of scoped permitted-route exhaustion. Apply the access and fallback rules above to the affected owner.
