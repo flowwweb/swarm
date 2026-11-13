@@ -7,6 +7,7 @@ import http.client
 import io
 import os
 import json
+import queue
 import sqlite3
 import subprocess
 import sys
@@ -44,6 +45,72 @@ from runtime import (  # noqa: E402
     ExecutionFailureKind,
     InvariantError,
 )
+
+
+_PROOF_RACE_SCANNER = r"""
+import json, sys
+from pathlib import Path
+from console import server as console
+
+home, database, boundary = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+store = console.ConsoleStore(database)
+
+def rendezvous():
+    print('SCANNER_READY', flush=True)
+    if sys.stdin.readline().strip() != 'continue':
+        raise RuntimeError('scanner barrier was not released')
+
+if boundary == 'selected':
+    original = console._media_metadata
+    def pause_after_selection(*args, **kwargs):
+        console._media_metadata = original
+        rendezvous()
+        return original(*args, **kwargs)
+    console._media_metadata = pause_after_selection
+elif boundary == 'validated':
+    original = console._media_metadata
+    def pause_after_validation(*args, **kwargs):
+        console._media_metadata = original
+        metadata = original(*args, **kwargs)
+        rendezvous()
+        return metadata
+    console._media_metadata = pause_after_validation
+elif boundary == 'unapproved':
+    original = console._proof_original_root
+    def pause_before_root_decision(*args, **kwargs):
+        console._proof_original_root = original
+        rendezvous()
+        return original(*args, **kwargs)
+    console._proof_original_root = pause_before_root_decision
+elif boundary in ('receipt', 'before_begin'):
+    original = store._connect
+    signaled = False
+    def connect_with_barrier():
+        connection = original()
+        def trace(statement):
+            global signaled
+            sql = statement.lstrip().upper()
+            if not signaled and ((boundary == 'receipt' and sql.startswith('INSERT INTO PROOF_EVENT_RECEIPTS'))
+                                 or (boundary == 'before_begin' and sql.startswith('BEGIN IMMEDIATE'))):
+                signaled = True
+                rendezvous()
+        connection.set_trace_callback(trace)
+        return connection
+    store._connect = connect_with_barrier
+elif boundary == 'writer':
+    connection = store._connect()
+    connection.execute('BEGIN IMMEDIATE')
+    rendezvous()
+    connection.rollback()
+    connection.close()
+    print(json.dumps({'released': True}), flush=True)
+    sys.exit(0)
+else:
+    raise ValueError('unknown scanner boundary')
+
+overview = {'nodes': [{'id': 'task-1', 'project_id': 'project:alpha', 'virtual': False}]}
+print(json.dumps(store.reconcile_proof_events(home, overview, now_ms=123)), flush=True)
+"""
 
 
 class SwarmConsoleTests(unittest.TestCase):
@@ -126,6 +193,58 @@ class SwarmConsoleTests(unittest.TestCase):
     def _auto_rows(self, app, kind):
         with closing(sqlite3.connect(app.store.path)) as db:
             return db.execute("SELECT COUNT(*) FROM execution_event_receipts WHERE event_kind=?", (kind,)).fetchone()[0]
+
+    def test_enabled_auto_surfaces_missing_native_transport(self):
+        app = console.App(self.codex_home, self.config)
+        app.store.set_auto("root", "project:alpha", enabled=True, request_id="enable-visible", now_ms=1)
+        with mock.patch.object(app, "_auto_scope"):
+            status = app.auto_status("root", "project:alpha")
+        self.assertEqual(status["attention"]["kind"], "NATIVE_AUTO_CAPABILITY_UNAVAILABLE")
+        self.assertEqual(status["attention"]["capability_unavailable"], "NATIVE_AUTO_CAPABILITY_UNAVAILABLE")
+        self.assertFalse(status["in_flight"])
+
+    def test_observer_records_auto_integrity_failure_without_exposing_text_and_clears_on_recovery(self):
+        app = console.App(self.codex_home, self.config)
+        app.store.set_auto("root", "project:alpha", enabled=True, request_id="enable-observer", now_ms=1)
+        overview = {"heartbeat_minutes": 30, "nodes": []}
+        failure = console.ConsoleError("retained Auto packet conflicts PRIVATE_DETAIL")
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app, "_ingest_progress_pulses_if_changed", return_value={"eta_reports": {}}), \
+             mock.patch.object(app, "_ingest_proof_events_if_changed"), \
+             mock.patch.object(app.store, "observe_overview"), \
+             mock.patch.object(app.store, "record_diagnostics"), \
+             mock.patch.object(app.diagnostics_collector, "collect", return_value={"sampled_at_ms": 10}), \
+             mock.patch.object(app.auto_bridge, "read_account_limits", return_value={"status": "UNKNOWN", "windows": []}), \
+             mock.patch.object(app, "_auto_health_enabled", return_value=False), \
+             mock.patch.object(console, "observation_fingerprint", return_value=()), \
+             mock.patch.object(app, "_auto_scope"), \
+             mock.patch.object(app, "evaluate_auto_once", side_effect=[failure, failure, {"reason": "NO_DUE_DECISION"}]):
+            app.observe_once()
+            app.observe_once()
+            status = app.auto_status("root", "project:alpha")
+            self.assertEqual(status["attention"]["observer_failure"]["reason"], "AUTO_OBSERVER_FAILED")
+            self.assertEqual(self._auto_rows(app, "AUTO_RECONCILE"), 1)
+            self.assertNotIn("PRIVATE_DETAIL", json.dumps(status))
+            with closing(sqlite3.connect(app.store.path)) as db:
+                payload = db.execute("SELECT payload_json FROM execution_event_receipts WHERE event_kind='AUTO_RECONCILE'").fetchone()[0]
+            self.assertNotIn("PRIVATE_DETAIL", payload)
+            app.observe_once()
+            self.assertNotIn("observer_failure", app.auto_status("root", "project:alpha")["attention"])
+
+    def test_non_native_scope_failure_does_not_prevent_next_lane_observation(self):
+        app = console.App(self.codex_home, self.config)
+        states = [dict(ctrl_id="bad", project_id="project:bad", in_flight=False, enabled=True, stop_after_turn=False),
+                  dict(ctrl_id="good", project_id="project:good", in_flight=False, enabled=True, stop_after_turn=False)]
+        with mock.patch.object(app.store, "enabled_auto_states", return_value=states), \
+             mock.patch.object(app.progress_ledger, "replay", return_value={}), \
+             mock.patch.object(app, "_auto_scope", side_effect=[console.ConsoleError("PRIVATE_SCOPE"), {}]), \
+             mock.patch.object(app, "_auto_candidate", return_value=None) as candidate:
+            result = app.evaluate_auto_once({"nodes": []})
+        self.assertEqual(result["reason"], "LANE_RECONCILE_FAILED")
+        self.assertEqual(result["scope_rejections"][0]["ctrl_id"], "bad")
+        self.assertNotIn("PRIVATE_SCOPE", json.dumps(result))
+        self.assertEqual(candidate.call_count, 1)
+        self.assertEqual(self._auto_rows(app, "AUTO_RECONCILE"), 1)
 
     def test_native_auto_collection_binds_observed_result_digest_not_terminal_status(self):
         app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
@@ -378,12 +497,17 @@ class SwarmConsoleTests(unittest.TestCase):
         unread = rotate()
         self.assertEqual((unread["status"], unread["journal"]), ("BLOCKED", {"active_leases": 0, "unread_results": 1}),
                          "a terminal turn with no readable result is still an unread duty")
+        envelope.update(pinned=["p1", "p2-new"], predecessor_archived=True)
+        already_archived = rotate()
+        self.assertEqual((already_archived["status"], already_archived["step"]), ("BLOCKED", "ARCHIVE"),
+                         "archived readback cannot hide an unread retained result")
+        envelope.update(pinned=["p1", "p2-new", "p2-old"], predecessor_archived=False)
         ledger = store.load_execution_ledger()
         ledger.collect_result(claim["reservation_id"], "p2-old", observation="READABLE", result_digest="e" * 64, observed_at_ms=4)
         store.persist_execution_ledger(ledger, now_ms=4)
         ready = rotate()
         self.assertEqual((ready["status"], ready["step"], ready["journal"]),
-                         ("NEXT", "UNPIN", {"active_leases": 0, "unread_results": 0}))
+                         ("UNVERIFIED", "RETIREMENT", {"active_leases": 0, "unread_results": 0}))
 
     def test_auto_writer_scopes_serialize_shared_nested_and_legacy_roots(self):
         store = console.ConsoleStore(self.root / "console" / "auto-scopes.sqlite3")
@@ -3842,6 +3966,48 @@ class SwarmConsoleTests(unittest.TestCase):
             app.prepare_work_unit(request)
         self.assertEqual(app.unit_catalog_projection("FACTORY")["instances"], [])
         self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
+
+    def test_work_unit_carries_bound_mission_and_keeps_legacy_unknown(self) -> None:
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        role = next(item for item in app.builtin_role_manifests if item["id"] == "manager")
+        request = dict(kind="FACTORY", template_id="software", name="Factory", objective="Refactor the UI",
+            project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="mission-unit",
+            coordinator_role={"id": "manager", "version": role["version"]})
+        document = project_fixture("alpha")
+        document["project"]["purpose"] = "Help people plan with confidence."
+        path = self.root / "SWARM.md"
+        path.write_text(markdown_fixture(document), encoding="utf-8")
+        _, digest = console.parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=self.root)
+        with mock.patch.object(app, "_auto_scope"):
+            first = app.prepare_work_unit(request)["submission"]["instruction"]
+            request["objective"] = "Improve onboarding"
+            second = app.prepare_work_unit(request)["submission"]["instruction"]
+        self.assertIn("Its objective is: Refactor the UI", first)
+        self.assertIn("Its objective is: Improve onboarding", second)
+        for instruction in (first, second):
+            self.assertIn("Help people plan with confidence.", instruction)
+            self.assertIn(digest, instruction)
+            self.assertIn('"confirmation":"UNVERIFIED"', instruction)
+        document["project"] = {"id": "other", "purpose": "A different project's private purpose"}
+        path.write_text(markdown_fixture(document), encoding="utf-8")
+        with mock.patch.object(app, "_auto_scope"):
+            other = app.prepare_work_unit(request)["submission"]["instruction"]
+        self.assertNotIn("A different project's private purpose", other)
+        self.assertIn('"state":"UNKNOWN"', other)
+        document["project"] = {"id": "alpha"}
+        path.write_text(markdown_fixture(document), encoding="utf-8")
+        with mock.patch.object(app, "_auto_scope"):
+            legacy = app.prepare_work_unit(request)["submission"]["instruction"]
+        self.assertIn('"state":"UNKNOWN"', legacy)
+        status, legacy_digest, _ = app._project_brief_from_text(path.read_text(encoding="utf-8"),
+            project_id="project:alpha", display_name="alpha", root=self.root)
+        self.assertEqual(status, "KNOWN")
+        self.assertIsNotNone(legacy_digest)
+        self.assertEqual(app.project_flow_command({"operation": "read", "project_id": "project:alpha"})["source_digest"], legacy_digest)
 
     def test_factory_starting_flows_reach_bounded_coordinator_instructions(self) -> None:
         with closing(sqlite3.connect(self.database)) as connection:
@@ -10535,10 +10701,21 @@ class SwarmConsoleTests(unittest.TestCase):
         overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
         event = {"acknowledge": True, "evidence_id": "explicit-proof", "task_id": "task-1",
                  "kind": "screenshot", "locator": str(source), "caption": "Explicit source"}
+        for nodes in ([], [{"id": "task-1", "project_id": "project:alpha", "virtual": True}],
+                      overview["nodes"] * 2):
+            with mock.patch.object(app, "_host_overview", return_value={"nodes": nodes}), \
+                 self.assertRaisesRegex(console.ConsoleError, "observed task"):
+                app.authorize_original_proof(event)
         with mock.patch.object(app, "_host_overview", return_value=overview):
             with self.assertRaisesRegex(console.ConsoleError, "acknowledgement"):
                 app.authorize_original_proof({**event, "acknowledge": False})
-            row = app.authorize_original_proof(event)
+            with self.assertRaisesRegex(console.ConsoleError, "project does not match"):
+                app.authorize_original_proof({**event, "project_id": "project:other"})
+            self.assertEqual(app.store.proof_feed(), [])
+            row = app.authorize_original_proof({**event, "project_id": "project:alpha"})
+            self.assertEqual(app.authorize_original_proof({**event, "project_id": "project:alpha"}), row)
+            with closing(sqlite3.connect(app.store.path)) as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM proof_media").fetchone()[0], 1)
         self.assertEqual(app.proof_media_item("explicit-proof", row["digest"])["path"], source.resolve())
         self.assertFalse((self.codex_home / "swarm" / "proof-media").exists())
         source.unlink()
@@ -10547,6 +10724,971 @@ class SwarmConsoleTests(unittest.TestCase):
         source.write_bytes(b"\x89PNG\r\n\x1a\nother")
         with self.assertRaises(console.ConsoleError):
             app.proof_media_item("explicit-proof", row["digest"])
+
+    def test_explicit_original_respects_retained_event_receipts(self) -> None:
+        source = self.root / "receipt-original.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "receipt-check.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        def event(identity):
+            return {"acknowledge": True, "evidence_id": identity, "task_id": "task-1", "project_id": "project:alpha",
+                    "kind": "screenshot", "locator": str(source), "caption": "Explicit source", "digest": digest}
+        def retain(identity, *, status, evidence_id=None, task_id="task-1", media_digest=digest):
+            name = hashlib.sha256(identity.encode("utf-8")).hexdigest() + ".json"
+            app.store._record_proof_event_receipt(name, mtime_ns=1, size=1, status=status,
+                evidence_id=identity if evidence_id is None else evidence_id, event_digest="a" * 64,
+                task_id=task_id, project_id="project:alpha", media_digest=media_digest, now_ms=1)
+            return name
+        def media(identity, receipt):
+            return app.store.record_proof_media({**event(identity), "source": "CtrlEvidence", "disposition": "PENDING",
+                "receipt": receipt}, now_ms=1, allowed_root=self.root)
+        retain("rejected-proof", status="REJECTED", evidence_id="")
+        imported_name = hashlib.sha256(b"imported-proof").hexdigest() + ".json"
+        imported = media("imported-proof", "proof-event:" + Path(imported_name).stem)
+        retain("imported-proof", status="IMPORTED")
+        media("conflicting-proof", "ctrl-original:task-1")
+        retain("conflicting-proof", status="IMPORTED", task_id="another-task")
+        media("wrong-reference", "proof-event:another-event")
+        retain("wrong-reference", status="IMPORTED")
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                app.authorize_original_proof(event("rejected-proof"))
+            with self.assertRaisesRegex(console.ConsoleError, "receipt"):
+                app.authorize_original_proof(event("conflicting-proof"))
+            with self.assertRaisesRegex(console.ConsoleError, "receipt reference"):
+                app.authorize_original_proof(event("wrong-reference"))
+            self.assertEqual(app.authorize_original_proof(event("imported-proof")), imported)
+            self.assertEqual(app.authorize_original_proof(event("imported-proof")), imported)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_media WHERE evidence_id='rejected-proof'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_media WHERE evidence_id='imported-proof'").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_event_receipts").fetchone()[0], 4)
+
+    def _proof_race_fixture(self, evidence_id: str):
+        from skills.swarm.runtime.proof_events import register_proof_event
+
+        source = self.codex_home / "visualizations" / f"{evidence_id}.png"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        event = register_proof_event(
+            self.codex_home, source, evidence_id=evidence_id, task_id="task-1",
+            kind="screenshot", caption="Race fixture", created_at_ms=1,
+        )
+        app = console.App(self.codex_home, self.config, self.root / "console" / f"{evidence_id}.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        return app, {**event, "acknowledge": True, "project_id": "project:alpha"}, overview
+
+    def _start_proof_race_scanner(self, app, boundary: str):
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-c", _PROOF_RACE_SCANNER,
+             str(self.codex_home), str(app.store.path), boundary],
+            cwd=str(SERVER.parent.parent), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8",
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+
+        def stop_owned_process():
+            if process.poll() is None:
+                try:
+                    release = None if process._proof_race_released else "continue\n"
+                    process._proof_race_released = True
+                    process.communicate(release, timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=5)
+
+        process._proof_race_released = False
+        self.addCleanup(stop_owned_process)
+        lines = queue.Queue()
+        threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True).start()
+        try:
+            ready = lines.get(timeout=45)
+        except queue.Empty:
+            stop_owned_process()
+            self.fail("scanner did not reach the controlled boundary")
+        self.assertEqual(ready.strip(), "SCANNER_READY", "scanner exited before the controlled boundary")
+        return process
+
+    def _finish_proof_race_scanner(self, process):
+        process._proof_race_released = True
+        stdout, stderr = process.communicate("continue\n", timeout=45)
+        self.assertEqual(process.returncode, 0, stderr)
+        return json.loads(stdout.strip().splitlines()[-1])
+
+    def test_proof_race_cleanup_reaps_owned_child_after_completion_timeout(self) -> None:
+        child_code = "import sys,time; print('SCANNER_READY',flush=True); sys.stdin.readline(); time.sleep(30)"
+        app = SimpleNamespace(store=SimpleNamespace(path=self.root / "unused.sqlite3"))
+        with mock.patch.dict(globals(), {"_PROOF_RACE_SCANNER": child_code}):
+            process = self._start_proof_race_scanner(app, "synthetic-timeout")
+        original = process.communicate
+
+        def short_communicate(input=None, timeout=None):
+            return original(input=input, timeout=0.15)
+
+        process.communicate = short_communicate
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                self._finish_proof_race_scanner(process)
+            cleanup, args, kwargs = self._cleanups[-1]
+            cleanup(*args, **kwargs)
+            self.assertIsNotNone(process.poll(), "owned scanner must be reaped after timeout")
+        finally:
+            process.communicate = original
+            if process.poll() is None:
+                process.kill()
+                process.communicate(timeout=5)
+
+    def test_proof_race_cleanup_reaps_owned_child_after_startup_timeout(self) -> None:
+        child_code = "import sys,time; sys.stdin.readline(); time.sleep(30)"
+        app = SimpleNamespace(store=SimpleNamespace(path=self.root / "unused.sqlite3"))
+        children = []
+        original_popen = subprocess.Popen
+        original_get = queue.Queue.get
+
+        def track_child(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            original = process.communicate
+            process.communicate = lambda input=None, timeout=None: original(input=input, timeout=0.15)
+            children.append((process, original))
+            return process
+
+        def short_get(instance, block=True, timeout=None):
+            return original_get(instance, block=block, timeout=0.15 if timeout else timeout)
+
+        try:
+            with mock.patch.dict(globals(), {"_PROOF_RACE_SCANNER": child_code}), \
+                    mock.patch.object(subprocess, "Popen", side_effect=track_child), \
+                    mock.patch.object(queue.Queue, "get", new=short_get):
+                with self.assertRaisesRegex(AssertionError, "did not reach"):
+                    self._start_proof_race_scanner(app, "synthetic-startup-timeout")
+            self.assertEqual(len(children), 1)
+            self.assertIsNotNone(children[0][0].poll(), "owned scanner must be reaped after startup timeout")
+        finally:
+            for process, original in children:
+                process.communicate = original
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
+
+    def _early_rejection_case(self, authority: str, case: str):
+        root = self.root / f"early-{authority}-{case}"
+        home = root / "codex"
+        event_root = home / "swarm" / "proof-events"
+        media_root = home / "swarm" / "proof-media"
+        event_root.mkdir(parents=True)
+        media_root.mkdir()
+        media = media_root / "proof.png"
+        data = b"\x89PNG\r\n\x1a\nfictional-proof"
+        media.write_bytes(data)
+        evidence_id = f"early-{authority}-{case}"
+        event = {"schema_version": 1, "source": "CtrlEvidence", "evidence_id": evidence_id,
+                 "task_id": "task-1", "kind": "screenshot", "locator": "proof-media/proof.png",
+                 "caption": "Fixture proof", "digest": hashlib.sha256(data).hexdigest(),
+                 "size_bytes": len(data), "media_type": "image/png", "disposition": "PENDING"}
+        app = console.App(home, self.config, root / "console.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        payload = {**event, "locator": str(media)}
+        if authority == "legacy":
+            (event_root / "legacy-event.json").write_text(json.dumps(event), encoding="utf-8")
+            result = app.store.reconcile_proof_events(home, overview, now_ms=1)
+            self.assertEqual((result["imported"], result["rejected"]), (1, 0), result)
+        elif authority == "rejected":
+            app.store._record_proof_event_receipt("prior-legacy.json", mtime_ns=1, size=1, status="REJECTED",
+                evidence_id=evidence_id, event_digest="a" * 64, task_id="task-1",
+                project_id="project:alpha", media_digest=event["digest"], now_ms=1)
+        if authority in {"legacy", "direct"}:
+            with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                original = app.register_proof(payload)
+                self.assertEqual(app.register_proof(payload), original)
+        else:
+            original = None
+        return app, event, payload, overview, event_root, original
+
+    @staticmethod
+    def _invalid_canonical_bytes(event: dict, case: str) -> bytes:
+        if case == "malformed":
+            return b"{"
+        if case == "private":
+            return json.dumps({**event, "prompt": "fixture-private-secret"}).encode("utf-8")
+        if case == "envelope":
+            return json.dumps({**event, "schema_version": 2}).encode("utf-8")
+        if case == "missing-id":
+            return json.dumps({key: value for key, value in event.items() if key != "evidence_id"}).encode("utf-8")
+        if case == "mismatched-id":
+            return json.dumps({**event, "evidence_id": event["evidence_id"] + "-other"}).encode("utf-8")
+        raise AssertionError(case)
+
+    def test_proof_invalid_canonical_event_cannot_shadow_prior_authority(self) -> None:
+        for authority in ("legacy", "direct"):
+            for case in ("malformed", "private", "envelope", "missing-id", "mismatched-id"):
+                with self.subTest(authority=authority, case=case):
+                    app, event, payload, overview, event_root, original = self._early_rejection_case(authority, case)
+                    canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+                    with closing(sqlite3.connect(app.store.path)) as db:
+                        before = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts ORDER BY event_name").fetchall()
+                    canonical.write_bytes(self._invalid_canonical_bytes(event, case))
+                    for now_ms in (3, 4):
+                        result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=now_ms)
+                        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+                        self.assertEqual(result["duplicates"], int(authority == "legacy"), result)
+                        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                            self.assertEqual(app.register_proof(payload), original)
+                    self.assertEqual(app.store.proof_feed(), [original])
+                    with closing(sqlite3.connect(app.store.path)) as db:
+                        after = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts ORDER BY event_name").fetchall()
+                        self.assertEqual(after, before)
+                        self.assertNotIn("fixture-private-secret", repr(db.execute("SELECT * FROM proof_event_receipts").fetchall()))
+
+    def test_proof_unknown_invalid_canonical_event_retains_unbound_rejection(self) -> None:
+        for case in ("malformed", "private", "envelope", "missing-id"):
+            with self.subTest(case=case):
+                app, event, payload, overview, event_root, _ = self._early_rejection_case("unknown", case)
+                canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+                canonical.write_bytes(self._invalid_canonical_bytes(event, case))
+                result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+                self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+                with closing(sqlite3.connect(app.store.path)) as db:
+                    rows = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall()
+                    self.assertEqual(rows, [(canonical.name, "REJECTED", "")])
+                    self.assertNotIn("fixture-private-secret", repr(db.execute("SELECT * FROM proof_event_receipts").fetchall()))
+                with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                    with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                        app.register_proof(payload)
+
+    def test_proof_unclaimed_canonical_mismatch_is_unbound_rejection(self) -> None:
+        app, event, payload, overview, event_root, _ = self._early_rejection_case("unknown", "mismatch-fresh")
+        filename_id = event["evidence_id"]
+        payload_id = filename_id + "-other"
+        canonical = event_root / (hashlib.sha256(filename_id.encode()).hexdigest() + ".json")
+        canonical.write_text(json.dumps({**event, "evidence_id": payload_id}), encoding="utf-8")
+        result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        self.assertEqual(app.store.proof_feed(), [])
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall(),
+                             [(canonical.name, "REJECTED", "")])
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                app.register_proof(payload)
+            self.assertEqual(app.register_proof({**payload, "evidence_id": payload_id})["evidence_id"], payload_id)
+
+    @unittest.skipUnless(os.name == "nt", "Windows path identity required")
+    def test_proof_windows_canonical_case_rejection_blocks_direct_registration(self) -> None:
+        for spelling in ("upper", "mixed"):
+            with self.subTest(spelling=spelling):
+                app, event, payload, overview, event_root, _ = self._early_rejection_case("unknown", spelling)
+                digest = hashlib.sha256(event["evidence_id"].encode()).hexdigest()
+                name = (digest.upper() + ".json" if spelling == "upper" else
+                        "".join(c.upper() if i % 2 == 0 else c for i, c in enumerate(digest)) + ".JSON")
+                path = event_root / name
+                path.write_bytes(b"{")
+                self.assertTrue(os.path.samefile(path, event_root / (digest + ".json")))
+                result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+                self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+                with closing(sqlite3.connect(app.store.path)) as db:
+                    self.assertEqual(db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall(),
+                                     [(name, "REJECTED", "")])
+                with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                    with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                        app.register_proof(payload)
+
+    @unittest.skipUnless(os.name == "nt", "Windows path identity required")
+    def test_proof_windows_canonical_case_preserves_existing_authority_and_old_rejection(self) -> None:
+        for authority in ("legacy", "direct", "rejected"):
+            for case in ("malformed", "private", "mismatched-id"):
+                with self.subTest(authority=authority, case=case):
+                    app, event, payload, overview, event_root, original = self._early_rejection_case(authority, "case-existing-" + case)
+                    with closing(sqlite3.connect(app.store.path)) as db:
+                        before = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts ORDER BY event_name").fetchall()
+                    digest = hashlib.sha256(event["evidence_id"].encode()).hexdigest()
+                    (event_root / (digest.upper() + ".JSON")).write_bytes(self._invalid_canonical_bytes(event, case))
+                    result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+                    self.assertEqual(result["rejected"], 1, result)
+                    with closing(sqlite3.connect(app.store.path)) as db:
+                        self.assertEqual(db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts ORDER BY event_name").fetchall(), before)
+                        self.assertNotIn("fixture-private-secret", repr(db.execute("SELECT * FROM proof_event_receipts").fetchall()))
+                    with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                        if authority == "rejected":
+                            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                                app.register_proof(payload)
+                        else:
+                            self.assertEqual(app.register_proof(payload), original)
+
+        app, event, payload, overview, _, _ = self._early_rejection_case("unknown", "old-case")
+        digest = hashlib.sha256(event["evidence_id"].encode()).hexdigest()
+        with closing(sqlite3.connect(app.store.path)) as db:
+            db.execute("INSERT INTO proof_event_receipts(event_name,event_mtime_ns,event_size,status,evidence_id,observed_at_ms) "
+                       "VALUES(?,1,1,'REJECTED','',1)", (digest.upper() + ".JSON",))
+            db.commit()
+        app.store = console.ConsoleStore(app.store.path)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            plan = " ".join(str(row) for row in db.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM proof_event_receipts WHERE event_name = ? COLLATE NOCASE OR evidence_id = ?",
+                (digest + ".json", event["evidence_id"])).fetchall())
+            self.assertIn("proof_event_receipts_name_nocase", plan)
+            self.assertIn("proof_event_receipts_evidence_id", plan)
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                app.register_proof(payload)
+
+    @unittest.skipUnless(os.name == "nt", "Windows path identity required")
+    def test_proof_windows_canonical_variants_validate_payload_identity(self) -> None:
+        for spelling in ("upper", "mixed"):
+            for mismatched in (False, True):
+                with self.subTest(spelling=spelling, mismatched=mismatched):
+                    case = f"case-valid-{spelling}-{mismatched}"
+                    app, event, payload, overview, event_root, _ = self._early_rejection_case("unknown", case)
+                    digest = hashlib.sha256(event["evidence_id"].encode()).hexdigest()
+                    name = (digest.upper() + ".json" if spelling == "upper" else
+                            "".join(c.upper() if i % 2 == 0 else c for i, c in enumerate(digest)) + ".JSON")
+                    body = {**event, "evidence_id": event["evidence_id"] + "-other"} if mismatched else event
+                    (event_root / name).write_text(json.dumps(body), encoding="utf-8")
+                    first = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+                    again = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=3)
+                    with closing(sqlite3.connect(app.store.path)) as db:
+                        rows = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall()
+                    if mismatched:
+                        self.assertEqual((first["imported"], first["rejected"], again["rejected"]), (0, 1, 1), first)
+                        self.assertEqual(rows, [(name, "REJECTED", "")])
+                        self.assertEqual(app.store.proof_feed(), [])
+                    else:
+                        self.assertEqual((first["imported"], again["duplicates"]), (1, 1), first)
+                        self.assertEqual(rows, [(name, "IMPORTED", event["evidence_id"])])
+                        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                            self.assertEqual(app.register_proof(payload)["evidence_id"], event["evidence_id"])
+
+    def test_proof_invalid_canonical_event_does_not_shadow_prior_legacy_rejection(self) -> None:
+        app, event, payload, overview, event_root, _ = self._early_rejection_case("rejected", "malformed")
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        canonical.write_bytes(b"{")
+        result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall(),
+                             [("prior-legacy.json", "REJECTED", event["evidence_id"])])
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                app.register_proof(payload)
+
+    def test_proof_invalid_canonical_event_cannot_poison_legacy_rehydration(self) -> None:
+        app, event, payload, overview, event_root, _ = self._early_rejection_case("legacy", "rehydrate")
+        with closing(sqlite3.connect(app.store.path)) as db:
+            db.execute("DELETE FROM proof_media WHERE evidence_id=?", (event["evidence_id"],))
+            db.commit()
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        canonical.write_bytes(b"{")
+        result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["rejected"]), (1, 1), result)
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            recovered = app.register_proof(payload)
+            self.assertEqual(app.register_proof(payload), recovered)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall(),
+                             [("legacy-event.json", "IMPORTED", event["evidence_id"])])
+
+    def test_proof_early_rejection_rechecks_direct_authority_after_lock(self) -> None:
+        app, event, overview = self._proof_race_fixture("early-direct-wins")
+        event_root = self.codex_home / "swarm" / "proof-events"
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        canonical.write_bytes(b"{")
+        scanner = self._start_proof_race_scanner(app, "before_begin")
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            direct = app.authorize_original_proof(event)
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            self.assertEqual(app.authorize_original_proof(event), direct)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_event_receipts").fetchone()[0], 0)
+
+    def test_proof_direct_registration_cannot_pass_an_inflight_early_rejection(self) -> None:
+        app, event, overview = self._proof_race_fixture("early-rejection-wins")
+        event_root = self.codex_home / "swarm" / "proof-events"
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        canonical.write_bytes(b"{")
+        scanner = self._start_proof_race_scanner(app, "receipt")
+        original_connect = app.store._connect
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            return connection
+
+        error = None
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app.store, "_connect", side_effect=connect_without_waiting):
+            try:
+                app.authorize_original_proof(event)
+            except sqlite3.OperationalError as exc:
+                error = exc
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertIsInstance(error, sqlite3.OperationalError)
+        self.assertIn("locked", str(error).lower())
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                app.authorize_original_proof(event)
+        self.assertEqual(app.store.proof_feed(), [])
+
+    def test_proof_canonical_authority_migrates_old_and_null_receipts(self) -> None:
+        root = self.root / "canonical-old-store"
+        home = root / "codex"
+        event_root = home / "swarm" / "proof-events"
+        media_root = home / "swarm" / "proof-media"
+        event_root.mkdir(parents=True)
+        media_root.mkdir()
+        media = media_root / "proof.png"
+        data = b"\x89PNG\r\n\x1a\nold-proof"
+        media.write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        identity, rejected_id, unknown_id = "old-accepted", "old-rejected", "old-unknown"
+        event = {"schema_version": 1, "source": "CtrlEvidence", "evidence_id": identity,
+                 "task_id": "task-1", "kind": "screenshot", "locator": "proof-media/proof.png",
+                 "caption": "Old proof", "digest": digest, "size_bytes": len(data),
+                 "media_type": "image/png", "disposition": "PENDING"}
+        (event_root / "legacy-accepted.json").write_text(json.dumps(event), encoding="utf-8")
+        db_path = root / "legacy.sqlite3"
+        with closing(sqlite3.connect(db_path)) as db:
+            db.execute("CREATE TABLE proof_media (evidence_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+                       "project_id TEXT NOT NULL, kind TEXT NOT NULL, locator TEXT NOT NULL, caption TEXT NOT NULL, "
+                       "claim_limit TEXT NOT NULL, disposition TEXT NOT NULL, receipt TEXT NOT NULL, "
+                       "surface_kind TEXT NOT NULL, media_type TEXT NOT NULL, mtime_ns INTEGER, size_bytes INTEGER, "
+                       "digest TEXT, registered_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)")
+            db.execute("INSERT INTO proof_media VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (identity, "task-1", "project:alpha", "screenshot", str(media.resolve()), "Old proof",
+                 "Available for review; acceptance is recorded separately.", "PENDING", "proof-event:legacy-accepted",
+                 "available_media", "image/png", media.stat().st_mtime_ns, len(data), digest, 1, 1))
+            db.execute("CREATE TABLE proof_event_receipts (event_name TEXT PRIMARY KEY, event_mtime_ns INTEGER NOT NULL, "
+                       "event_size INTEGER NOT NULL, status TEXT NOT NULL, evidence_id TEXT NOT NULL, "
+                       "observed_at_ms INTEGER NOT NULL)")
+            legacy = event_root / "legacy-accepted.json"
+            db.executemany("INSERT INTO proof_event_receipts VALUES (?,?,?,?,?,?)", [
+                (legacy.name, legacy.stat().st_mtime_ns, legacy.stat().st_size, "IMPORTED", identity, 1),
+                ("legacy-rejected.json", 1, 1, "REJECTED", rejected_id, 1),
+                ("legacy-unbound.json", 1, 1, "REJECTED", "", 1),
+            ])
+            db.commit()
+        app = console.App(home, self.config, db_path)
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        with closing(sqlite3.connect(db_path)) as db:
+            self.assertEqual(db.execute("SELECT canonical_event_name FROM proof_media WHERE evidence_id=?", (identity,)).fetchone(),
+                             (hashlib.sha256(identity.encode()).hexdigest() + ".json",))
+            names = dict(db.execute("SELECT event_name,canonical_event_name FROM proof_event_receipts").fetchall())
+            self.assertEqual(names["legacy-rejected.json"], hashlib.sha256(rejected_id.encode()).hexdigest() + ".json")
+            self.assertIsNone(names["legacy-unbound.json"])
+        for value in (identity, rejected_id, unknown_id):
+            (event_root / (hashlib.sha256(value.encode()).hexdigest() + ".json")).write_bytes(b"{")
+        result = app.store.reconcile_proof_events(home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["duplicates"], result["rejected"]), (0, 1, 3), result)
+        with closing(sqlite3.connect(db_path)) as db:
+            rows = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts ORDER BY event_name").fetchall()
+            self.assertIn(("legacy-accepted.json", "IMPORTED", identity), rows)
+            self.assertIn(("legacy-rejected.json", "REJECTED", rejected_id), rows)
+            self.assertIn(("legacy-unbound.json", "REJECTED", ""), rows)
+            self.assertIn((hashlib.sha256(unknown_id.encode()).hexdigest() + ".json", "REJECTED", ""), rows)
+            self.assertEqual(len(rows), 4)
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            recovered = app.register_proof({**event, "locator": str(media)})
+            self.assertEqual(app.register_proof({**event, "locator": str(media)}), recovered)
+
+    def test_proof_scan_backfills_new_legacy_nulls_in_bounded_batches(self) -> None:
+        app, event, payload, overview, event_root, original = self._early_rejection_case("direct", "late-null")
+        with closing(sqlite3.connect(app.store.path)) as db:
+            db.execute("UPDATE proof_media SET canonical_event_name=NULL WHERE evidence_id=?", (event["evidence_id"],))
+            for index in range(129):
+                db.execute("INSERT INTO proof_media (evidence_id,task_id,project_id,kind,locator,caption,claim_limit,"
+                           "disposition,receipt,surface_kind,media_type,mtime_ns,size_bytes,digest,registered_at_ms,updated_at_ms) "
+                           "SELECT ?,task_id,project_id,kind,locator,caption,claim_limit,disposition,receipt,surface_kind,"
+                           "media_type,mtime_ns,size_bytes,digest,registered_at_ms,updated_at_ms FROM proof_media WHERE evidence_id=?",
+                           (f"old-writer-{index}", event["evidence_id"]))
+            db.execute("UPDATE proof_media SET canonical_event_name='' WHERE evidence_id='old-writer-128'")
+            db.commit()
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        canonical.write_bytes(b"{")
+        first = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+        self.assertEqual((first["imported"], first["rejected"], first["retryable"]), (0, 0, 1), first)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_media WHERE canonical_event_name IS NULL").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_media WHERE canonical_event_name=''").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_event_receipts").fetchone()[0], 0)
+        second = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=3)
+        self.assertEqual((second["imported"], second["rejected"], second["retryable"]), (0, 0, 1), second)
+        third = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=4)
+        self.assertEqual((third["imported"], third["rejected"], third["retryable"]), (0, 1, 0), third)
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            self.assertEqual(app.register_proof(payload), original)
+
+    def test_proof_canonical_backfill_does_not_walk_completed_identities(self) -> None:
+        store = console.ConsoleStore(self.root / "console" / "backfill-work.sqlite3")
+        with closing(store._connect()) as db:
+            def add_rows(start, stop):
+                rows = [(f"completed-{index}", console._canonical_proof_event_name(f"completed-{index}"))
+                        for index in range(start, stop)]
+                db.executemany("INSERT INTO proof_media (evidence_id,task_id,project_id,kind,locator,caption,claim_limit,"
+                               "disposition,receipt,surface_kind,media_type,registered_at_ms,updated_at_ms,canonical_event_name) "
+                               "VALUES (?, 'task', 'project', 'screenshot', 'x.png', 'x', 'x', 'PENDING', 'x', "
+                               "'available_media', 'image/png', 1, 1, ?)", rows)
+                db.commit()
+
+            def work():
+                steps = []
+                db.set_progress_handler(lambda: steps.append(1) and 0, 100)
+                try:
+                    store._backfill_proof_canonical_names(db, max_batches=1)
+                finally:
+                    db.set_progress_handler(None, 0)
+                return len(steps) * 100
+
+            add_rows(0, 64)
+            small = work()
+            add_rows(64, 4096)
+            db.execute("UPDATE proof_media SET canonical_event_name=NULL WHERE evidence_id='completed-4095'")
+            db.commit()
+            large = work()
+            self.assertLessEqual(large, small + 1000, (small, large))
+            self.assertIsNotNone(db.execute("SELECT canonical_event_name FROM proof_media WHERE evidence_id='completed-4095'").fetchone()[0])
+
+    def test_proof_canonical_backfill_hash_does_not_hold_writer_lock(self) -> None:
+        app, event, _, _, _, _ = self._early_rejection_case("direct", "migration-writer")
+        other = console.ConsoleStore(app.store.path)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            db.execute("UPDATE proof_media SET canonical_event_name=NULL WHERE evidence_id=?", (event["evidence_id"],))
+            db.commit()
+        original_hash = console._canonical_proof_event_name
+        original_connect = other._connect
+        attempts = []
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            return connection
+
+        def check_unrelated_writer(identity):
+            if identity == event["evidence_id"] and not attempts:
+                try:
+                    with mock.patch.object(other, "_connect", side_effect=connect_without_waiting):
+                        other.set_auto("root", "project:alpha", enabled=True, request_id="migration-writer", now_ms=1)
+                    attempts.append(None)
+                except sqlite3.OperationalError as exc:
+                    attempts.append(exc)
+            return original_hash(identity)
+
+        with mock.patch.object(console, "_canonical_proof_event_name", side_effect=check_unrelated_writer):
+            console.ConsoleStore(app.store.path)
+        self.assertEqual(len(attempts), 1)
+        self.assertIsNone(attempts[0], f"canonical backfill blocked an unrelated writer: {attempts[0]}")
+        self.assertTrue(other.auto_status("root", "project:alpha")["enabled"])
+
+    def test_proof_rejected_identity_cannot_import_under_another_filename(self) -> None:
+        evidence_id = "rejected-cross-name"
+        event_path = self._write_proof_event(evidence_id, "task-1", digest="0" * 64)
+        canonical = event_path.with_name(hashlib.sha256(evidence_id.encode()).hexdigest() + ".json")
+        event_path.rename(canonical)
+        store = console.ConsoleStore(self.root / "console" / "rejected-cross-name.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        first = store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual((first["imported"], first["rejected"]), (0, 1), first)
+        event = json.loads(canonical.read_text(encoding="utf-8"))
+        event["digest"] = hashlib.sha256(b"\x89PNG\r\n\x1a\nproof").hexdigest()
+        canonical.with_name("alternate-event.json").write_text(json.dumps(event), encoding="utf-8")
+        second = store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual(second["imported"], 0, second)
+        self.assertEqual(second["rejected"], 2, second)
+        self.assertEqual(store.proof_feed(), [])
+        with closing(sqlite3.connect(store.path)) as db:
+            self.assertEqual(db.execute("SELECT status FROM proof_event_receipts WHERE event_name=?", (canonical.name,)).fetchone(),
+                             ("REJECTED",))
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_event_receipts WHERE evidence_id=? AND status='IMPORTED'",
+                                        (evidence_id,)).fetchone()[0], 0)
+
+    def test_proof_alternate_filename_respects_unbound_canonical_rejection(self) -> None:
+        evidence_id = "unbound-canonical"
+        self._write_proof_event(evidence_id, "task-1")
+        store = console.ConsoleStore(self.root / "console" / "unbound-canonical.sqlite3")
+        canonical = hashlib.sha256(evidence_id.encode()).hexdigest() + ".json"
+        store._record_proof_event_receipt(canonical, mtime_ns=1, size=1, status="REJECTED", evidence_id="",
+            event_digest="a" * 64, task_id="", project_id="", media_digest="", now_ms=1)
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        self.assertEqual(store.proof_feed(), [])
+
+    def test_proof_rejected_legacy_identity_blocks_canonical_filename(self) -> None:
+        evidence_id = "rejected-legacy-first"
+        legacy = self._write_proof_event(evidence_id, "task-1", digest="0" * 64)
+        store = console.ConsoleStore(self.root / "console" / "rejected-legacy-first.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        first = store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual((first["imported"], first["rejected"]), (0, 1), first)
+        event = json.loads(legacy.read_text(encoding="utf-8"))
+        event["digest"] = hashlib.sha256(b"\x89PNG\r\n\x1a\nproof").hexdigest()
+        canonical = legacy.with_name(hashlib.sha256(evidence_id.encode()).hexdigest() + ".json")
+        canonical.write_text(json.dumps(event), encoding="utf-8")
+        second = store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((second["imported"], second["rejected"]), (0, 2), second)
+        self.assertEqual(store.proof_feed(), [])
+        with closing(sqlite3.connect(store.path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status FROM proof_event_receipts WHERE evidence_id=?",
+                                        (evidence_id,)).fetchall(), [(legacy.name, "REJECTED")])
+
+    def test_proof_identity_lookup_preserves_rejections_when_legacy_store_upgrades(self) -> None:
+        evidence_id = "legacy-store-upgrade"
+        path = self.root / "console" / "old-receipts.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(path)) as db:
+            db.execute("CREATE TABLE proof_event_receipts (event_name TEXT PRIMARY KEY, event_mtime_ns INTEGER NOT NULL, "
+                       "event_size INTEGER NOT NULL, status TEXT NOT NULL, evidence_id TEXT NOT NULL, "
+                       "observed_at_ms INTEGER NOT NULL)")
+            db.execute("INSERT INTO proof_event_receipts VALUES (?, ?, ?, ?, ?, ?)",
+                       ("old-legacy-name.json", 1, 1, "REJECTED", evidence_id, 1))
+            db.commit()
+        store = console.ConsoleStore(path)
+        self._write_proof_event(evidence_id, "task-1")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        self.assertEqual(store.proof_feed(), [])
+        with closing(sqlite3.connect(path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status FROM proof_event_receipts WHERE evidence_id=?",
+                                        (evidence_id,)).fetchall(), [("old-legacy-name.json", "REJECTED")])
+
+    def test_proof_imported_identity_rejects_conflicting_names_without_poisoning_retry(self) -> None:
+        evidence_id = "imported-cross-name"
+        event_path = self._write_proof_event(evidence_id, "task-1")
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        app = console.App(self.codex_home, self.config, self.root / "console" / "imported-cross-name.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False},
+                              {"id": "task-2", "project_id": "project:other", "virtual": False}]}
+        first = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual(first["imported"], 1, first)
+        published = app.store.proof_feed()
+        alternate = event_path.with_name("alternate-conflict.json")
+        alternate.write_text(json.dumps({**event, "digest": "0" * 64}), encoding="utf-8")
+        second = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((second["imported"], second["rejected"]), (0, 1), second)
+        canonical = event_path.with_name(hashlib.sha256(evidence_id.encode()).hexdigest() + ".json")
+        canonical.write_text(json.dumps({**event, "caption": "Conflicting canonical event"}), encoding="utf-8")
+        event_path.with_name("other-project.json").write_text(json.dumps({**event, "task_id": "task-2"}), encoding="utf-8")
+        third = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=3)
+        self.assertEqual(third["imported"], 0, third)
+        self.assertGreaterEqual(third["rejected"], 3, third)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status FROM proof_event_receipts WHERE evidence_id=?",
+                                        (evidence_id,)).fetchall(), [(event_path.name, "IMPORTED")])
+            self.assertIsNone(db.execute("SELECT status FROM proof_event_receipts WHERE event_name=?",
+                                         (canonical.name,)).fetchone())
+        source = self.codex_home / "swarm" / event["locator"]
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            self.assertEqual(app.register_proof({**event, "locator": str(source)}), published[0])
+            self.assertEqual(app.register_proof({**event, "locator": str(source)}), published[0])
+        self.assertEqual(app.store.proof_feed(), published)
+
+    def test_proof_bad_alternate_does_not_poison_prior_direct_authorization(self) -> None:
+        app, event, overview = self._proof_race_fixture("direct-before-bad-alias")
+        event_root = self.codex_home / "swarm" / "proof-events"
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        original = canonical.read_bytes()
+        bad = json.loads(original)
+        bad["digest"] = "0" * 64
+        canonical.rename(event_root / "bad-direct-alias.json")
+        (event_root / "bad-direct-alias.json").write_text(json.dumps(bad), encoding="utf-8")
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            direct = app.authorize_original_proof(event)
+        rejected = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual((rejected["imported"], rejected["rejected"]), (0, 1), rejected)
+        canonical.write_bytes(original)
+        recovered = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((recovered["imported"], recovered["rejected"]), (1, 1), recovered)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            self.assertEqual(app.authorize_original_proof(event), direct)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT receipt FROM proof_media").fetchone(), ("ctrl-original:task-1",))
+            self.assertEqual(db.execute("SELECT event_name,status FROM proof_event_receipts WHERE evidence_id=?",
+                                        (event["evidence_id"],)).fetchall(), [(canonical.name, "IMPORTED")])
+
+    def test_proof_scanner_rechecks_cross_filename_rejection_under_writer_lock(self) -> None:
+        app, event, _ = self._proof_race_fixture("rejected-name-race")
+        event_root = self.codex_home / "swarm" / "proof-events"
+        canonical = hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json"
+        (event_root / canonical).rename(event_root / "race-alternate.json")
+        scanner = self._start_proof_race_scanner(app, "selected")
+        app.store._record_proof_event_receipt(canonical, mtime_ns=1, size=1, status="REJECTED",
+            evidence_id=event["evidence_id"], event_digest="a" * 64, task_id="task-1",
+            project_id="project:alpha", media_digest="", now_ms=1)
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        self.assertEqual(app.store.proof_feed(), [])
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT status FROM proof_event_receipts WHERE evidence_id=?",
+                                        (event["evidence_id"],)).fetchall(), [("REJECTED",)])
+
+    def test_proof_scan_does_not_block_unrelated_writer_during_media_read(self) -> None:
+        app, _, _ = self._proof_race_fixture("slow-media-writer")
+        unrelated = console.ConsoleStore(app.store.path)
+        scanner = self._start_proof_race_scanner(app, "selected")
+        original_connect = unrelated._connect
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            return connection
+
+        error = None
+        with mock.patch.object(unrelated, "_connect", side_effect=connect_without_waiting):
+            try:
+                unrelated.set_auto("root", "project:alpha", enabled=True, request_id="unrelated-writer", now_ms=1)
+            except sqlite3.OperationalError as exc:
+                error = exc
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertIsNone(error, f"unrelated writer was blocked by media validation: {error}")
+        self.assertEqual(result["imported"], 1, result)
+        self.assertTrue(unrelated.auto_status("root", "project:alpha")["enabled"])
+
+    def test_proof_scan_stops_busy_pass_and_retries_after_writer_releases(self) -> None:
+        app, _, overview = self._proof_race_fixture("busy-first")
+        for index in range(3):
+            self._write_proof_event(f"busy-{index}", "task-1")
+        writer = self._start_proof_race_scanner(app, "writer")
+        original_connect = app.store._connect
+        attempts = []
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            connection.set_trace_callback(lambda statement: attempts.append(statement)
+                if statement.lstrip().upper().startswith("BEGIN IMMEDIATE") else None)
+            return connection
+
+        with mock.patch.object(app.store, "_connect", side_effect=connect_without_waiting):
+            result = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self._finish_proof_race_scanner(writer)
+        self.assertEqual(result["imported"], 0, result)
+        self.assertEqual(result["retryable"], 1, result)
+        self.assertEqual(len(attempts), 1, attempts)
+        retried = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual(retried["imported"], 4, retried)
+        self.assertEqual(retried["rejected"], 0, retried)
+
+    def _assert_proof_scan_retries_changed_file(self, *, change_event: bool) -> None:
+        app, event, overview = self._proof_race_fixture("changed-event" if change_event else "changed-media")
+        path = (self.codex_home / "swarm" / "proof-events" /
+                (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")) if change_event else Path(event["locator"])
+        original = path.read_bytes()
+        original_mtime = path.stat().st_mtime_ns
+        scanner = self._start_proof_race_scanner(app, "validated")
+        if os.name == "nt":
+            blocked = False
+            delete_blocked = False
+            try:
+                path.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+                os.utime(path, ns=(original_mtime, original_mtime))
+            except PermissionError:
+                blocked = True
+            try:
+                path.unlink()
+            except PermissionError:
+                delete_blocked = True
+            result = self._finish_proof_race_scanner(scanner)
+            self.assertTrue(blocked, "Windows allowed a same-size proof rewrite with restored timestamps")
+            self.assertTrue(delete_blocked, "Windows allowed the staged proof file to be replaced")
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual((result["imported"], result["rejected"], result["retryable"]), (1, 0, 0), result)
+            return
+        path.write_bytes(original + b" ")
+        os.utime(path, ns=(original_mtime + 10000000, original_mtime + 10000000))
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertEqual((result["imported"], result["rejected"], result["retryable"]), (0, 0, 1), result)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_media").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_event_receipts").fetchone()[0], 0)
+        path.write_bytes(original)
+        retried = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((retried["imported"], retried["rejected"]), (1, 0), retried)
+
+    def test_proof_scan_guards_or_retries_media_changed_after_validation(self) -> None:
+        self._assert_proof_scan_retries_changed_file(change_event=False)
+
+    def test_proof_scan_guards_or_retries_event_changed_after_validation(self) -> None:
+        self._assert_proof_scan_retries_changed_file(change_event=True)
+
+    @unittest.skipUnless(os.name == "nt", "Windows file-sharing contract")
+    def test_proof_scan_retries_when_media_has_an_existing_writer(self) -> None:
+        app, event, overview = self._proof_race_fixture("busy-media-file")
+        with Path(event["locator"]).open("r+b"):
+            result = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual((result["imported"], result["rejected"], result["retryable"]), (0, 0, 1), result)
+        self.assertEqual(app.store.proof_feed(), [])
+        retried = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((retried["imported"], retried["rejected"]), (1, 0), retried)
+
+    def test_proof_scan_retries_when_outside_original_is_concurrently_authorized(self) -> None:
+        from skills.swarm.runtime.proof_events import register_proof_event
+
+        source = self.root / "late-authorized.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        event = register_proof_event(self.codex_home, source, evidence_id="late-authorized", task_id="task-1",
+            kind="screenshot", caption="Direct authorization", created_at_ms=1)
+        app = console.App(self.codex_home, self.config, self.root / "console" / "late-authorized.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        scanner = self._start_proof_race_scanner(app, "unapproved")
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            direct = app.authorize_original_proof({**event, "acknowledge": True})
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertEqual((result["imported"], result["rejected"], result["retryable"]), (0, 0, 1), result)
+        retried = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((retried["imported"], retried["rejected"]), (1, 0), retried)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            self.assertEqual(app.authorize_original_proof({**event, "acknowledge": True}), direct)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT receipt FROM proof_media").fetchone(), ("ctrl-original:task-1",))
+            self.assertEqual(db.execute("SELECT status FROM proof_event_receipts").fetchone(), ("IMPORTED",))
+
+    def test_evidence_http_respects_retained_receipt_and_exact_retry(self) -> None:
+        media_root = self.codex_home / "swarm" / "proof-media"
+        media_root.mkdir(parents=True)
+        source = media_root / "receipt.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "legacy-http.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        payload = {"source": "CtrlEvidence", "evidence_id": "http-rejected", "task_id": "task-1",
+                   "kind": "screenshot", "locator": str(source), "caption": "HTTP proof", "digest": digest}
+        name = hashlib.sha256(payload["evidence_id"].encode()).hexdigest() + ".json"
+        app.store._record_proof_event_receipt(name, mtime_ns=1, size=1, status="REJECTED", evidence_id="",
+            event_digest="a" * 64, task_id="task-1", project_id="project:alpha", media_digest=digest, now_ms=1)
+        server = console.SwarmHTTPServer(("127.0.0.1", 0), console.Handler, app)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+
+        def post(body, token):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                connection.request("POST", "/api/evidence", json.dumps(body),
+                    {"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{port}",
+                     "X-Swarm-Token": token, "Connection": "close"})
+                response = connection.getresponse()
+                return response.status, json.loads(response.read())
+            finally:
+                connection.close()
+
+        try:
+            with mock.patch.object(app, "_host_overview", return_value=overview), \
+                 mock.patch.object(app, "observe_once"):
+                self.assertEqual(post(payload, "wrong-token")[0], 403)
+                status, response = post(payload, app.token)
+                self.assertEqual(status, 400, response)
+                self.assertIn("rejected", str(response).lower())
+                self.assertEqual(app.store.proof_feed(), [])
+
+                valid = {**payload, "evidence_id": "http-valid"}
+                first_status, first = post(valid, app.token)
+                second_status, second = post(valid, app.token)
+                self.assertEqual((first_status, second_status), (200, 200), (first, second))
+                self.assertEqual(first["proof"], second["proof"])
+                self.assertEqual(post({**valid, "caption": "Changed"}, app.token)[0], 400)
+                event_root = self.codex_home / "swarm" / "proof-events"
+                event_root.mkdir(parents=True)
+                event = {**valid, "schema_version": 1, "locator": "proof-media/receipt.png",
+                         "size_bytes": source.stat().st_size, "media_type": "image/png"}
+                (event_root / "legacy-direct.json").write_text(json.dumps(event), encoding="utf-8")
+                scan = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+                self.assertEqual((scan["imported"], scan["rejected"]), (1, 0), scan)
+                status, replay = post(valid, app.token)
+                self.assertEqual(status, 200, replay)
+                self.assertEqual(replay["proof"], first["proof"])
+                with closing(sqlite3.connect(app.store.path)) as db:
+                    self.assertEqual(db.execute("SELECT receipt FROM proof_media WHERE evidence_id='http-valid'").fetchone(),
+                                     ("ctrl-evidence:registered:task-1",))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_proof_scanner_preserves_direct_publication_that_wins_selection_race(self) -> None:
+        app, event, overview = self._proof_race_fixture("race-direct-wins")
+        scanner = self._start_proof_race_scanner(app, "selected")
+        original_connect = app.store._connect
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            return connection
+
+        published = None
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app.store, "_connect", side_effect=connect_without_waiting):
+            try:
+                published = app.authorize_original_proof(event)
+            except sqlite3.OperationalError as exc:
+                self.assertIn("locked", str(exc).lower())
+        direct_won = published is not None
+        result = self._finish_proof_race_scanner(scanner)
+
+        self.assertEqual(result["rejected"], 0, result)
+        self.assertEqual(result["imported"], 1, result)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            if published is None:
+                published = app.authorize_original_proof(event)
+            self.assertEqual(app.authorize_original_proof(event), published)
+        self.assertEqual(app.store.proof_feed(), [published])
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT status FROM proof_event_receipts").fetchall(), [("IMPORTED",)])
+            receipt = db.execute("SELECT receipt FROM proof_media WHERE evidence_id=?", (event["evidence_id"],)).fetchone()[0]
+            expected = "ctrl-original:task-1" if direct_won else "proof-event:" + hashlib.sha256(event["evidence_id"].encode()).hexdigest()
+            self.assertEqual(receipt, expected)
+
+        # The other serialized order must retain a direct publication's provenance.
+        from skills.swarm.runtime.proof_events import register_proof_event
+        source = self.codex_home / "visualizations" / "race-direct-first.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nsecond proof")
+        direct_event = register_proof_event(
+            self.codex_home, source, evidence_id="race-direct-first", task_id="task-1",
+            kind="screenshot", caption="Direct first", created_at_ms=1,
+        )
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            direct_first = app.authorize_original_proof({**direct_event, "acknowledge": True})
+        reconciled = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=124)
+        self.assertEqual((reconciled["imported"], reconciled["rejected"]), (1, 0), reconciled)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            self.assertEqual(app.authorize_original_proof({**direct_event, "acknowledge": True}), direct_first)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT receipt FROM proof_media WHERE evidence_id='race-direct-first'").fetchone(),
+                             ("ctrl-original:task-1",))
+
+    def test_proof_direct_retry_cannot_observe_scanner_media_without_its_receipt(self) -> None:
+        app, event, overview = self._proof_race_fixture("race-scanner-wins")
+        scanner = self._start_proof_race_scanner(app, "receipt")
+        visible_before_commit = app.store.proof_feed()
+        original_connect = app.store._connect
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            return connection
+
+        first_error = None
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app.store, "_connect", side_effect=connect_without_waiting):
+            try:
+                app.authorize_original_proof(event)
+            except (console.ConsoleError, sqlite3.OperationalError) as exc:
+                first_error = exc
+        result = self._finish_proof_race_scanner(scanner)
+
+        self.assertEqual(visible_before_commit, [], "scanner exposed media before its receipt was committed")
+        self.assertIsInstance(first_error, sqlite3.OperationalError, str(first_error))
+        self.assertIn("locked", str(first_error).lower())
+        self.assertEqual(result["imported"], 1, result)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            published = app.authorize_original_proof(event)
+            self.assertEqual(app.authorize_original_proof(event), published)
+        self.assertEqual(app.store.proof_feed(), [published])
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT status FROM proof_event_receipts").fetchall(), [("IMPORTED",)])
+            receipt = db.execute("SELECT receipt FROM proof_media WHERE evidence_id=?", (event["evidence_id"],)).fetchone()[0]
+            self.assertEqual(receipt, "proof-event:" + hashlib.sha256(event["evidence_id"].encode()).hexdigest())
 
     def test_original_proof_ingests_without_copy_and_rechecks_identity(self) -> None:
         from skills.swarm.runtime.proof_events import register_proof_event
@@ -10761,6 +11903,45 @@ class SwarmConsoleTests(unittest.TestCase):
         current_stat = event_path.stat()
         self.assertEqual(calls, 2)
         self.assertEqual((current_stat.st_mtime_ns, current_stat.st_size), (original_stat.st_mtime_ns, original_stat.st_size))
+
+        # A failed SQLite commit must not report an import or retain partial media.
+        from skills.swarm.runtime.proof_events import register_proof_event
+        commit_home = self.root / "commit-retry-home"
+        source = commit_home / "visualizations" / "source.png"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        with closing(sqlite3.connect(commit_home / "state_5.sqlite")) as host_db:
+            host_db.execute("CREATE TABLE project_roots (project_id TEXT, path TEXT)")
+            host_db.commit()
+        register_proof_event(commit_home, source, evidence_id="commit-retry", task_id="retry-task",
+                             kind="screenshot", caption="Commit retry", created_at_ms=1)
+        retained_event = next((commit_home / "swarm" / "proof-events").glob("*.json"))
+        original_bytes = retained_event.read_bytes()
+        store = console.ConsoleStore(self.root / "console" / "commit-retry.sqlite3")
+        failures = []
+
+        class FailFirstCommit(sqlite3.Connection):
+            def commit(self):
+                if not failures and self.in_transaction:
+                    failures.append("commit failed")
+                    raise sqlite3.OperationalError("synthetic commit failure")
+                return super().commit()
+
+        def failing_connection():
+            connection = sqlite3.connect(store.path, timeout=5, factory=FailFirstCommit)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 5000")
+            return connection
+
+        with mock.patch.object(store, "_connect", side_effect=failing_connection):
+            failed = store.reconcile_proof_events(commit_home, overview, now_ms=10)
+        self.assertEqual((failed["imported"], failed["rejected"], failed["retryable"]), (0, 0, 1), failed)
+        self.assertEqual(store.proof_feed(), [])
+        retried = store.reconcile_proof_events(commit_home, overview, now_ms=11)
+        self.assertEqual((retried["imported"], retried["rejected"]), (1, 0), retried)
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed()], ["commit-retry"])
+        self.assertEqual(retained_event.read_bytes(), original_bytes)
 
     def test_proof_reconciliation_dedupes_and_rejects_conflicting_or_changed_media(self) -> None:
         original = self._write_proof_event("shared-proof", "task-a")
@@ -12017,6 +13198,8 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertTrue(result["dispatched"], result)
             packet = json.loads(host["sent"][-1]["prompt"][host["sent"][-1]["prompt"].index("{"):])
             self.assertEqual(packet["step"], step)
+            self.assertEqual(packet["mission_reference"], {"project_id": recipe["project_id"],
+                "brief_digest": recipe["brief_digest"], "pointer": "/project/purpose", "confirmation": "UNVERIFIED"})
             role = ledger.replay()["role_manifests"]["developer"]["versions"][step["role_manifest_ref"]["manifest_version"]]
             self.assertEqual((packet["role"]["version"],packet["role"]["instructions"]), (role["version"],role["instructions"]))
             self.assertFalse(result["work_completed"])
@@ -12033,6 +13216,15 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(len(auto), 4)
         self.assertEqual(len({c["receipts"][0]["command_id"] for c in auto}), 4)
         self.assertTrue(all(b["lifecycle_state"] == "ACCEPTED" for b in ledger.replay()["blocks"].values()))
+
+    def test_generic_auto_sends_mission_pointer_with_continuation(self):
+        app, host, _, _, _, _ = self._native_auto_case()
+        result = app.evaluate_auto_once(app._host_overview())
+        self.assertTrue(result["dispatched"], result)
+        prompt = host["sent"][0]["prompt"]
+        self.assertIn("project Mission separately from the objective", prompt)
+        self.assertIn("SWARM.md /project/purpose", prompt)
+        self.assertIn("validate project identity and brief digest", prompt)
 
     def test_configured_auto_completed_history_does_not_capture_recovery_or_later_flow_after_restart(self):
         app, host, ledger, authority, transport, recipe = self._configured_auto_case(reserve_later_run=True)

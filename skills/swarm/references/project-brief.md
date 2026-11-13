@@ -54,6 +54,25 @@ raw prompts, access tokens, private keys, or unbounded logs. The brief digest is
 the SHA-256 of its canonical UTF-8 JSON payload and is distinct from artifact
 and acceptance digests.
 
+## Mission and task objective
+
+The project Mission is the enduring purpose stated in `project.purpose`; the
+task objective is the current bounded outcome. Recover the existing wording and
+provenance at intake, a material plan or objective change, and resume or
+handoff. Carry the project identity, canonical brief digest and
+`/project/purpose` pointer in the existing context or checkpoint. Resolve the
+pointer against the same root and digest before relying on it; a different
+project or changed digest is not the old Mission. Stated text is not evidence
+of user confirmation.
+
+Absent, empty or explicitly `UNKNOWN` purpose stays `UNKNOWN`. First use the
+existing source context and any retained clarification. Ask only when that
+unknown materially affects the next decision; keep independently defined work
+moving and do not repeat a question already answered or pending. Surface
+material ambiguity and assumptions plainly, without a score or a new gate.
+Intake and context helpers carry a reference when supplied, but are not a host
+dispatch path or evidence that a host received it.
+
 ## Intake and dispatch gate
 
 Before a new SWARM project routes work, CTRL resolves exactly one root

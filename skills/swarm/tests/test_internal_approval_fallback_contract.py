@@ -49,6 +49,18 @@ class InternalApprovalFallbackContractTests(unittest.TestCase):
         self.assertIn("Reconcile interrupted turns and uncertain writes before retrying", recovery)
         self.assertNotIn("Never ask the user to approve an internal helper", recovery)
 
+    def test_routine_bookkeeping_recovers_one_shared_boundary_without_replaying_events(self) -> None:
+        recovery = " ".join((ROOT / "references" / "runtime-recovery.md").read_text(encoding="utf-8").split())
+        self.assertIn("Start already-authorized routine bookkeeping with an ordinary call and no elevation parameter", recovery)
+        self.assertIn("Reconcile any saved events before retrying and preserve existing task/project binding", recovery)
+        self.assertIn("Under `never`, do not request elevation", recovery)
+        self.assertIn("resolve a shared access boundary once instead of requesting approval for each file or frame", recovery)
+        self.assertIn("a different tool must not bypass a denial", recovery)
+        payload = json.loads((ROOT / "evals" / "evals.json").read_text(encoding="utf-8"))
+        case = next(item for item in payload["evals"] if item["id"] == 99)
+        self.assertIn("approval policy is not visible", case["prompt"])
+        self.assertIn("before any retry or duplicate write", " ".join(case["assertions"]))
+
     def test_host_gate_fallback_preserves_the_delegated_producer(self) -> None:
         recovery = " ".join((ROOT / "references" / "runtime-recovery.md").read_text(encoding="utf-8").split())
         self.assertIn("Only after the supported request is unavailable or actually denied", recovery)

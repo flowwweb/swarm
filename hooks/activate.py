@@ -24,6 +24,8 @@ def main():
         "delegation, dependencies and result relay only. Every build, fix, test, "
         "review or release goes to an eligible owner, even a tiny edit; missing "
         "owners never permit CTRL fallback. Assigned LEAD/DOER agents keep their role. "
+        "At intake, material plan change and resume, recover the project Mission from the "
+        "bound root SWARM.md project.purpose separately from the task objective. "
         "Explicit user instructions and opt-outs take precedence. "
         "Resolve the skill's relative references from its directory."
     )

@@ -1182,5 +1182,44 @@ class ProjectTicketTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
 
 
+class MissionReferenceTests(unittest.TestCase):
+    def test_bound_mission_rejects_other_project_and_stale_digest(self):
+        document = project_fixture("alpha")
+        document["project"]["purpose"] = "Help people plan with confidence."
+        document["objective"]["current"] = "Refactor the interface"
+        text = markdown_fixture(document)
+        mission = views.project_mission_from_brief(text, project_id="project:alpha",
+            identities=frozenset({"project:alpha", "alpha"}))
+        self.assertEqual((mission["text"], mission["state"], mission["confirmation"]),
+                         ("Help people plan with confidence.", "KNOWN", "UNVERIFIED"))
+        self.assertEqual(mission["pointer"], "/project/purpose")
+        with self.assertRaisesRegex(views.ProjectModelError, "another project"):
+            views.project_mission_from_brief(text, project_id="project:other", identities=frozenset({"other"}))
+        with self.assertRaisesRegex(views.ProjectModelError, "digest changed"):
+            views.project_mission_from_brief(text, project_id="project:alpha", identities=frozenset({"alpha"}),
+                                             expected_digest="sha256:" + "0" * 64)
+        for purpose in (None, "", "UNKNOWN: purpose has not been supplied"):
+            document["project"]["purpose"] = purpose
+            unknown = views.project_mission_from_brief(markdown_fixture(document), project_id="project:alpha",
+                                                       identities=frozenset({"alpha"}))
+            self.assertEqual((unknown["state"], unknown["text"]), ("UNKNOWN", None))
+
+    def test_compacted_brief_keeps_mission_and_objective_separate(self):
+        document = project_fixture("alpha")
+        document["project"]["purpose"] = "Help people plan with confidence."
+        document["objective"]["current"] = "Refactor the interface"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "SWARM.md"
+            path.write_text(markdown_fixture(document), encoding="utf-8")
+            _, digest = views.parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=root)
+            result = views.compact_project_brief(path, expected_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+            compact = path.read_text(encoding="utf-8")
+            self.assertIn("## Mission\n\nHelp people plan with confidence.", compact)
+            self.assertIn("## Current outcome\n\nRefactor the interface", compact)
+            self.assertEqual(result["canonical_digest"], digest)
+            self.assertEqual(views.parse_project_brief_markdown(compact, root=root)[0], document)
+
+
 if __name__ == "__main__":
     unittest.main()

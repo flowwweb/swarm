@@ -68,6 +68,8 @@ exhaustion, release condition, responsible authority, and smallest solution.
 Use four short fields: **Desired outcome**, **Next action**, **Essential constraints**,
 and **Completion evidence**. Write complete sentences with normal spacing, include
 only relevant evidence, and link existing records rather than copying registers.
+When applicable, include the bound Mission reference and the actual user's
+communication grant source and scope in **Essential constraints**.
 **Sent** means the handoff was submitted. **Received** requires the actual recipient
 to acknowledge the outcome and next action; a transport acknowledgement is not
 receipt. **In progress** requires an observed work update. **Blocked** names the
@@ -86,6 +88,12 @@ declared proof classes. `ACCEPT` may move the artifact only into independent
 review when every required proof and parity item is present. `REJECT` names the
 first in-scope correction and stays active; `BLOCKED` names the first concrete
 blocker and stays unresolved. Neither can advance acceptance.
+
+Before yielding with an uncollected result, retain its exact worker/run,
+collecting owner, artifact and proof binding, and next check in the existing
+handoff. Yield only through an actually verified durable resume route. Otherwise
+continue supported bounded waits and independent ready work until collection or
+report the exact scoped capability gap. Terminal status alone is not collection.
 
 Every bounded return rechecks the original objective, assigned profession and
 structural authority, exact deliverable, non-goals, dirty custody, and next
@@ -174,7 +182,8 @@ duplicates, replaces, renames, or archives the old lane.
 A meaningful stable checkpoint for long-lived CTRL or LEAD work records the
 exact task identity and state, source SHA/tree/parent, exact dirty custody, proof
 manifest and claim limits, exact owned-path manifest digest, dependency-graph
-digest, proof-plan digest, blocker, and next bounded action. A clean unblocked
+digest, proof-plan digest, bound Mission reference, applicable actual user-grant
+source and scope, blocker, and next bounded action. A clean unblocked
 checkpoint produces one deterministic immutable review packet bound to repository,
 producer, reviewer task, candidate SHA/tree/parent, content digest, path manifest,
 dependency graph, proof plan, proofs, and claim limits. Any changed bound field
@@ -303,6 +312,11 @@ include its source and scope in the owner's handoff and use the normal host send
 for actions within that grant without asking again. A role, task, this contract,
 or another agent's assertion does not create a user grant. Slack, email and other
 external messages require their own authority.
+
+Retain a reference to the actual user instruction in the existing handoff or
+checkpoint so a successor can verify its source and scope. If that source is
+unavailable to the successor, keep the grant unverified rather than inventing
+authority; recover it from the authorized user context when possible.
 
 Read authorized artifacts and send authorized Codex-chat messages with ordinary
 calls that omit elevation parameters. Under `never`, do not request elevation. A

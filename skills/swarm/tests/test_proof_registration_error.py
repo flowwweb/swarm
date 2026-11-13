@@ -70,9 +70,15 @@ class ProofRegistrationErrorTests(unittest.TestCase):
                 self.assertEqual(unbound.returncode, 2)
                 self.assertIn('original event saved but console registration failed: proof media requires an observed project-bound task', unbound.stderr)
                 self.assertEqual(len(list((home/'swarm/proof-events').glob('*.json'))), 1)
-                event = json.loads(next((home/'swarm/proof-events').glob('*.json')).read_text(encoding='utf-8'))
+                event_path = next((home/'swarm/proof-events').glob('*.json'))
+                saved = event_path.read_bytes()
+                event = json.loads(saved)
                 self.assertEqual(event['disposition'], 'PENDING')
                 app._host_overview = lambda: {'nodes': [{'id': 'fixture-task', 'virtual': False, 'project_id': 'fixture-project'}]}
+                resumed = invoke('unbound')
+                self.assertEqual(resumed.returncode, 0)
+                self.assertEqual(event_path.read_bytes(), saved)
+                self.assertEqual(len(list((home/'swarm/proof-events').glob('*.json'))), 1)
                 bound = invoke('bound')
                 self.assertEqual(bound.returncode, 0)
                 Handler.mode = 'unknown'

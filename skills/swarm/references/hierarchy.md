@@ -514,16 +514,29 @@ verification.
 
 **Rotate.** An explicit, authorized rotate carries retirement authority for the
 exact predecessor only: no further owner negotiation and no announcement. The
-successor inherits goal, source, owners, model and pending duties. Pipe fresh
-readback to `scripts/swarm_contract.py rotate --console-state <journal>` and do
-only the step it returns, then read back and repeat: successor ACK, title,
-successor pinned directly ahead of the predecessor, predecessor unpin, archive.
-Completed steps are recognized from readback, so a partial rotation resumes. A
-user keep-pinned exception leaves the predecessor pinned and unarchived. An
-in-flight lease on the predecessor stops the rotation before unpin or archive,
-and so does any unread result it still owes. A missing capability or readback is
-`UNVERIFIED` and names the step. Other projects, workers and user pins stay
-untouched.
+successor inherits goal, bound Mission reference, source, owners, model, pending
+duties and any actual user-grant source and scope. Pipe readback to
+`scripts/swarm_contract.py rotate --console-state <journal> --rotation-ledger-root <codex-home>`.
+Include the `retirement` object with `project_id`, canonical `root_digest`,
+`goal_id`, `handoff_digest`, `automation_id`, `collector_id`, `ack_digest`,
+`release_receipt_id`, `automation_target_id`, `archive_receipt_id`,
+`active_controller_ids`, `readback_id`, `observed_at_ms` and
+`unresolved_operations`. IDs are bounded identifiers, digests are SHA-256,
+unknown observations are null, and unresolved operations are an array of IDs.
+Keep the original pinned baseline and advance observation time only when claims
+change. The existing progress Ledger retains these as **unverified claims**,
+fixes one successor and collector, and does not clear unresolved operations or
+user custody from another unverified claim. ACK and release leave retirement
+pending. A user keep-pinned exception leaves the predecessor pinned and unarchived.
+An in-flight lease on the predecessor stops retirement, as does any unread
+result it still owes, even after an archive claim.
+
+The current runtime has no injected verifier for the host archive, sidebar,
+automation transfer or collector wake. It returns `UNVERIFIED` rather than
+authorizing a step or declaring retirement complete from caller JSON. Actual
+host actions and fresh host readback remain separate, user-authorized operations;
+they are not proven by the runtime's retained claims. Other projects, workers and
+user pins stay untouched.
 
 Naming authority does not include pinning, unpinning, reordering, archiving or
 creating tasks. Those keep their separate user authority (a request, the

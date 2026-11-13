@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
 import sys
@@ -13,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime import RequestDue, Role, Swarm, WatchdogScope, WatchdogSignal
 from runtime.core import RotationReadback, rotation_next_step
+from runtime.progress_events import ProgressLedger
 from runtime.request_ledger import RequestStore
 
 
@@ -138,6 +140,75 @@ ROTATION_FIELDS = {"predecessor_id": str, "successor_id": str, "authorized": boo
                    "pinned": (list, type(None)), "successor_ack": bool, "expected_title": str,
                    "successor_title": (str, type(None)), "predecessor_archived": (bool, type(None)),
                    "predecessor_in_flight": bool, "user_keep_pinned": bool, "capabilities": list}
+ROTATION_RETIREMENT_FIELDS = {
+    "project_id", "root_digest", "goal_id", "handoff_digest", "automation_id", "collector_id", "ack_digest",
+    "release_receipt_id", "automation_target_id", "archive_receipt_id", "active_controller_ids",
+    "readback_id", "observed_at_ms", "unresolved_operations",
+}
+
+
+def retain_rotation_claim(envelope: dict, root: Path) -> dict:
+    """Retain caller claims in the existing Ledger; they never establish host facts."""
+    claim = envelope.get("retirement")
+    if not isinstance(claim, dict) or set(claim) != ROTATION_RETIREMENT_FIELDS:
+        raise ValueError("rotation retirement claim requires the complete fixed field set")
+    for key in ("project_id", "root_digest", "goal_id", "handoff_digest", "automation_id", "collector_id"):
+        if type(claim[key]) is not str:
+            raise ValueError(f"rotation retirement field must be a string: {key}")
+    for key in ("ack_digest", "release_receipt_id", "automation_target_id", "archive_receipt_id", "readback_id"):
+        if claim[key] is not None and type(claim[key]) is not str:
+            raise ValueError(f"rotation retirement field must be a string or null: {key}")
+    if type(claim["observed_at_ms"]) is not int:
+        raise ValueError("rotation retirement observation time must be an integer")
+    if type(claim["unresolved_operations"]) is not list or (
+        claim["active_controller_ids"] is not None and type(claim["active_controller_ids"]) is not list
+    ):
+        raise ValueError("rotation retirement controller and unresolved-operation claims must be arrays or null")
+    if not root.is_absolute() or not root.is_dir():
+        raise ValueError("rotation ledger root must be an existing absolute directory")
+    observation = {key: claim[key] for key in (
+        "ack_digest", "release_receipt_id", "automation_target_id", "archive_receipt_id",
+        "active_controller_ids", "readback_id", "observed_at_ms", "unresolved_operations",
+    )}
+    observation.update({
+        "pinned": envelope["pinned"], "predecessor_archived": envelope["predecessor_archived"],
+        "predecessor_in_flight": envelope["predecessor_in_flight"], "successor_ack": envelope["successor_ack"],
+        "user_keep_pinned": envelope["user_keep_pinned"],
+        "observed_title_digest": None if envelope["successor_title"] is None else
+            hashlib.sha256(envelope["successor_title"].encode("utf-8")).hexdigest(),
+    })
+    ledger = ProgressLedger(root)
+    current = next((item for item in ledger.project_task_handoffs()["records"]
+                    if item.get("handoff_type") == "CTRL_ROTATION"
+                    and item["task_id"] == envelope["predecessor_id"]), None)
+    handoff_key = json.dumps([claim["project_id"], envelope["predecessor_id"]], separators=(",", ":"))
+    handoff_id = "ctrl-rotation-" + hashlib.sha256(handoff_key.encode("utf-8")).hexdigest()
+    event = {
+        "schema_version": 1, "record_type": "TASK_HANDOFF", "handoff_type": "CTRL_ROTATION",
+        "handoff_id": handoff_id, "parent_event_id": None if current is None else current["event_id"],
+        "event_kind": "CTRL_ROTATION_PREPARED" if current is None else "CTRL_ROTATION_OBSERVED",
+        "goal_id": claim["goal_id"], "task_id": envelope["predecessor_id"],
+        "old_owner": envelope["predecessor_id"], "new_owner": envelope["successor_id"],
+        "checkpoint_digest": claim["handoff_digest"], "scope_version": 1, "lease_version": 1,
+        "receipt_id": "rotation-unverified", "host_issued_at_ms": None,
+        "observed_at_ms": claim["observed_at_ms"], "project_id": claim["project_id"], "root_digest": claim["root_digest"],
+        "baseline_pinned": envelope["baseline_pinned"], "automation_id": claim["automation_id"],
+        "collector_id": claim["collector_id"],
+        "expected_title_digest": hashlib.sha256(envelope["expected_title"].encode("utf-8")).hexdigest(),
+        "rotation_observation": observation,
+    }
+    if current is not None and all(current.get(key) == value for key, value in event.items()
+                                   if key not in {"parent_event_id", "event_kind"}):
+        retained = current
+    else:
+        identity = hashlib.sha256(json.dumps(event, ensure_ascii=True, sort_keys=True,
+                                             separators=(",", ":")).encode("utf-8")).hexdigest()
+        event.update(event_id="ctrl-rotation-" + identity, dedupe_key="ctrl-rotation-" + identity)
+        ledger.append_task_handoff(event)
+        retained = next(item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"] == handoff_id)
+    return {"state": "PENDING", "handoff_id": retained["handoff_id"], "event_id": retained["event_id"],
+            "event_seq": retained["event_seq"], "successor_id": retained["new_owner"],
+            "collector_id": retained["collector_id"], "claims_verified": False}
 
 
 def predecessor_obligations(console_state: Path, predecessor_id: str) -> dict:
@@ -162,13 +233,13 @@ def predecessor_obligations(console_state: Path, predecessor_id: str) -> dict:
     return {"active_leases": active, "unread_results": unread}
 
 
-def rotation_bridge(envelope: dict, console_state: Path | None = None) -> dict:
-    """Return the next rotation step from the caller's fresh host readback; never mutates the host.
+def rotation_bridge(envelope: dict, console_state: Path | None = None, rotation_ledger_root: Path | None = None) -> dict:
+    """Classify caller observations and retained collection duties without host mutation.
 
     With ``console_state``, retained Auto leases or unread results owed by the
     predecessor block unpin/archive regardless of the caller's flag.
     """
-    if not isinstance(envelope, dict) or set(envelope) != set(ROTATION_FIELDS):
+    if not isinstance(envelope, dict) or set(envelope) - {"retirement"} != set(ROTATION_FIELDS):
         raise ValueError("rotation readback requires exactly: " + ", ".join(sorted(ROTATION_FIELDS)))
     for key, kind in ROTATION_FIELDS.items():
         if type(envelope[key]) not in (kind if isinstance(kind, tuple) else (kind,)):
@@ -178,12 +249,39 @@ def rotation_bridge(envelope: dict, console_state: Path | None = None) -> dict:
             raise ValueError(f"rotation readback list must hold task IDs or capability names: {key}")
     journal = None if console_state is None else predecessor_obligations(console_state, envelope["predecessor_id"])
     in_flight = envelope["predecessor_in_flight"] or bool(journal and (journal["active_leases"] or journal["unread_results"]))
-    read = RotationReadback(**{**envelope, "baseline_pinned": tuple(envelope["baseline_pinned"]),
+    read = RotationReadback(**{**{key: envelope[key] for key in ROTATION_FIELDS}, "baseline_pinned": tuple(envelope["baseline_pinned"]),
         "pinned": None if envelope["pinned"] is None else tuple(envelope["pinned"]),
         "capabilities": frozenset(envelope["capabilities"]), "predecessor_in_flight": in_flight})
     step = rotation_next_step(read)
-    return {"status": step.status, "step": step.step, "reason": step.reason, "reorder_to": list(step.reorder_to),
-            "journal": journal, "host_mutation_authorized_by_runtime": False}
+    retirement = None
+    if rotation_ledger_root is not None and "retirement" in envelope and envelope["authorized"]:
+        if not envelope["predecessor_id"] or not envelope["successor_id"] or envelope["predecessor_id"] == envelope["successor_id"]:
+            raise ValueError("rotation requires distinct predecessor and successor IDs")
+        retirement = retain_rotation_claim(envelope, rotation_ledger_root)
+    status, name, reason = step.status, step.step, step.reason
+    if status not in {"BLOCKED", "PRESERVED"}:
+        if journal is None:
+            status, name, reason = "UNVERIFIED", "COLLECTION", "the existing execution journal is required to check leases and unread results"
+        elif retirement is None:
+            status, name, reason = "UNVERIFIED", "RETIREMENT", "a durable rotation claim in the existing progress ledger is required"
+        else:
+            claim = envelope["retirement"]
+            if claim["ack_digest"] is not None and claim["ack_digest"] != claim["handoff_digest"]:
+                status, name, reason = "BLOCKED", "ACK", "claimed successor acknowledgement does not match the retained handoff digest"
+            elif claim["release_receipt_id"] is not None and claim["ack_digest"] is None:
+                status, name, reason = "BLOCKED", "ACK", "release claim lacks the exact acknowledged handoff digest"
+            elif claim["automation_target_id"] not in (None, envelope["successor_id"]):
+                status, name, reason = "BLOCKED", "AUTOMATION", "automation target claim conflicts with the chosen successor"
+            elif (claim["release_receipt_id"] is not None and claim["active_controller_ids"] is not None
+                  and claim["active_controller_ids"] != [envelope["successor_id"]]):
+                status, name, reason = "BLOCKED", "CONTROLLER", "controller readback claim does not identify exactly the chosen successor"
+            else:
+                status = "UNVERIFIED"
+                reason = ("runtime has no injected verifier for host archive, sidebar, automation and collector wake; "
+                          "retained observations are claims and retirement remains pending")
+    return {"status": status, "step": name, "reason": reason,
+            "reorder_to": list(step.reorder_to) if status == "NEXT" else [],
+            "journal": journal, "retirement": retirement, "host_mutation_authorized_by_runtime": False}
 
 
 def register(swarm:Swarm, stage_id:str, decision_event_receipt:str, *, accepted_at:int, due:RequestDue):
@@ -196,6 +294,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("forward-test", "request", "jev", "rotate"))
     parser.add_argument("--console-state", type=Path, help="rotate: read retained leases and unread results from this console journal")
+    parser.add_argument("--rotation-ledger-root", type=Path, help="rotate: existing progress ledger root for pending retirement claims")
     args = parser.parse_args()
     if args.command == "jev":
         from swarm_jev import main as jev_main
@@ -205,7 +304,7 @@ def main() -> int:
     if args.command in {"request", "rotate"}:
         try:
             envelope=json.load(sys.stdin)
-            result=request_bridge(envelope) if args.command == "request" else rotation_bridge(envelope, args.console_state)
+            result=request_bridge(envelope) if args.command == "request" else rotation_bridge(envelope, args.console_state, args.rotation_ledger_root)
             print(json.dumps(result,sort_keys=True,separators=(",",":"),ensure_ascii=True))
         except (ValueError, OSError, sqlite3.Error, json.JSONDecodeError) as error:
             print(json.dumps({"error":str(error)},sort_keys=True,separators=(",",":"))); return 2

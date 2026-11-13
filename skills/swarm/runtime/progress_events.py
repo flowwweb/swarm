@@ -241,6 +241,15 @@ OWNER_HANDOFF_FIELDS = TASK_HANDOFF_EVENT_FIELDS | frozenset({
     "handoff_type", "structural_role", "persistent", "host_thread_id",
     "capacity_reservation_id", "host_activity_receipt_id",
 })
+CTRL_ROTATION_HANDOFF_FIELDS = TASK_HANDOFF_EVENT_FIELDS | frozenset({
+    "handoff_type", "project_id", "root_digest", "baseline_pinned", "automation_id", "collector_id",
+    "expected_title_digest", "rotation_observation",
+})
+CTRL_ROTATION_OBSERVATION_FIELDS = frozenset({
+    "ack_digest", "release_receipt_id", "automation_target_id", "archive_receipt_id",
+    "active_controller_ids", "readback_id", "observed_at_ms", "unresolved_operations",
+    "pinned", "predecessor_archived", "predecessor_in_flight", "successor_ack", "user_keep_pinned", "observed_title_digest",
+})
 EXPECTED_RECEIPT_FIELDS = frozenset({
     "schema_version", "record_type", "receipt_id", "goal_id",
     "task_id", "owner_id", "lease_version", "target_id", "artifact_digest",
@@ -350,6 +359,8 @@ class TaskHandoffEventKind(StrEnum):
     OWNER_SLEEPING = "OWNER_SLEEPING"
     OWNER_WAKING = "OWNER_WAKING"
     OWNER_ACTIVE = "OWNER_ACTIVE"
+    CTRL_ROTATION_PREPARED = "CTRL_ROTATION_PREPARED"
+    CTRL_ROTATION_OBSERVED = "CTRL_ROTATION_OBSERVED"
 
 
 PROGRESS_FLAGS = frozenset({
@@ -678,6 +689,7 @@ def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
     fields = (
         CONTINUATION_HANDOFF_FIELDS if handoff_type == "HOST_THREAD_CONTINUATION"
         else OWNER_HANDOFF_FIELDS if handoff_type == "OWNER_LIFECYCLE"
+        else CTRL_ROTATION_HANDOFF_FIELDS if handoff_type == "CTRL_ROTATION"
         else TASK_HANDOFF_EVENT_FIELDS
     )
     _exact_fields(payload, fields, "task handoff event")
@@ -741,6 +753,50 @@ def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
                 raise ProgressEventError("waking owner requires a prior sleep and capacity reservation")
         elif parent_event_id is None or capacity is None or activity is None:
             raise ProgressEventError("active owner requires waking capacity and exact host activity proof")
+    elif handoff_type == "CTRL_ROTATION":
+        if event_kind not in {TaskHandoffEventKind.CTRL_ROTATION_PREPARED, TaskHandoffEventKind.CTRL_ROTATION_OBSERVED}:
+            raise ProgressEventError("CTRL rotation handoff event kind is invalid")
+        if any(type(payload.get(key)) is not str for key in ("project_id", "root_digest", "automation_id", "collector_id", "expected_title_digest")):
+            raise ProgressEventError("CTRL rotation bindings must be strings")
+        _safe_id(payload.get("project_id"), "rotation project_id")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("root_digest") or "")):
+            raise ProgressEventError("CTRL rotation requires a canonical root digest")
+        _safe_id(payload.get("automation_id"), "rotation automation_id")
+        collector = _safe_id(payload.get("collector_id"), "rotation collector_id")
+        baseline = _safe_ids(payload.get("baseline_pinned"), "rotation baseline_pinned")
+        if (new_owner is None or new_owner == payload["old_owner"] or collector == payload["old_owner"]
+                or payload["task_id"] != payload["old_owner"] or checkpoint_digest is None
+                or payload["old_owner"] not in baseline or new_owner in baseline
+                or payload["scope_version"] != 1 or payload["lease_version"] != 1):
+            raise ProgressEventError("CTRL rotation requires one successor, prior slot, checkpoint and surviving collector")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("expected_title_digest") or "")):
+            raise ProgressEventError("CTRL rotation requires a title digest")
+        if (event_kind is TaskHandoffEventKind.CTRL_ROTATION_PREPARED) != (parent_event_id is None):
+            raise ProgressEventError("CTRL rotation observation requires a retained parent")
+        if host_issued_at_ms is not None or payload.get("receipt_id") != "rotation-unverified":
+            raise ProgressEventError("CTRL rotation caller observations cannot claim host verification")
+        claim = payload.get("rotation_observation")
+        if not isinstance(claim, dict) or set(claim) != CTRL_ROTATION_OBSERVATION_FIELDS:
+            raise ProgressEventError("CTRL rotation requires one complete unverified observation")
+        for key in ("ack_digest", "observed_title_digest"):
+            if claim[key] is not None and (type(claim[key]) is not str or not re.fullmatch(r"[0-9a-f]{64}", claim[key])):
+                raise ProgressEventError(f"rotation {key} must be a SHA-256 digest or null")
+        for key in ("release_receipt_id", "automation_target_id", "archive_receipt_id", "readback_id"):
+            if claim[key] is not None and type(claim[key]) is not str:
+                raise ProgressEventError(f"rotation {key} must be a string or null")
+            _optional_id(claim[key], f"rotation {key}")
+        for key in ("pinned", "active_controller_ids"):
+            if claim[key] is not None:
+                _safe_ids(claim[key], f"rotation {key}")
+        _safe_ids(claim["unresolved_operations"], "rotation unresolved_operations")
+        for key in ("pinned", "active_controller_ids", "unresolved_operations"):
+            if claim[key] is not None and any(type(item) is not str for item in claim[key]):
+                raise ProgressEventError(f"rotation {key} must contain string identifiers")
+        if (any(type(claim[key]) is not bool for key in ("successor_ack", "predecessor_in_flight", "user_keep_pinned"))
+                or type(claim["predecessor_archived"]) not in (bool, type(None))):
+            raise ProgressEventError("rotation observation flags must be boolean or null")
+        if _positive_int(claim["observed_at_ms"], "rotation observation time", allow_zero=True) != payload["observed_at_ms"]:
+            raise ProgressEventError("rotation observation time must match its retained event")
     elif handoff_type != "CUSTODY":
         raise ProgressEventError("task handoff type is invalid")
     elif event_kind is TaskHandoffEventKind.HANDOFF_DUE:
@@ -3720,6 +3776,7 @@ class Ledger:
                 TaskHandoffEventKind.HANDOFF_DUE,
                 TaskHandoffEventKind.CONTINUATION_PREPARED,
                 TaskHandoffEventKind.OWNER_SLEEPING,
+                TaskHandoffEventKind.CTRL_ROTATION_PREPARED,
             }:
                 raise ProgressEventError("task handoff root state is invalid")
             retained_handoff = projection["task_handoff_leases"].get(lease_key)
@@ -3735,7 +3792,10 @@ class Ledger:
             if payload["parent_event_id"] != current["event_id"]:
                 raise ProgressEventError("task handoff parent must bind the current retained event")
             expected = _TASK_HANDOFF_TRANSITIONS.get(TaskHandoffEventKind(current["event_kind"]))
-            if event_kind is not expected:
+            rotation_update = (handoff_type == "CTRL_ROTATION"
+                               and current["event_kind"] in {"CTRL_ROTATION_PREPARED", "CTRL_ROTATION_OBSERVED"}
+                               and event_kind is TaskHandoffEventKind.CTRL_ROTATION_OBSERVED)
+            if event_kind is not expected and not rotation_update:
                 raise ProgressEventError("task handoff transition is invalid")
             immutable = ("goal_id", "task_id", "old_owner", "scope_version", "lease_version")
             if any(payload[key] != current[key] for key in immutable):
@@ -3771,6 +3831,23 @@ class Ledger:
                     )
                     if fenced or unresolved:
                         raise ProgressEventError("owner wake is fenced by paused, keep-out, or unresolved host delivery")
+            if handoff_type == "CTRL_ROTATION":
+                if any(payload[key] != current[key] for key in (
+                    "project_id", "root_digest", "baseline_pinned", "automation_id", "collector_id", "expected_title_digest"
+                )):
+                    raise ProgressEventError("CTRL rotation immutable project, placement, automation or collector conflicts")
+                old_unresolved = set(current["rotation_observation"]["unresolved_operations"])
+                new_unresolved = set(payload["rotation_observation"]["unresolved_operations"])
+                if not old_unresolved <= new_unresolved:
+                    raise ProgressEventError("unverified rotation observation cannot clear an unresolved operation")
+                if current["rotation_observation"]["user_keep_pinned"] and not payload["rotation_observation"]["user_keep_pinned"]:
+                    raise ProgressEventError("unverified rotation observation cannot clear user custody")
+                for key in ("release_receipt_id", "archive_receipt_id"):
+                    previous = current["rotation_observation"][key]
+                    if previous is not None and payload["rotation_observation"][key] != previous:
+                        raise ProgressEventError("unverified rotation observation cannot discard or rebind a retained receipt")
+                if payload["observed_at_ms"] <= current["observed_at_ms"]:
+                    raise ProgressEventError("rotation observations must advance beyond the retained time")
             if payload["observed_at_ms"] < current["observed_at_ms"]:
                 raise ProgressEventError("task handoff observation cannot regress")
         projection["handoff_event_digests"][event_id] = event_digest
@@ -5249,7 +5326,8 @@ class Ledger:
         for record in records:
             raw = record["event"]
             if self._is_non_material_record(raw):
-                if raw.get("record_type") == "TASK_HANDOFF" and raw.get("task_id") == task_id:
+                if (raw.get("record_type") == "TASK_HANDOFF" and raw.get("handoff_type") != "CTRL_ROTATION"
+                        and raw.get("task_id") == task_id):
                     handoffs.append({"event_seq": record["event_seq"], "event_id": raw["event_id"],
                                      "event_digest": record["event_digest"], "observed_at_ms": raw["observed_at_ms"],
                                      "scope_version": raw["scope_version"], "lease_version": raw["lease_version"]})
@@ -5868,7 +5946,7 @@ class Ledger:
         for record in records:
             raw = record["event"]
             if self._is_non_material_record(raw):
-                if raw.get("record_type") == "TASK_HANDOFF":
+                if raw.get("record_type") == "TASK_HANDOFF" and raw.get("handoff_type") != "CTRL_ROTATION":
                     handoffs.setdefault(str(raw.get("task_id")), []).append(int(record["event_seq"]))
                 continue
             event = validate_progress_material_event(raw)

@@ -38,6 +38,8 @@ class WorkflowActivationTests(unittest.TestCase):
             self.assertIn(str(ROOT / "skills/swarm/SKILL.md"), output["additionalContext"])
             self.assertIn("assigned role", output["additionalContext"])
             self.assertIn("opt-outs", output["additionalContext"])
+            self.assertIn("SWARM.md project.purpose", output["additionalContext"])
+            self.assertIn("resume", output["additionalContext"])
             self.assertLess(len(output["additionalContext"]), 1000)
         records = [json.loads(line) for line in telemetry.read_text().splitlines()]
         self.assertEqual([row["hook_event"] for row in records], ["SessionStart", "SubagentStart"])

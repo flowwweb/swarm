@@ -102,12 +102,21 @@ pass the existing fidelity or acceptance gate. No new receipt store is needed.
 For the SWARM config loader, another required read-only internal helper, or
 another already-authorized safe local action, apply this narrower rule.
 
-Use the requested runtime when it is allowed. An ordinary local filesystem or
-executable permission failure is not yet a terminal blocker. The eligible owner
-requests supported sandbox or access approval once for the exact authorized
-action and target before recording host-gate fallback or a blocker. Explain the
-observed access error and requested scope. CTRL coordinates and relays this;
-it never executes the producer's action or takes over the task.
+Use the requested runtime when it is allowed. Start already-authorized routine
+bookkeeping with an ordinary call and no elevation parameter. On a filesystem or
+executable failure, check the actual target, effective sandbox, writable roots
+and approval policy; an app's action permission does not change shell access.
+Reconcile any saved events before retrying and preserve existing task/project
+binding. Under `never`, do not request elevation. If policy is not visible,
+report it as unknown rather than inferring it from an approval card.
+
+For related routine items, resolve a shared access boundary once instead of
+requesting approval for each file or frame. Use an existing supported route only
+when the host permits it and it preserves the same authority and custody; a
+different tool must not bypass a denial. If a genuinely required supported access
+request is permitted, prepare one bounded request for the affected scope. If no
+permitted route exists, report the exact boundary and continue independent work.
+CTRL coordinates and relays this; it never takes over the producer's action.
 
 Pending approval waits; do not cancel the request, repeat it, count waiting as
 route exhaustion, or report a terminal blocker. Reconcile interrupted turns and

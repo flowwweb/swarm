@@ -30,7 +30,7 @@ import unicodedata
 import webbrowser
 import uuid
 from collections import Counter
-from contextlib import closing, contextmanager, ExitStack
+from contextlib import closing, contextmanager, ExitStack, nullcontext
 from dataclasses import asdict, replace
 from types import SimpleNamespace
 from datetime import UTC, datetime
@@ -97,6 +97,7 @@ from project_model_views import (  # noqa: E402
     ProjectBriefMissing,
     ProjectBriefPathRejected,
     parse_project_brief_markdown,
+    project_mission_from_brief,
     project_schema1_views,
     validate_flow_definition,
     validate_flow_assignment,
@@ -1879,6 +1880,67 @@ def _media_signature(path: Path) -> str:
     raise ConsoleError("proof media signature is not allowlisted")
 
 
+def _canonical_proof_event_name(evidence_id: str) -> str:
+    return hashlib.sha256(evidence_id.encode("utf-8")).hexdigest() + ".json"
+
+
+def _canonical_proof_event_filename(event_name: str) -> str | None:
+    """Recognize canonical names using the local platform's path spelling rules."""
+    normalized = os.path.normcase(event_name)
+    return normalized if re.fullmatch(r"[0-9a-f]{64}\.json", normalized) else None
+
+
+def _same_proof_event_name(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    canonical = _canonical_proof_event_filename(left)
+    return canonical is not None and canonical == _canonical_proof_event_filename(right)
+
+
+def _proof_file_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _recheck_proof_file(path: Path, resolved: Path, original: os.stat_result) -> None:
+    current = path.resolve(strict=True)
+    if current != resolved or _proof_file_identity(current.stat()) != _proof_file_identity(original):
+        raise OSError("proof file changed during reconciliation")
+
+
+@contextmanager
+def _hold_proof_file(path: Path):
+    """On Windows, prevent writes and replacement until the receipt decision commits."""
+    if os.name != "nt":
+        yield None
+        return
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    # Existing readers can continue, but handles with write or delete access
+    # cannot coexist with this retained read handle.
+    handle = create(str(path), 0x80000000, 0x00000001, None, 3, 0x08000000, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except BaseException:
+        close(handle)
+        raise
+    try:
+        yield os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _media_metadata(
     locator: str,
     supplied_digest: str = "",
@@ -2561,6 +2623,8 @@ class ConsoleStore:
                     media_digest TEXT,
                     observed_at_ms INTEGER NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS proof_event_receipts_evidence_id
+                    ON proof_event_receipts(evidence_id);
                 CREATE TABLE IF NOT EXISTS ctrl_overrides (
                     ctrl_id TEXT PRIMARY KEY,
                     revision INTEGER NOT NULL,
@@ -2781,6 +2845,23 @@ class ConsoleStore:
             for name in ("event_digest", "task_id", "project_id", "media_digest"):
                 if name not in proof_receipt_columns:
                     connection.execute(f"ALTER TABLE proof_event_receipts ADD COLUMN {name} TEXT")
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            for table in ("proof_media", "proof_event_receipts"):
+                columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+                if "canonical_event_name" not in columns:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN canonical_event_name TEXT")
+                connection.execute(
+                    f"CREATE INDEX IF NOT EXISTS {table}_canonical_event_rowid "
+                    f"ON {table}(canonical_event_name) WHERE evidence_id != ''"
+                )
+            if os.name == "nt":
+                # A canonical Windows path has one identity across ASCII case
+                # spellings, including old unbound rejection receipts.
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS proof_event_receipts_name_nocase "
+                    "ON proof_event_receipts(event_name COLLATE NOCASE)"
+                )
             connection.execute(
                 """
                 UPDATE proof_event_receipts
@@ -2888,6 +2969,42 @@ class ConsoleStore:
                 "surface_kind='available_media' WHERE disposition IN ('AVAILABLE', 'SURFACED')"
             )
             connection.commit()
+            self._backfill_proof_canonical_names(connection)
+
+    @staticmethod
+    def _backfill_proof_canonical_names(connection: sqlite3.Connection, *, max_batches: int | None = None) -> None:
+        """Backfill existing identities in short write batches; hash before locking."""
+        for table in ("proof_media", "proof_event_receipts"):
+            high = connection.execute(f"SELECT MAX(rowid) FROM {table}").fetchone()[0]
+            if high is None:
+                continue
+            batches = 0
+            for missing in (None, ""):
+                last: int | None = None
+                while True:
+                    lower = "" if last is None else " AND rowid > ?"
+                    parameters = (missing, high) if last is None else (missing, high, last)
+                    rows = connection.execute(
+                        f"SELECT rowid, evidence_id FROM {table} INDEXED BY {table}_canonical_event_rowid "
+                        f"WHERE canonical_event_name IS ? AND evidence_id != '' AND rowid <= ?{lower} "
+                        "ORDER BY rowid LIMIT 128", parameters,
+                    ).fetchall()
+                    if not rows:
+                        break
+                    last = int(rows[-1][0])
+                    updates = [(_canonical_proof_event_name(row[1]), row[0], row[1], missing)
+                               for row in rows if isinstance(row[1], str)]
+                    if updates:
+                        connection.executemany(
+                            f"UPDATE {table} SET canonical_event_name=? WHERE rowid=? AND evidence_id=? "
+                            "AND canonical_event_name IS ?", updates,
+                        )
+                        connection.commit()
+                    batches += 1
+                    if max_batches is not None and batches >= max_batches:
+                        break
+                if max_batches is not None and batches >= max_batches:
+                    break
 
     @staticmethod
     def _execution_payload(payload: dict[str, Any]) -> tuple[str, str]:
@@ -4985,12 +5102,47 @@ class ConsoleStore:
             "claim_limit": "Available for review; acceptance is recorded separately.",
         }
 
+    @staticmethod
+    def _proof_event_identity_receipts(connection: sqlite3.Connection, evidence_id: str) -> list[sqlite3.Row]:
+        canonical_name = _canonical_proof_event_name(evidence_id)
+        comparison = "event_name = ? COLLATE NOCASE" if os.name == "nt" else "event_name = ?"
+        return connection.execute(
+            f"SELECT * FROM proof_event_receipts WHERE {comparison} OR evidence_id=?",
+            (canonical_name, evidence_id),
+        ).fetchall()
+
+    @staticmethod
+    def _proof_event_canonical_authorities(connection: sqlite3.Connection, event_name: str) -> set[str]:
+        canonical_name = _canonical_proof_event_filename(event_name)
+        if canonical_name is None:
+            return set()
+        authorities: set[str] = set()
+        for table in ("proof_media", "proof_event_receipts"):
+            # Old writers may still insert an unindexed identity after startup.
+            # Never make an unbound decision while such rows need backfilling.
+            pending = connection.execute(
+                f"SELECT 1 FROM {table} WHERE canonical_event_name IS NULL AND evidence_id != '' LIMIT 1"
+            ).fetchone() or connection.execute(
+                f"SELECT 1 FROM {table} WHERE canonical_event_name = '' AND evidence_id != '' LIMIT 1"
+            ).fetchone()
+            if pending is not None:
+                raise OSError("proof canonical authority index needs backfill")
+            rows = connection.execute(
+                f"SELECT evidence_id FROM {table} WHERE canonical_event_name=? AND evidence_id != '' LIMIT 2",
+                (canonical_name,),
+            ).fetchall()
+            authorities.update(str(row[0]) for row in rows)
+        return authorities
+
     def record_proof_media(
         self,
         payload: dict[str, Any],
         *,
         now_ms: int,
         allowed_root: Path | None = None,
+        check_event_receipts: bool = False,
+        _connection: sqlite3.Connection | None = None,
+        _metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         evidence_id = _safe_metadata_text(payload.get("evidence_id"), "evidence_id", maximum=256)
         task_id = _safe_metadata_text(payload.get("task_id"), "task_id", maximum=256)
@@ -5011,7 +5163,9 @@ class ConsoleStore:
         supplied_size = payload.get("size_bytes")
         if supplied_size is not None and (not isinstance(supplied_size, int) or isinstance(supplied_size, bool)):
             raise ConsoleError("proof media size must be an integer")
-        metadata = _media_metadata(
+        if _metadata is not None and _connection is None:
+            raise ValueError("prevalidated proof metadata requires the scanner transaction")
+        metadata = _metadata if _metadata is not None else _media_metadata(
             locator,
             str(payload.get("digest", "")),
             allowed_root=allowed_root,
@@ -5020,11 +5174,39 @@ class ConsoleStore:
         )
         if metadata["media_type"] not in MEDIA_TYPES:
             raise ConsoleError("proof media type is not allowlisted")
-        with self._lock, closing(self._connect()) as connection:
+        with (self._lock if _connection is None else nullcontext()), (
+            closing(self._connect()) if _connection is None else nullcontext(_connection)
+        ) as connection:
+            if check_event_receipts and _connection is None:
+                # Check existing receipt state and register in one SQLite write transaction.
+                connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT * FROM proof_media WHERE evidence_id=?",
                 (evidence_id,),
             ).fetchone()
+            if check_event_receipts:
+                receipts = self._proof_event_identity_receipts(connection, evidence_id)
+                if len(receipts) > 1:
+                    raise ConsoleError("proof event receipt identity is ambiguous")
+                if receipts:
+                    event_receipt = receipts[0]
+                    if event_receipt["status"] == "REJECTED":
+                        raise ConsoleError("proof event receipt was rejected")
+                    if (event_receipt["status"] != "IMPORTED" or existing is None
+                            or str(event_receipt["evidence_id"] or "") != evidence_id
+                            or str(event_receipt["task_id"] or "") != task_id
+                            or str(event_receipt["project_id"] or "") != project_id
+                            or str(event_receipt["media_digest"] or "") != metadata["digest"]
+                            or re.fullmatch(r"[0-9a-f]{64}", str(event_receipt["event_digest"] or "")) is None):
+                        raise ConsoleError("proof event receipt does not match the original")
+                    event_name = str(event_receipt["event_name"])
+                    if (Path(event_name).name != event_name or not (event_name.endswith(".json")
+                            or _canonical_proof_event_filename(event_name) is not None)
+                            or existing["receipt"] not in {f"proof-event:{Path(event_name).stem}",
+                                f"ctrl-original:{task_id}", f"ctrl-evidence:registered:{task_id}"}):
+                        raise ConsoleError("proof event receipt reference does not match the original")
+                    # Preserve the existing receipt rather than replacing its provenance.
+                    receipt = str(existing["receipt"])
             values = {
                 "task_id": task_id,
                 "project_id": project_id,
@@ -5050,8 +5232,8 @@ class ConsoleStore:
                 INSERT INTO proof_media(
                     evidence_id, task_id, project_id, kind, locator, caption,
                     claim_limit, disposition, receipt, surface_kind, media_type,
-                    mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms, canonical_event_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     evidence_id,
@@ -5070,10 +5252,12 @@ class ConsoleStore:
                     metadata["digest"],
                     now_ms,
                     now_ms,
+                    _canonical_proof_event_name(evidence_id),
                 ),
             )
             self._advance_proof_cursor(connection)
-            connection.commit()
+            if _connection is None:
+                connection.commit()
             row = connection.execute("SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,)).fetchone()
         return self._public_proof_row(row)
 
@@ -6001,10 +6185,10 @@ class ConsoleStore:
             _asset_id(project_id, "project_id")
         raise ConsoleError(f"asset purge is unavailable; retention_policy={ASSET_RETENTION_POLICY}")
 
-    def _proof_event_receipts(self) -> dict[str, dict[str, Any]]:
-        with self._lock, closing(self._connect()) as connection:
-            rows = connection.execute(
-                """
+    def _proof_event_receipts(
+        self, *, _connection: sqlite3.Connection | None = None, event_name: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        query = """
                 SELECT receipts.event_name, receipts.event_mtime_ns,
                        receipts.event_size, receipts.event_digest, receipts.status,
                        receipts.evidence_id, receipts.task_id, receipts.project_id,
@@ -6013,9 +6197,20 @@ class ConsoleStore:
                   FROM proof_event_receipts receipts
              LEFT JOIN proof_media media ON media.evidence_id = receipts.evidence_id
                 """
-            ).fetchall()
+        parameters: tuple[str, ...] = ()
+        if event_name is not None:
+            comparison = " = ? COLLATE NOCASE" if os.name == "nt" and _canonical_proof_event_filename(event_name) else " = ?"
+            query += " WHERE receipts.event_name" + comparison
+            parameters = (event_name,)
+        with (self._lock if _connection is None else nullcontext()), (
+            closing(self._connect()) if _connection is None else nullcontext(_connection)
+        ) as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        if event_name is not None and len(rows) > 1:
+            raise ConsoleError("proof event filename has ambiguous retained receipts")
         return {
-            str(row["event_name"]): {
+            (event_name if event_name is not None else str(row["event_name"])): {
+                "event_name": str(row["event_name"]),
                 "mtime_ns": int(row["event_mtime_ns"]),
                 "size": int(row["event_size"]),
                 "event_digest": str(row["event_digest"] or ""),
@@ -6061,9 +6256,11 @@ class ConsoleStore:
             return [start_token]
         return queue or [start_token]
 
-    def _set_proof_event_scan_queue(self, queue: list[str]) -> None:
+    def _set_proof_event_scan_queue(self, queue: list[str], *, _no_wait: bool = False) -> None:
         value = json.dumps(queue, separators=(",", ":"))
         with self._lock, closing(self._connect()) as connection:
+            if _no_wait:
+                connection.execute("PRAGMA busy_timeout = 0")
             connection.execute(
                 """
                 INSERT INTO store_metadata(key, value) VALUES (?, ?)
@@ -6278,9 +6475,12 @@ class ConsoleStore:
         task_id: str,
         project_id: str,
         media_digest: str,
+        _connection: sqlite3.Connection | None = None,
     ) -> None:
         """Bind nullable pre-contract fields once; never alter an existing binding."""
-        with self._lock, closing(self._connect()) as connection:
+        with (self._lock if _connection is None else nullcontext()), (
+            closing(self._connect()) if _connection is None else nullcontext(_connection)
+        ) as connection:
             connection.execute(
                 """
                 UPDATE proof_event_receipts
@@ -6306,9 +6506,11 @@ class ConsoleStore:
             if row is None or tuple(str(value or "") for value in row) != (
                 event_digest, task_id, project_id, media_digest,
             ):
-                connection.rollback()
+                if _connection is None:
+                    connection.rollback()
                 raise ConsoleError("legacy proof event receipt conflicts with immutable evidence")
-            connection.commit()
+            if _connection is None:
+                connection.commit()
 
     def _record_proof_event_receipt(
         self,
@@ -6323,19 +6525,32 @@ class ConsoleStore:
         project_id: str,
         media_digest: str,
         now_ms: int,
+        _connection: sqlite3.Connection | None = None,
     ) -> None:
-        with self._lock, closing(self._connect()) as connection:
+        with (self._lock if _connection is None else nullcontext()), (
+            closing(self._connect()) if _connection is None else nullcontext(_connection)
+        ) as connection:
+            if os.name == "nt" and _canonical_proof_event_filename(event_name):
+                existing = connection.execute(
+                    "SELECT event_name FROM proof_event_receipts WHERE event_name = ? COLLATE NOCASE",
+                    (event_name,),
+                ).fetchall()
+                if len(existing) > 1:
+                    raise ConsoleError("proof event filename has ambiguous retained receipts")
+                if existing:
+                    event_name = str(existing[0][0])
             connection.execute(
                 """
                 INSERT INTO proof_event_receipts(
                     event_name, event_mtime_ns, event_size, event_digest, status,
-                    evidence_id, task_id, project_id, media_digest, observed_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    evidence_id, task_id, project_id, media_digest, observed_at_ms, canonical_event_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(event_name) DO NOTHING
                 """,
                 (
                     event_name, mtime_ns, size, event_digest, status,
                     evidence_id, task_id, project_id, media_digest, now_ms,
+                    _canonical_proof_event_name(evidence_id) if evidence_id else None,
                 ),
             )
             row = connection.execute(
@@ -6353,9 +6568,11 @@ class ConsoleStore:
                 str(row["project_id"] or ""), str(row["media_digest"] or ""),
             )
             if actual != expected:
-                connection.rollback()
+                if _connection is None:
+                    connection.rollback()
                 raise ConsoleError("proof event filename is permanently bound to different evidence")
-            connection.commit()
+            if _connection is None:
+                connection.commit()
 
     def reconcile_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> dict[str, int]:
         """Reconcile one bounded immutable proof-event pass without reading task messages."""
@@ -6369,41 +6586,67 @@ class ConsoleStore:
             return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0, "enumerated": 0}
         if not event_root.is_dir():
             return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 0, "capped": 0, "enumerated": 0}
+        try:
+            # Older concurrent writers can leave null identities after startup.
+            # Fill at most one short batch per table and retry honestly if busy.
+            with closing(self._connect()) as connection:
+                connection.execute("PRAGMA busy_timeout = 0")
+                self._backfill_proof_canonical_names(connection, max_batches=1)
+        except (OSError, sqlite3.Error):
+            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0, "enumerated": 0}
         nodes = {
             str(node.get("id")): node
             for node in overview.get("nodes", [])
             if not node.get("virtual") and node.get("id") and node.get("project_id")
         }
-        receipts = self._proof_event_receipts()
         imported = 0
         duplicates = 0
         rejected = 0
         retryable = 0
         try:
             event_paths, capped_pass, enumerated, next_scan_queue = self._bounded_proof_event_paths(event_root)
-        except OSError:
+        except (OSError, sqlite3.Error):
             return {
                 "imported": 0, "duplicates": 0, "rejected": 0,
                 "retryable": 1, "capped": 0, "enumerated": 0,
             }
         capped = int(capped_pass)
+        writer_busy = False
         for event_path in event_paths:
+            file_guards = ExitStack()
             event_stat: os.stat_result | None = None
+            resolved_event: Path | None = None
+            connection: sqlite3.Connection | None = None
+            prior_media: tuple[Any, ...] | None = None
+            prior_media_known = False
+            locator_path: Path | None = None
+            locator: Path | None = None
+            media_stat: os.stat_result | None = None
             evidence_id = ""
             task_id = ""
             project_id = ""
             event_digest = ""
             media_digest = ""
             try:
+                # Read and hash outside the shared writer transaction. A busy writer ends
+                # the pass immediately instead of imposing a timeout for every event.
+                connection = self._connect()
+                connection.execute("PRAGMA busy_timeout = 0")
                 resolved_event = event_path.resolve(strict=True)
+                event_guard = file_guards.enter_context(_hold_proof_file(resolved_event))
                 event_stat = resolved_event.stat()
+                if event_guard is not None and not os.path.samestat(event_guard, event_stat):
+                    raise OSError("proof event changed while opening")
                 if not resolved_event.is_file() or not resolved_event.is_relative_to(event_root) or event_stat.st_size > 16 * 1024:
                     continue
                 event_bytes = resolved_event.read_bytes()
                 if len(event_bytes) != event_stat.st_size:
                     raise OSError("proof event changed while being read")
+                _recheck_proof_file(event_path, resolved_event, event_stat)
                 event_digest = hashlib.sha256(event_bytes).hexdigest()
-                receipt = receipts.get(resolved_event.name)
+                receipt = self._proof_event_receipts(
+                    _connection=connection, event_name=resolved_event.name,
+                ).get(resolved_event.name)
                 if receipt is not None:
                     if (
                         receipt["mtime_ns"] != event_stat.st_mtime_ns
@@ -6416,7 +6659,11 @@ class ConsoleStore:
                         rejected += 1
                         continue
                     if receipt["status"] == "IMPORTED" and receipt["event_digest"] and receipt["media_present"]:
-                        duplicates += 1
+                        retained = self._proof_event_identity_receipts(connection, receipt["evidence_id"])
+                        if len(retained) != 1 or not _same_proof_event_name(retained[0]["event_name"], resolved_event.name):
+                            rejected += 1
+                        else:
+                            duplicates += 1
                         continue
                 event = json.loads(event_bytes.decode("utf-8"))
                 if not isinstance(event, dict) or event.get("schema_version") != 1 or event.get("source") != "CtrlEvidence":
@@ -6424,6 +6671,10 @@ class ConsoleStore:
                 if PROOF_EVENT_PRIVATE_FIELDS.intersection(key.casefold() for key in event):
                     raise ConsoleError("proof event includes prohibited private content")
                 evidence_id = _safe_metadata_text(event.get("evidence_id"), "evidence_id", maximum=256)
+                canonical_name = _canonical_proof_event_name(evidence_id)
+                if any((key := _canonical_proof_event_filename(name)) is not None and key != canonical_name
+                       for name in {event_path.name, resolved_event.name}):
+                    raise ConsoleError("canonical proof event filename does not match its identity")
                 task_id = _safe_metadata_text(event.get("task_id"), "task_id", maximum=256)
                 node = nodes.get(task_id)
                 observed_project_id = str(node["project_id"]) if node is not None else observed_task_project_id(codex_home, task_id)
@@ -6433,13 +6684,14 @@ class ConsoleStore:
                 project_id = observed_project_id
                 relative = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=4096))
                 explicit_receipt = None
+                existing = connection.execute(
+                    "SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,),
+                ).fetchone()
+                prior_media = tuple(existing) if existing is not None else None
+                prior_media_known = True
                 if relative.is_absolute():
-                    locator = relative.resolve(strict=True)
-                    with self._lock, closing(self._connect()) as connection:
-                        existing = connection.execute(
-                            "SELECT task_id, project_id, locator, receipt FROM proof_media WHERE evidence_id=?",
-                            (evidence_id,),
-                        ).fetchone()
+                    locator_path = relative
+                    locator = locator_path.resolve(strict=True)
                     if (existing is not None and existing["task_id"] == task_id
                             and existing["project_id"] == project_id and existing["locator"] == str(locator)
                             and existing["receipt"] == f"ctrl-original:{task_id}"):
@@ -6450,7 +6702,8 @@ class ConsoleStore:
                 else:
                     if ".." in relative.parts:
                         raise ConsoleError("proof event locator escapes the evidence store")
-                    locator = (swarm_root / relative).resolve(strict=True)
+                    locator_path = swarm_root / relative
+                    locator = locator_path.resolve(strict=True)
                     selected_root = media_root
                 payload = {
                     **event,
@@ -6461,14 +6714,63 @@ class ConsoleStore:
                     "receipt": explicit_receipt or f"proof-event:{resolved_event.stem}",
                     "surface_kind": "available_media",
                 }
-                metadata = _media_metadata(
-                    str(locator),
-                    str(event.get("digest", "")),
-                    allowed_root=selected_root,
-                    supplied_size=event.get("size_bytes"),
-                    supplied_media_type=str(event.get("media_type", "")),
-                )
+                media_guard = file_guards.enter_context(_hold_proof_file(locator))
+                media_stat = locator.stat()
+                if media_guard is not None and not os.path.samestat(media_guard, media_stat):
+                    raise OSError("proof media changed while opening")
+                try:
+                    metadata = _media_metadata(
+                        str(locator),
+                        str(event.get("digest", "")),
+                        allowed_root=selected_root,
+                        supplied_size=event.get("size_bytes"),
+                        supplied_media_type=str(event.get("media_type", "")),
+                    )
+                except (ConsoleError, ValueError, TypeError):
+                    _recheck_proof_file(locator_path, locator, media_stat)
+                    raise
+                _recheck_proof_file(locator_path, locator, media_stat)
+                if metadata["mtime_ns"] != media_stat.st_mtime_ns or metadata["size_bytes"] != media_stat.st_size:
+                    raise OSError("proof media changed during validation")
                 media_digest = str(metadata["digest"])
+
+                # Recheck both filesystem identities and all shared receipt state
+                # after acquiring the lock. Media and receipt still commit together.
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("SAVEPOINT proof_event")
+                _recheck_proof_file(event_path, resolved_event, event_stat)
+                _recheck_proof_file(locator_path, locator, media_stat)
+                receipt = self._proof_event_receipts(
+                    _connection=connection, event_name=resolved_event.name,
+                ).get(resolved_event.name)
+                for name in {event_path.name, resolved_event.name}:
+                    authorities = self._proof_event_canonical_authorities(connection, name)
+                    if authorities and authorities != {evidence_id}:
+                        raise ConsoleError("proof event filename shadows another identity")
+                retained = self._proof_event_identity_receipts(connection, evidence_id)
+                if len(retained) > 1 or (retained and not _same_proof_event_name(retained[0]["event_name"], resolved_event.name)):
+                    raise ConsoleError("proof event identity is bound to another filename")
+                if receipt is not None:
+                    if (receipt["mtime_ns"] != event_stat.st_mtime_ns
+                            or receipt["size"] != event_stat.st_size
+                            or (receipt["event_digest"] and receipt["event_digest"] != event_digest)
+                            or receipt["status"] == "REJECTED"):
+                        rejected += 1
+                        continue
+                    if receipt["status"] == "IMPORTED" and receipt["event_digest"] and receipt["media_present"]:
+                        duplicates += 1
+                        continue
+                current_media = connection.execute(
+                    "SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,),
+                ).fetchone()
+                direct_receipts = {f"ctrl-original:{task_id}", f"ctrl-evidence:registered:{task_id}"}
+                direct_match = (current_media is not None and current_media["task_id"] == task_id
+                    and current_media["project_id"] == project_id and current_media["locator"] == str(locator)
+                    and current_media["receipt"] in direct_receipts)
+                if direct_match:
+                    payload["receipt"] = str(current_media["receipt"])
+                elif (tuple(current_media) if current_media is not None else None) != prior_media:
+                    raise OSError("proof media changed during reconciliation")
                 if receipt is not None:
                     bound = (
                         receipt["evidence_id"], receipt["task_id"],
@@ -6487,13 +6789,15 @@ class ConsoleStore:
                         ):
                             raise ConsoleError("legacy proof event receipt cannot be bound safely")
                         self._bind_legacy_proof_event_receipt(
-                            resolved_event.name,
+                            receipt["event_name"],
                             event_digest=event_digest,
                             task_id=task_id,
                             project_id=project_id,
                             media_digest=media_digest,
+                            _connection=connection,
                         )
-                self.record_proof_media(payload, now_ms=now_ms, allowed_root=selected_root)
+                self.record_proof_media(payload, now_ms=now_ms, allowed_root=selected_root,
+                                        _connection=connection, _metadata=metadata)
                 if receipt is None:
                     self._record_proof_event_receipt(
                         resolved_event.name,
@@ -6506,14 +6810,22 @@ class ConsoleStore:
                         project_id=project_id,
                         media_digest=media_digest,
                         now_ms=now_ms,
+                        _connection=connection,
                     )
-                    imported += 1
-                elif receipt["media_present"]:
+                connection.commit()
+                if receipt is not None and receipt["media_present"]:
                     duplicates += 1
                 else:
                     imported += 1
-            except (OSError, sqlite3.Error):
+            except OSError:
                 retryable += 1
+                continue
+            except sqlite3.Error as exc:
+                retryable += 1
+                if getattr(exc, "sqlite_errorcode", None) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) \
+                        or "locked" in str(exc).casefold():
+                    writer_busy = True
+                    break
                 continue
             except (ConsoleError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 if isinstance(exc.__cause__, OSError):
@@ -6521,28 +6833,89 @@ class ConsoleStore:
                     continue
                 if event_stat is not None:
                     try:
+                        if connection is None or resolved_event is None:
+                            raise OSError("proof event became unavailable")
+                        if not connection.in_transaction:
+                            connection.execute("BEGIN IMMEDIATE")
+                            connection.execute("SAVEPOINT proof_event")
+                            _recheck_proof_file(event_path, resolved_event, event_stat)
+                            if locator_path is not None and locator is not None and media_stat is not None:
+                                _recheck_proof_file(locator_path, locator, media_stat)
+                            if prior_media_known:
+                                current_media = connection.execute(
+                                    "SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,),
+                                ).fetchone()
+                                if (tuple(current_media) if current_media is not None else None) != prior_media:
+                                    raise OSError("proof media changed during reconciliation")
+                        # Undo any partial media update while retaining the writer lock.
+                        connection.execute("ROLLBACK TO proof_event")
+                        if self._proof_event_canonical_authorities(connection, event_path.name):
+                            # A filename-only rejection must not shadow earlier proof
+                            # or rejection authority, even when parsing never found an ID.
+                            rejected += 1
+                            continue
+                        rejected_evidence_id = evidence_id
+                        if evidence_id and any(
+                            (key := _canonical_proof_event_filename(name)) is not None
+                            and key != _canonical_proof_event_name(evidence_id)
+                            for name in {event_path.name, resolved_event.name}
+                        ):
+                            # The name belongs to an unknown identity, not the
+                            # parsed payload. Preserve its unbound rejection.
+                            rejected_evidence_id = ""
+                        if evidence_id:
+                            retained = self._proof_event_identity_receipts(connection, evidence_id)
+                            other_receipt = any(not _same_proof_event_name(row["event_name"], event_path.name) for row in retained)
+                            media_exists = connection.execute(
+                                "SELECT 1 FROM proof_media WHERE evidence_id=?", (evidence_id,),
+                            ).fetchone() is not None
+                            if other_receipt or (media_exists and not retained):
+                                # A conflicting filename cannot become a second authority
+                                # for this identity or poison an existing direct retry.
+                                canonical_name = _canonical_proof_event_name(evidence_id)
+                                if _same_proof_event_name(event_path.name, canonical_name):
+                                    # This name is itself an identity lookup key; retaining
+                                    # another rejection here would shadow the prior authority.
+                                    rejected += 1
+                                    continue
+                                rejected_evidence_id = ""
                         self._record_proof_event_receipt(
                             event_path.name,
                             mtime_ns=event_stat.st_mtime_ns,
                             size=event_stat.st_size,
                             status="REJECTED",
-                            evidence_id=evidence_id,
+                            evidence_id=rejected_evidence_id,
                             event_digest=event_digest,
                             task_id=task_id,
                             project_id=project_id,
                             media_digest=media_digest,
                             now_ms=now_ms,
+                            _connection=connection,
                         )
+                        connection.commit()
                         rejected += 1
                     except ConsoleError:
                         rejected += 1
-                    except sqlite3.Error:
+                    except OSError:
                         retryable += 1
+                    except sqlite3.Error as error:
+                        retryable += 1
+                        if getattr(error, "sqlite_errorcode", None) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) \
+                                or "locked" in str(error).casefold():
+                            writer_busy = True
+                            break
                 continue
-        try:
-            self._set_proof_event_scan_queue(next_scan_queue)
-        except sqlite3.Error:
-            retryable += 1
+            finally:
+                try:
+                    if connection is not None:
+                        connection.close()
+                finally:
+                    file_guards.close()
+        if not writer_busy:
+            try:
+                self._set_proof_event_scan_queue(next_scan_queue, _no_wait=True)
+            except sqlite3.Error:
+                retryable += 1
         return {
             "imported": imported,
             "duplicates": duplicates,
@@ -8651,6 +9024,8 @@ class App:
         self._last_observed_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._progress_pulse_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._project_view_cache: dict[str, dict[str, Any]] = {}
+        self._auto_observer_failure: dict[str, Any] | None = None
+        self._auto_lane_failures: dict[tuple[str, str], dict[str, Any]] = {}
         self._observer_stop = threading.Event()
         self._observer_thread: threading.Thread | None = None
 
@@ -8925,6 +9300,22 @@ class App:
 
     def _canonical_project_identities(self, project_id: str) -> frozenset[str]:
         return _binding_identities(self._saved_project_binding(project_id))
+
+    def _project_mission(self, project_id: str, root: Path) -> dict[str, Any]:
+        """Read purpose only from the same saved project/root used for dispatch."""
+        unknown = {"project_id": project_id, "pointer": "/project/purpose", "state": "UNKNOWN",
+                   "confirmation": "UNVERIFIED", "reason": "BRIEF_UNAVAILABLE_OR_MISMATCH"}
+        try:
+            binding = self._saved_project_binding(project_id, "Mission")
+            if Path(binding["root"]).resolve(strict=True) != root.resolve(strict=True):
+                return unknown
+            path = root / "SWARM.md"
+            if _is_reparse_point(root) or _is_reparse_point(path) or not path.is_file() or path.stat().st_size > PROJECT_VIEW_MAX_BYTES:
+                return unknown
+            return project_mission_from_brief(path.read_text(encoding="utf-8"), project_id=project_id,
+                identities=_binding_identities(binding), root=root)
+        except (ConsoleError, ProjectModelError, OSError, UnicodeError, sqlite3.Error, ValueError):
+            return unknown
 
     def _asset_project_scope(self, project_id: Any) -> Path:
         """Bind an asset request to exactly one saved host project and root."""
@@ -9242,8 +9633,7 @@ class App:
             return "INVALID", None, "the project brief field links is invalid"
         project = document["project"]
         brief_id = App._host_project_text(project.get("id"), 256)
-        purpose = App._host_project_text(project.get("purpose"), 4096)
-        if brief_id is None or purpose is None:
+        if brief_id is None:
             return "INVALID", None, "the project brief identity is invalid"
         if brief_id.casefold() not in {project_id.casefold(), display_name.casefold(), *(alias.casefold() for alias in aliases)}:
             return "INVALID", None, "the project brief belongs to another saved project"
@@ -11979,11 +12369,32 @@ class App:
         return overview
 
     def auto_status(self, ctrl_id: str, project_id: str) -> dict[str, Any]:
-        if isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport):
+        native = isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport)
+        if native:
             self._native_auto_scope(ctrl_id, project_id)  # Read scope only; execution still needs its verified grant.
         else:
             self._auto_scope(ctrl_id, project_id)
-        return {"ok": True, **self.store.auto_status(ctrl_id, project_id)}
+        status = self.store.auto_status(ctrl_id, project_id)
+        if status["enabled"] or status["in_flight"]:
+            failure = self._auto_observer_failure or self._auto_lane_failures.get((ctrl_id, project_id))
+            capability = None
+            if not native:
+                capability = "NATIVE_AUTO_CAPABILITY_UNAVAILABLE"
+            elif not status["in_flight"] and (not callable(getattr(self.auto_authorization, "grant", None))
+                                               or not callable(getattr(self.auto_authorization, "verify", None))):
+                capability = "AUTO_HOST_AUTHORIZATION_UNAVAILABLE"
+            if failure or capability:
+                attention = dict(status["attention"] or {})
+                if not attention:
+                    attention = {"kind": failure["reason"] if failure else capability,
+                                 "reason": "Auto needs a working host capability and successful reconciliation.",
+                                 "recovery_authority": ctrl_id}
+                if failure:
+                    attention["observer_failure"] = dict(failure)
+                if capability:
+                    attention["capability_unavailable"] = capability
+                status["attention"] = attention
+        return {"ok": True, **status}
 
     def auto_command(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
@@ -12218,8 +12629,10 @@ class App:
     def _configured_auto_instruction(meta, role, node):
         return "SWARM configured Flow step. Verify every input path and SHA before use; stop on mismatch. " + json.dumps({
             "run_digest": meta["recipe"]["digest"], "step": meta["step"], "inputs": meta["inputs"],
+            "mission_reference": {"project_id": meta["recipe"]["project_id"], "brief_digest": meta["recipe"]["brief_digest"],
+                                  "pointer": "/project/purpose", "confirmation": "UNVERIFIED"},
             "role": {key: role[key] for key in ("id", "version", "purpose", "owns", "default_skills", "instructions", "boundaries")},
-            "node": node, "claim_limit": "Return material proof for independent acceptance. Host completion is not acceptance."},
+            "node": node, "claim_limit": "Resolve the Mission from the bound brief; absent purpose is UNKNOWN. Return material proof for independent acceptance. Host completion is not acceptance."},
             ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
     def _configured_auto_candidate(self, state, projection):
@@ -12294,6 +12707,8 @@ class App:
             f"goal {candidate['goal_id']} and task {candidate['task_id']}. Advance exactly one "
             f"retained operation {candidate['disposition']['next_operation']} through owner "
             f"{candidate['disposition']['next_owner']} and route {candidate['disposition']['next_route']}. "
+            "Resolve the project Mission separately from the objective at the bound root SWARM.md /project/purpose; "
+            "validate project identity and brief digest, and treat missing purpose as UNKNOWN. "
             "Preserve exact custody, user keep-out, and authority gates. Return only a material receipt "
             "or one exact safety, authority, or external release condition."
         )
@@ -12731,7 +13146,19 @@ class App:
                     waiting = waiting or {"dispatched": False, "reason": "AUTO_SCOPE_REJECTED", "work_completed": False}
                     continue
             else:
-                self._auto_scope(state["ctrl_id"], state["project_id"])
+                try:
+                    self._auto_scope(state["ctrl_id"], state["project_id"])
+                except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError) as error:
+                    if isinstance(error, ConsoleError) and any(marker in str(error) for marker in AUTO_INTEGRITY_MARKERS):
+                        raise
+                    failure = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
+                        "reservation_id": "", "reason": AUTO_LANE_FAILURE,
+                        "failure_kind": type(error).__name__, "material_progress": False}
+                    self.store.retain_auto_control("AUTO_RECONCILE", _auto_digest(failure), failure,
+                        now_ms=int(time.time() * 1000))
+                    rejections.append(failure)
+                    waiting = waiting or {"dispatched": False, "reason": AUTO_LANE_FAILURE, "work_completed": False}
+                    continue
             if not state["enabled"] or state["stop_after_turn"]:
                 continue
             if native and self.store.auto_writer_busy(_auto_writer_scope(root)):
@@ -15431,10 +15858,24 @@ class App:
         )
         self._ingest_proof_events_if_changed(observed)
         try:
-            self.evaluate_auto_once(observed)
-        except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError):
-            # Auto is opt-in and fail-closed; host observation must stay available.
-            pass
+            auto_result = self.evaluate_auto_once(observed)
+            self._auto_observer_failure = None
+            self._auto_lane_failures = {
+                (item["ctrl_id"], item["project_id"]): {
+                    "reason": item.get("reason") if item.get("reason") == AUTO_LANE_FAILURE else "AUTO_SCOPE_REJECTED",
+                    "failure_kind": item.get("failure_kind", "SCOPE_REJECTED"), "material_progress": False}
+                for item in auto_result.get("scope_rejections", [])
+                if isinstance(item, dict) and isinstance(item.get("ctrl_id"), str) and isinstance(item.get("project_id"), str)
+            }
+        except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError) as error:
+            # Preserve host observation while exposing a metadata-only, deduplicated Auto failure.
+            failure = {"reason": "AUTO_OBSERVER_FAILED", "failure_kind": type(error).__name__, "material_progress": False}
+            self._auto_observer_failure = failure
+            self._auto_lane_failures = {}
+            try:
+                self.store.retain_auto_control("AUTO_RECONCILE", "observer:" + _auto_digest(failure), failure, now_ms=now_ms)
+            except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError):
+                print("SWARM Auto observer failed; failure journal unavailable", file=sys.stderr)
         try:
             sample = self.diagnostics_collector.collect()
             if trigger != "proof":  # Quota follows the existing heartbeat, not proof submissions.
@@ -17231,7 +17672,12 @@ class App:
         starting_flow = (f"Starting Flow: {template['name']}. Suggested outcome: {template['outcome']}\n"
             + "\n".join(f"- {step}" for step in template["guide"])
             + f"\nSuggested professions, not a fixed crew: {', '.join(template['suggested_roles'])}.\n") if template else "Custom unit: choose a Flow for this objective.\n"
+        root = self._canonical_project_root(project_id)
+        mission = self._project_mission(project_id, root)
         instruction = (f"Use SWARM. You are the LEAD coordinator of the {kind} work unit {name}. Its objective is: {objective}\n"
+            "Project Mission is distinct from that objective; verify the bound root and brief digest before relying on stated text. "
+            "Missing purpose is UNKNOWN and text is not evidence of user confirmation: "
+            + json.dumps(mission, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
             "Consume this exact selected profession manifest; LEAD is your structural responsibility, not a profession or model setting:\n"
             + json.dumps(role, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
             + f"Owning CTRL: {ctrl_id}. Parent goal: {parent_goal or 'pending binding; reconcile with CTRL'}. "
@@ -17241,7 +17687,6 @@ class App:
             + starting_flow +
             "Decompose the next useful outcome into bounded child tasks, with exact owners, custody, evidence, stopping conditions and independent review. "
             "Do not assign the whole unit goal to one producer. Coordinate those tasks and return results through the owning CTRL.")
-        root = self._canonical_project_root(project_id)
         now = int(time.time() * 1000)
         contract = {"role_manifest": role, "task_manifest_draft": {key: value for key, value in manifest.items() if key not in {"task_id", "manifest_digest"}},
             "parent_task_id": ctrl_id, "topology_manifest_receipt_id": identity + "-topology", "task_receipt_id": identity + "-task",
@@ -17754,16 +18199,19 @@ class App:
             raise ConsoleError("original proof path must be absolute")
         task_id = _safe_metadata_text(event.get("task_id"), "task_id", maximum=256)
         overview = self._host_overview()
-        node = next((node for node in overview.get("nodes", []) if str(node.get("id")) == task_id
-                     and not node.get("virtual") and node.get("project_id")), None)
-        if node is None:
+        nodes = [node for node in overview.get("nodes", []) if str(node.get("id")) == task_id
+                 and not node.get("virtual") and node.get("project_id")]
+        if len(nodes) != 1:
             raise ConsoleError("proof media requires an observed task")
-        project_id = str(node["project_id"])
+        project_id = str(nodes[0]["project_id"])
+        if "project_id" in event and _safe_metadata_text(event["project_id"], "project_id", maximum=256) != project_id:
+            raise ConsoleError("proof media project does not match the observed task")
         path = locator.resolve(strict=True)
         payload = {**event, "source": "CtrlEvidence", "task_id": task_id, "project_id": project_id,
                    "locator": str(path), "disposition": "PENDING",
                    "receipt": f"ctrl-original:{task_id}", "surface_kind": "available_media"}
-        result = self.store.record_proof_media(payload, now_ms=int(time.time() * 1000), allowed_root=path.parent)
+        result = self.store.record_proof_media(payload, now_ms=int(time.time() * 1000), allowed_root=path.parent,
+                                               check_event_receipts=True)
         with self.overview_lock:
             self._store_generation += 1
         return result
@@ -17798,6 +18246,7 @@ class App:
             safe_payload,
             now_ms=int(time.time() * 1000),
             allowed_root=self.codex_home / PROOF_MEDIA_ROOT,
+            check_event_receipts=True,
         )
         try:
             self.observe_once("proof")

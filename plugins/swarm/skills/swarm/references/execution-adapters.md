@@ -79,3 +79,15 @@ console process is alive; an idle parent is not woken. A synchronous trusted
 `Stop`/`SubagentStop` `decision:block` hook is a candidate seam only: the shipped
 `Stop`/`SubagentStop` hooks are asynchronous telemetry, and host trust,
 invocation and wake behavior remain `UNVERIFIED`.
+
+The repository's normal console and MCP constructors do not inject the native
+Codex-chat transport or its authorization verifier. Native Auto and its result
+collection therefore require a host that supplies both; source tests with an
+injected fixture do not prove that any installed host does so. Agent-initiated
+chat and external CLI collection remain instruction-only.
+
+A native send error leaves delivery uncertain and must be reconciled against
+the intended chat before any retry. Unrecognized host text stays redacted.
+The existing `RELEASE_UNREACHABLE` route requires an independent retained
+unreachable-turn observation and the exact CTRL recovery authority; a send error
+alone does not establish non-delivery or authorize release.

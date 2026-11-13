@@ -3764,6 +3764,24 @@ class ProgressLedgerContractTests(unittest.TestCase):
             observed_after_ms=10, observed_before_ms=20), result)
         self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
 
+    def test_unverified_ctrl_rotation_claim_is_not_task_custody(self) -> None:
+        from skills.swarm.scripts.swarm_contract import retain_rotation_claim
+
+        self.ledger.append(self.event("before-rotation", "a", task_id="task-a", lifecycle="ACTIVE", observed_at_ms=10))
+        envelope = {"predecessor_id": "task-a", "successor_id": "successor", "baseline_pinned": ["task-a"],
+                    "pinned": ["task-a"], "predecessor_archived": False, "predecessor_in_flight": False,
+                    "successor_ack": False, "user_keep_pinned": False, "expected_title": "Synthetic",
+                    "successor_title": None, "retirement": {"project_id": "project-alpha", "root_digest": "d" * 64,
+                        "goal_id": "goal-a", "handoff_digest": "a" * 64, "automation_id": "automation-a",
+                        "collector_id": "successor", "ack_digest": None, "release_receipt_id": None,
+                        "automation_target_id": None, "archive_receipt_id": None, "active_controller_ids": None,
+                        "readback_id": None, "observed_at_ms": 15, "unresolved_operations": []}}
+        retain_rotation_claim(envelope, self.root)
+        self.ledger.append(self.event("after-rotation", "a", task_id="task-a", kind="STATE_CHANGED", lifecycle="TOMBSTONED", observed_at_ms=20))
+        result = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a", observed_after_ms=10, observed_before_ms=20)
+        self.assertEqual((result["coverage"]["state"], result["residence"]["active_ms"]), ("KNOWN", 10))
+        self.assertEqual(result["handoff_boundaries"], [])
+
     def test_task_accounting_conflicting_scope_or_event_and_bad_clock_fail_closed(self) -> None:
         for mode in ("scope", "identity", "clock", "transition"):
             with self.subTest(mode=mode):

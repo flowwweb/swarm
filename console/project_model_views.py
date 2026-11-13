@@ -458,6 +458,25 @@ def parse_project_brief_markdown(text: str, *, project_id: str | None = None,
     return document, f"sha256:{_digest(document)}"
 
 
+def project_mission_from_brief(text: str, *, project_id: str, identities: frozenset[str],
+                               root: Path | None = None, expected_digest: str | None = None) -> dict[str, Any]:
+    """Resolve one stated Mission under an already established project/root binding."""
+    if not isinstance(project_id, str) or not project_id or not identities:
+        raise ProjectModelError("Mission requires an established project binding")
+    document, digest = parse_project_brief_markdown(text, root=root)
+    actual = document["project"]["id"]
+    if actual.casefold() not in {item.casefold() for item in identities if isinstance(item, str)}:
+        raise ProjectModelError("Mission brief belongs to another project")
+    if expected_digest is not None and digest != expected_digest:
+        raise ProjectModelError("Mission brief digest changed")
+    purpose = document["project"].get("purpose")
+    known = (isinstance(purpose, str) and bool(purpose.strip()) and len(purpose) <= 4096
+             and re.match(r"^unknown(?:\s*:|\s*$)", purpose.strip(), re.IGNORECASE) is None)
+    return {"project_id": project_id, "brief_project_id": actual, "brief_digest": digest,
+            "pointer": "/project/purpose", "state": "KNOWN" if known else "UNKNOWN",
+            "confirmation": "UNVERIFIED", "text": purpose if known else None}
+
+
 def render_project_brief_markdown(text: str, document: Mapping[str, Any], *, root: Path | None = None) -> str:
     current, _ = parse_project_brief_markdown(text, root=root)
     replacement = dict(document)
@@ -1262,8 +1281,9 @@ def _replace_compact_brief(path: Path, original: bytes, full: bytes) -> dict[str
                      if isinstance(item.get(key), str) and item[key].strip()), "Untitled record")
 
     # Human index only; no shortened field is parsed as current authority.
-    lines = [f"# {document['project']['id']}", "", "## Current outcome", "",
-             str(document["objective"].get("current", document["project"].get("purpose", ""))), ""]
+    lines = [f"# {document['project']['id']}", "", "## Mission", "",
+             str(document["project"].get("purpose") or "UNKNOWN"), "", "## Current outcome", "",
+             str(document["objective"].get("current") or "UNKNOWN"), ""]
     for heading, field in (("Milestones", "milestones"), ("Work", "tasks"), ("Risks and blockers", "risks_blockers")):
         lines += [f"## {heading}", ""]
         for item in document.get(field, []):

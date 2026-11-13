@@ -2,7 +2,7 @@
 name: swarm
 description: Use SWARM for Codex project work, including planning, building, debugging, review, and multi-agent coordination. Preserve the assigned task role and explicit user opt-outs.
 ---
-<!-- generated from skills/swarm/SKILL.md sha256:11ad3d10938e9cf6; edit the source, not this file -->
+<!-- generated from skills/swarm/SKILL.md sha256:c1cb5a1f75a1aade; edit the source, not this file -->
 
 # 🐙 SWARM
 
@@ -13,7 +13,7 @@ Codex-native multi-agent workflow. Load a reference only when its trigger applie
 - **Custody.** User titles, pins, order, archive state and exceptions win. The runtime grants no host mutation; verify each host action by readback.
 - **Models.** Keep every user-selected model, tier and reasoning level. Change one only when asked; report a blocker instead of substituting.
 - **Smallest path.** Reuse owners, components and skills. Make the smallest change, test what changed, and bring results or one decision.
-- **Obligations.** Dispatch, ACK, silence and terminal status are activity. Keep every delegated duty until its readable result is collected; collection is not verification or acceptance.
+- **Obligations.** Collect delegated results; dispatch, silence and terminal status are not collection or acceptance. Without verified durable resume, wait while independent work continues or report the exact blocker.
 - **Proof.** Name what each proof exercised; fixtures prove only themselves and claim classes never promote one another. Unexercised claims stay `UNVERIFIED`. Only an artifact-bound `ACCEPT` enters independent review; CTRL never manufactures acceptance.
 - **State.** The runtime and Ledger hold canonical state. At stable boundaries record SHA, dirty custody, proof and next action. Never absorb unrelated dirty work; recover a failed write only at its exact target.
 - **Authorized actions.** Carry explicit grants; use ordinary calls, read back, report. For Codex-chat sends: [task-contract.md](references/task-contract.md#codex-chat-authority). Missing capability or readback stays `UNVERIFIED`.

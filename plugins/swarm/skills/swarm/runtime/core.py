@@ -122,10 +122,10 @@ ROTATION_STEPS = ("ACK", "TITLE", "PIN", "UNPIN", "ARCHIVE")
 
 @dataclass(frozen=True)
 class RotationReadback:
-    """Fresh host readback for one explicitly authorized CTRL rotation.
+    """Caller-supplied observations for one proposed CTRL rotation.
 
-    ``None`` means the host did not expose that readback. ``baseline_pinned`` is the
-    complete pinned list read before the first step and retained by the caller.
+    ``None`` means no readback was supplied. The runtime does not authenticate
+    these fields or grant host mutation authority.
     """
     predecessor_id: str
     successor_id: str
@@ -143,27 +143,21 @@ class RotationReadback:
 
 @dataclass(frozen=True)
 class RotationStep:
-    status: str  # NEXT, COMPLETE, BLOCKED, UNVERIFIED
+    status: str  # NEXT, PRESERVED, BLOCKED, UNVERIFIED
     step: str
     reason: str
     reorder_to: tuple[str, ...] = ()
 
 
 def rotation_next_step(read: RotationReadback) -> RotationStep:
-    """Return the next idempotent rotation step from current state; never mutate the host.
-
-    An explicit rotate authorizes, for the exact predecessor only: successor ACK and
-    title, the successor taking the predecessor's pinned slot (every other pinned item
-    keeps its relative order), then predecessor unpin and archive. A completed step
-    is recognized from readback and skipped, so a partial transition resumes.
-    """
+    """Classify claimed rotation state without mutating the host or verifying it."""
     pred, succ = read.predecessor_id, read.successor_id
     if not read.authorized or not pred or not succ or pred == succ:
         return RotationStep("BLOCKED", "ACK", "explicit rotate authority for one exact predecessor and successor is required")
     if pred not in read.baseline_pinned or succ in read.baseline_pinned:
         return RotationStep("BLOCKED", "PIN", "baseline must show the pinned predecessor and an unpinned successor")
     if not read.successor_ack:
-        return RotationStep("NEXT", "ACK", "successor must acknowledge project, goal, owners, model and pending duties")
+        return RotationStep("NEXT", "ACK", "successor must acknowledge project, Mission reference, goal, owners, model, pending duties and applicable user-grant source and scope")
     if read.successor_title is None:
         return RotationStep("UNVERIFIED", "TITLE", "host exposes no title readback")
     if read.successor_title != read.expected_title:
@@ -171,12 +165,16 @@ def rotation_next_step(read: RotationReadback) -> RotationStep:
             return RotationStep("UNVERIFIED", "TITLE", "host title capability is unavailable")
         return RotationStep("NEXT", "TITLE", "set and read back the successor title")
     if read.predecessor_archived:
+        if read.user_keep_pinned:
+            return RotationStep("BLOCKED", "ARCHIVE", "predecessor is archived despite the user's keep-pinned exception")
+        if read.predecessor_in_flight:
+            return RotationStep("BLOCKED", "ARCHIVE", "archived predecessor retains an unresolved lease or unread result")
         if read.pinned is None:
             return RotationStep("UNVERIFIED", "ARCHIVE", "host exposes no pinned readback")
         expected = tuple(succ if item == pred else item for item in read.baseline_pinned)
         if read.pinned != expected:
             return RotationStep("BLOCKED", "PIN", "archived predecessor left an unexpected pinned order")
-        return RotationStep("COMPLETE", "ARCHIVE", "successor holds the predecessor slot; predecessor archived")
+        return RotationStep("UNVERIFIED", "ARCHIVE", "archive, successor custody, automation and fresh host readback require a host verifier")
     if read.pinned is None:
         return RotationStep("UNVERIFIED", "PIN", "host exposes no pinned readback")
     others = tuple(item for item in read.baseline_pinned if item != pred)
@@ -191,7 +189,7 @@ def rotation_next_step(read: RotationReadback) -> RotationStep:
                 return RotationStep("UNVERIFIED", "PIN", "host pin or reorder capability is unavailable")
             return RotationStep("NEXT", "PIN", "pin the successor, then reorder with the complete list", target)
         if read.user_keep_pinned:
-            return RotationStep("COMPLETE", "UNPIN", "user keep-pinned exception: predecessor left pinned and unarchived")
+            return RotationStep("PRESERVED", "UNPIN", "user keep-pinned exception: predecessor left pinned and unarchived")
         if read.predecessor_in_flight:
             return RotationStep("BLOCKED", "UNPIN", "predecessor retains an unresolved in-flight lease")
         if "unpin" not in read.capabilities:
@@ -1374,9 +1372,28 @@ INTAKE_QUESTIONS:tuple[str,...]=(
 _GRAPH_AGENT_TYPES=frozenset({"CTRL","LEAD","DOER"})
 
 @dataclass(frozen=True)
+class MissionReference:
+    """A project-bound pointer to stated purpose, not proof of user confirmation."""
+    project_id:str; brief_digest:str; state:str; pointer:str="/project/purpose"
+    def __post_init__(self):
+        if not isinstance(self.project_id,str) or not self.project_id.strip() or any(c in self.project_id for c in "\r\n\t"):
+            raise InvariantError("Mission reference requires a project identity")
+        if not isinstance(self.brief_digest,str) or not self.brief_digest.startswith("sha256:") or _require_digest(self.brief_digest[7:],"Mission brief")!=self.brief_digest[7:]:
+            raise InvariantError("Mission reference requires the exact canonical brief digest")
+        if self.state not in {"KNOWN","UNKNOWN"} or self.pointer!="/project/purpose":
+            raise InvariantError("Mission reference requires a known state and canonical purpose pointer")
+
+def _check_mission_scope(mission:MissionReference|None, project_id:str, brief_digest:str) -> None:
+    if not isinstance(project_id,str) or not isinstance(brief_digest,str):
+        raise InvariantError("Mission scope requires string project and brief identities")
+    if mission is not None and (not isinstance(mission,MissionReference) or mission.project_id!=project_id or mission.brief_digest!=brief_digest):
+        raise InvariantError("Mission reference does not match the bound project and brief")
+
+@dataclass(frozen=True)
 class TaskIntake:
     """The mandatory user-intent and efficiency answers captured before routing."""
     goal:str; efficiency_strategy:str; domain:str="general"; questions_asked:tuple[str,...]=INTAKE_QUESTIONS; work_size:WorkSize=WorkSize.SMALL
+    mission:MissionReference|None=None; project_id:str=""; brief_digest:str=""
     def __post_init__(self):
         if not isinstance(self.goal,str) or not self.goal.strip() or not isinstance(self.efficiency_strategy,str) or not self.efficiency_strategy.strip():
             raise InvariantError("task intake requires a goal and an efficiency strategy")
@@ -1385,6 +1402,7 @@ class TaskIntake:
         if not isinstance(self.work_size,WorkSize): raise InvariantError("intake work size must be typed")
         if self.questions_asked!=INTAKE_QUESTIONS:
             raise InvariantError("task intake must ask the goal and efficiency questions before routing")
+        _check_mission_scope(self.mission,self.project_id,self.brief_digest)
         object.__setattr__(self,"domain",self.domain.strip().casefold())
 
 @dataclass(frozen=True)
@@ -1477,10 +1495,10 @@ def select_graph(intake:TaskIntake, *, profile:GraphProfile|None=None)->GraphSel
         rationale="Use the shallowest general graph that satisfies the objective; expand to a visible LEAD lane only when ownership, dependency, resumption, or acceptance evidence requires it."
     return GraphSelection(selected,intake.goal,intake.efficiency_strategy,nodes,rationale)
 
-def prepare_task_intake(*, goal:str, efficiency_strategy:str, domain:str="general", use_goals:bool=True, goal_id:str="", profile:GraphProfile|None=None, work_size:WorkSize=WorkSize.SMALL)->IntakePlan:
+def prepare_task_intake(*, goal:str, efficiency_strategy:str, domain:str="general", use_goals:bool=True, goal_id:str="", profile:GraphProfile|None=None, work_size:WorkSize=WorkSize.SMALL, mission:MissionReference|None=None, project_id:str="", brief_digest:str="")->IntakePlan:
     """Capture mandatory intake, select the evidence-backed graph, and apply goal policy."""
     if not isinstance(use_goals,bool): raise InvariantError("use_goals must be a boolean")
-    intake=TaskIntake(goal,efficiency_strategy,domain,work_size=work_size)
+    intake=TaskIntake(goal,efficiency_strategy,domain,work_size=work_size,mission=mission,project_id=project_id,brief_digest=brief_digest)
     graph=select_graph(intake,profile=profile)
     if not isinstance(goal_id,str): raise InvariantError("goal_id must be a string")
     return IntakePlan(intake,graph,use_goals,"create_or_continue" if use_goals else "disabled",goal_id.strip())
@@ -1532,18 +1550,22 @@ class HiveRecord:
 @dataclass(frozen=True)
 class ContextPackage:
     goal:str; architecture:dict[str,int]; dependencies:tuple[str,...]; artifacts:tuple[str,...]; acceptance:tuple[str,...]; history:tuple[str,...]; transfer_cost:int; hive:tuple[str,...]=()
+    mission:MissionReference|None=None; project_id:str=""; brief_digest:str=""
+    def __post_init__(self):
+        _check_mission_scope(self.mission,self.project_id,self.brief_digest)
     @classmethod
-    def build(cls, *, goal:str, architecture:dict[str,int], dependencies:list[VersionedReference|str], artifacts:list[VersionedReference|str], acceptance:list[str], history:list[VersionedReference|str], budget:int, hive:list[HiveRecord]|None=None) -> "ContextPackage":
+    def build(cls, *, goal:str, architecture:dict[str,int], dependencies:list[VersionedReference|str], artifacts:list[VersionedReference|str], acceptance:list[str], history:list[VersionedReference|str], budget:int, hive:list[HiveRecord]|None=None, mission:MissionReference|None=None, project_id:str="", brief_digest:str="") -> "ContextPackage":
         if budget < 1: raise InvariantError("context budget must be positive")
+        _check_mission_scope(mission,project_id,brief_digest)
         current=lambda item: not isinstance(item,VersionedReference) or architecture.get(item.name,item.version)==item.version
         dependencies=[item for item in dependencies if current(item)]; artifacts=[item for item in artifacts if current(item)]; history=[item for item in history if current(item)]
         render=lambda item: f"{item.name}:v{item.version}" if isinstance(item,VersionedReference) else item
         dependencies=[render(item) for item in dependencies]; artifacts=[render(item) for item in artifacts]; history=[render(item) for item in history]
         hive=[record.id for record in (hive or []) if record.current_for(architecture)]
-        spine=[goal,*acceptance]; optional=[*dependencies,*artifacts,*hive,*history]
+        spine=[goal,*acceptance,*([mission] if mission is not None else [])]; optional=[*dependencies,*artifacts,*hive,*history]
         if len(spine)>budget: raise InvariantError("budget cannot admit canonical spine")
         kept=optional[:max(0,budget-len(spine))]
-        return cls(goal,architecture,tuple(x for x in dependencies if x in kept),tuple(x for x in artifacts if x in kept),tuple(acceptance),tuple(x for x in history if x in kept),len(spine)+len(architecture)+len(kept),tuple(x for x in hive if x in kept))
+        return cls(goal,architecture,tuple(x for x in dependencies if x in kept),tuple(x for x in artifacts if x in kept),tuple(acceptance),tuple(x for x in history if x in kept),len(spine)+len(architecture)+len(kept),tuple(x for x in hive if x in kept),mission,project_id,brief_digest)
 
 class Depth(StrEnum):
     ATOMIC="CTRL_DOER"; WORKSTREAM="CTRL_LEAD_DOER"; PROJECT="CTRL_SPECIALIST_LEADS_DOERS"
@@ -2156,6 +2178,7 @@ class Swarm:
     def reconcile_task_handoffs(self) -> tuple[str,...]:
         ledger=self._task_handoff_ledger(); reconciled=[]
         for current in ledger.project_task_handoffs()["records"]:
+            if current.get("handoff_type")=="CTRL_ROTATION": continue
             task=self.tasks.get(current["task_id"])
             if task is None: continue
             old=self.workers.get(current["old_owner"]); new=self.workers.get(current["new_owner"]) if current["new_owner"] else None
@@ -2192,9 +2215,9 @@ class Swarm:
         from .automation import archive_request_decision
         return archive_request_decision(self.automation_mode, checkpoint, facts, now_ms=now_ms)
 
-    def plan_task_intake(self, *, goal:str, efficiency_strategy:str, domain:str="general", goal_id:str="", profile:GraphProfile|None=None, work_size:WorkSize=WorkSize.SMALL)->IntakePlan:
+    def plan_task_intake(self, *, goal:str, efficiency_strategy:str, domain:str="general", goal_id:str="", profile:GraphProfile|None=None, work_size:WorkSize=WorkSize.SMALL, mission:MissionReference|None=None, project_id:str="", brief_digest:str="")->IntakePlan:
         """Return the typed intake and graph plan under this runtime's goal policy."""
-        return prepare_task_intake(goal=goal,efficiency_strategy=efficiency_strategy,domain=domain,use_goals=self.use_goals,goal_id=goal_id,profile=profile,work_size=work_size)
+        return prepare_task_intake(goal=goal,efficiency_strategy=efficiency_strategy,domain=domain,use_goals=self.use_goals,goal_id=goal_id,profile=profile,work_size=work_size,mission=mission,project_id=project_id,brief_digest=brief_digest)
 
     def plan_proof(self, inputs:ProofInputs) -> ProofPlan:
         reach=inputs.dependency_reach if self.proof_impacted_selection else replace(inputs.dependency_reach,known=False)
@@ -2947,7 +2970,7 @@ class Swarm:
     def package_context(self, actor:Role, worker_id:str, package:ContextPackage) -> None:
         self._role(actor,{Role.LEAD}); worker=self.workers[worker_id]
         hive=package.hive if self.hive_enabled else ()
-        worker.context={"goal":package.goal,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"hive":hive,"transfer_cost":package.transfer_cost-len(package.hive)+len(hive),"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}
+        worker.context={"goal":package.goal,"mission":package.mission,"project_id":package.project_id,"brief_digest":package.brief_digest,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"hive":hive,"transfer_cost":package.transfer_cost-len(package.hive)+len(hive),"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}
     def remember(self, actor:Role, record:HiveRecord, now:int, *, incident_ledger:IncidentLedger|None=None, accepted_task_id:str="") -> str|None:
         self._role(actor,{Role.SPECIALIST,Role.ARCHITECT,Role.LEAD,Role.DOER})
         if not self.hive_enabled: return None
