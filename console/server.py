@@ -3294,6 +3294,15 @@ class ConsoleStore:
         result["attention"] = None
         if reservation is not None:
             result["attention"] = {"kind": "IN_FLIGHT_OUTCOME_UNVERIFIED", "reason": "reconcile the retained host thread and turn before any new dispatch", "recovery_authority": ctrl_id}
+            with self._lock, closing(self._connect()) as connection:
+                issue_row = connection.execute(
+                    "SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_RECONCILE' AND identity = ?",
+                    (f"native-send-issue:{reservation.reservation_id}",),
+                ).fetchone()
+            if issue_row is not None:
+                issue = json.loads(str(issue_row["payload_json"]))
+                if (issue.get("ctrl_id"), issue.get("project_id"), issue.get("reservation_id")) == (ctrl_id, project_id, reservation.reservation_id):
+                    result["attention"]["native_send_issue"] = issue.get("native_send_issue")
         elif result["last_disposition"] in {"WAIT_USER", "TERMINAL_BLOCKED"}:
             result["attention"] = {"kind": result["last_disposition"], "reason": result["release_condition"], "recovery_authority": result["responsible_authority"]}
         result["claim_limit"] = "Auto host completion is not material progress, proof, review, or acceptance."
@@ -3565,10 +3574,10 @@ class ConsoleStore:
                     "SELECT event_kind, payload_json FROM execution_event_receipts "
                     "WHERE event_kind IN ('AUTO_OUTCOME', 'AUTO_RECONCILE') ORDER BY retained_at_ms DESC"
                 ).fetchall()
-            # A local lane-failure trace is not a host read and cannot shadow host evidence.
+            # Local lane and send diagnostics are not host reads and cannot shadow host evidence.
             latest_host_read = next(
                 (payload for row in rows if (payload := json.loads(str(row["payload_json"]))).get("reservation_id") == reservation_id
-                 and payload.get("reason") != AUTO_LANE_FAILURE),
+                 and payload.get("reason") not in {AUTO_LANE_FAILURE, "NATIVE_SEND_RESPONSE_UNCERTAIN"}),
                 None,
             )
             bridge = latest_host_read.get("bridge") if isinstance(latest_host_read, dict) and isinstance(latest_host_read.get("bridge"), dict) else {}
@@ -12643,8 +12652,17 @@ class App:
                 self.store.retain_auto_host_ids(reservation_id, result.thread_id, result.turn_id,
                     bool(result.turn_id) or result.attention == "APP_TASK_DELIVERY_UNCERTAIN", now_ms=int(time.time() * 1000))
         if result.status not in {"RESULT", "REPLAY"} or not result.turn_id:
-            return {"dispatched": False, "reason": result.attention or "NATIVE_OUTCOME_PENDING",
-                    "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "work_completed": False}
+            if result.native_send_issue is not None:
+                issue = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
+                         "reservation_id": reservation_id, "reason": "NATIVE_SEND_RESPONSE_UNCERTAIN",
+                         "native_send_issue": dict(result.native_send_issue), "material_progress": False}
+                self.store.retain_auto_control("AUTO_RECONCILE", f"native-send-issue:{reservation_id}", issue,
+                    now_ms=int(time.time() * 1000))
+            pending = {"dispatched": False, "reason": result.attention or "NATIVE_OUTCOME_PENDING",
+                       "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "work_completed": False}
+            if result.native_send_issue is not None:
+                pending["native_send_issue"] = dict(result.native_send_issue)
+            return pending
         try:
             observed = transport.observe_turn(result.thread_id, result.turn_id)
         except Exception:

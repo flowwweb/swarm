@@ -16,7 +16,7 @@ Codex-native multi-agent workflow. Load a reference only when its trigger applie
 - **Obligations.** Dispatch, ACK, silence and terminal status are activity. Keep every delegated duty until its readable result is collected; collection is not verification or acceptance.
 - **Proof.** Name what each proof exercised; fixtures prove only themselves and claim classes never promote one another. Unexercised claims stay `UNVERIFIED`. Only an artifact-bound `ACCEPT` enters independent review; CTRL never manufactures acceptance.
 - **State.** The runtime and Ledger hold canonical state. At stable boundaries record SHA, dirty custody, proof and next action. Never absorb unrelated dirty work; recover a failed write only at its exact target.
-- **Authorized actions.** Read state, act, read back, then report the result or the exact blocker, without ceremony. Missing capability or readback stays `UNVERIFIED`.
+- **Authorized actions.** Carry explicit grants; use ordinary calls, read back, report. For Codex-chat sends: [task-contract.md](references/task-contract.md#codex-chat-authority). Missing capability or readback stays `UNVERIFIED`.
 
 ## Load when
 

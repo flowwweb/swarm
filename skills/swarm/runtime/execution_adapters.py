@@ -373,6 +373,32 @@ class CodexAppTaskTransport(Protocol):
     def verify_observation(self, observation: HQAppTaskObservation, envelope: HQCommandEnvelope) -> bool: ...
 
 
+class _NativeSendOutcomeUncertain(Exception):
+    """A native send returned an error or an unrecognized acknowledgement."""
+
+    def __init__(self, kind: str, reason: str) -> None:
+        super().__init__(reason)
+        self.issue = {"action": "send_message_to_thread", "kind": kind, "reason": reason}
+
+
+def _safe_native_send_reason(detail: object) -> str:
+    """Return only a complete, predefined generic host message."""
+    redacted = "Host tool error details redacted"
+    if not isinstance(detail, str) or len(detail) > 160:
+        return redacted
+    safe_reasons = frozenset({
+        "approval required", "approval required by policy", "approval required by workspace policy",
+        "approval is required by workspace policy", "approval required under workspace policy",
+        "approval required by organization policy", "approval required by host policy",
+        "approval policy is never", "permission denied", "permission denied by workspace policy",
+        "blocked by policy", "blocked by workspace policy", "request rejected by workspace policy",
+        "automatic approval review rejected the action: blocked by policy",
+        "error: approval required by workspace policy", "not blocked by policy",
+    })
+    normalized = detail.lower()
+    return normalized if normalized in safe_reasons else redacted
+
+
 class NativeCodexAppTaskTransport:
     """Capture one native tool exchange; the injected host owns all tool access.
 
@@ -422,7 +448,27 @@ class NativeCodexAppTaskTransport:
         return read["turns"][0]["id"], read["thread"]["cwd"], self.clock_ms()
 
     def send_message_to_thread(self, *, thread_id: str, prompt: str) -> object:
-        return self.request("send_message_to_thread", {"threadId": thread_id, "prompt": prompt})
+        raw = self.request("send_message_to_thread", {"threadId": thread_id, "prompt": prompt})
+        if isinstance(raw, Mapping) and raw.get("isError") is True:
+            content = raw.get("content")
+            item = content[0] if isinstance(content, list) and len(content) == 1 else None
+            detail = item.get("text") if isinstance(item, Mapping) and item.get("type") == "text" else None
+            # Host output may contain private prompts or credentials. Only complete,
+            # predefined generic messages are returned, without a text hash.
+            raise _NativeSendOutcomeUncertain("TOOL_ERROR", _safe_native_send_reason(detail))
+        body = raw
+        if isinstance(raw, Mapping) and "isError" in raw and type(raw["isError"]) is not bool:
+            body = None
+        elif isinstance(raw, Mapping) and "content" in raw:
+            content = raw["content"]
+            item = content[0] if isinstance(content, list) and len(content) == 1 else None
+            try:
+                body = json.loads(item["text"]) if isinstance(item, Mapping) and item.get("type") == "text" else None
+            except (KeyError, TypeError, ValueError):
+                body = None
+        if not isinstance(body, Mapping) or body.get("threadId") != thread_id:
+            raise _NativeSendOutcomeUncertain("UNRECOGNIZED_RESPONSE", "Native send response was unrecognized")
+        return raw  # An acknowledgement is not evidence of delivery.
 
     def observe_command(self, envelope: HQCommandEnvelope, *, previous_turn_id: str = "") -> HQAppTaskObservation | None:
         self._observation = None
@@ -512,6 +558,7 @@ class HQConnectorResult:
     observed_root_digest: str = ""
     local_plan: Mapping[str, str] | None = None
     attention: str = ""
+    native_send_issue: Mapping[str, str] | None = None
 
 
 class UniversalHQConnector:
@@ -898,6 +945,9 @@ class UniversalHQConnector:
                 # Omit model/thinking; the app preserves the existing task settings.
                 self.adapter.task_transport.send_message_to_thread(
                     thread_id=envelope.target_thread_id, prompt=material.instruction)
+            except _NativeSendOutcomeUncertain as exc:
+                return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
+                    attention="APP_TASK_DELIVERY_UNCERTAIN", native_send_issue=exc.issue)
             except Exception:
                 return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
                                          attention="APP_TASK_DELIVERY_UNCERTAIN")

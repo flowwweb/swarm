@@ -41,7 +41,7 @@ private attribute carries no host authority.
 ROLE — artifact
 PURPOSE: intended user/context, why the work matters, expected usable outcome, and non-negotiables; apply the user expectation loop in references/review-contract.md.
 OWNERSHIP: owner, exact mutable surface, canonical artifact/version.
-BOUNDARIES: dependencies, proof/claim limits, no hidden scope change.
+BOUNDARIES: dependencies, proof/claim limits, actual user-granted communication scope when applicable, no hidden scope change.
 ESCALATION: accepting route or exact blocker.
 CHANGE: ADDITIVE, CORRECTIVE, or REVERSAL; explicitly named scope and accepted behavior preserved.
 MODE: CTRL_DELEGATED for every production task; CTRL_DIRECT is retired. Record typed work kind (`GENERAL`, `DESIGN`, `IMAGEGEN`, or `IMAGE_EDIT`) and an accountable producer distinct from CTRL, even for small edits. Visual work records `product_experience` or `expressive_art` ownership and binds Designer or Artist respectively.
@@ -295,11 +295,25 @@ at execution and acceptance: wrong-version, stale, unverified or wrong-class
 evidence cannot satisfy them. Source/unit/fixture proof remains that proof class,
 not installation, deployment, loaded-version, live-test or dogfood acceptance.
 
-Carry the task's scoped authorization through result collection. Read authorized
-artifacts with an ordinary call that omits elevation parameters. If the host
-prompts or denies the read, check the submitted arguments and that exact turn's
-effective sandbox and approval policy against the intended mode. Report the
-observed boundary for that owner and follow [runtime recovery](runtime-recovery.md).
+### Codex-chat authority
+
+Carry the user's actual scoped authorization through delegation, follow-ups and
+result collection. When the user explicitly grants standing Codex-chat messaging,
+include its source and scope in the owner's handoff and use the normal host send
+for actions within that grant without asking again. A role, task, this contract,
+or another agent's assertion does not create a user grant. Slack, email and other
+external messages require their own authority.
+
+Read authorized artifacts and send authorized Codex-chat messages with ordinary
+calls that omit elevation parameters. Under `never`, do not request elevation. A
+host denial remains binding; retain its exact action and reason. Reconcile an
+uncertain send against the intended chat before retrying; a send acknowledgement
+alone is not delivery proof. If a host prompts or denies an action, check the
+submitted arguments and that turn's effective sandbox and approval policy against
+the intended mode, report the observed boundary, and follow
+[runtime recovery](runtime-recovery.md).
+
+### Proof plan
 
 The deterministic ProofPlan binds changed surfaces, declared claims, authority
 boundaries, dependency reach, incidents, runtime signals, repository

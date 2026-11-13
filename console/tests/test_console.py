@@ -330,6 +330,10 @@ class SwarmConsoleTests(unittest.TestCase):
         app.store.retain_auto_control("AUTO_RECONCILE", "independent-host-absence",
             {"ctrl_id": "root", "project_id": "project:alpha", "reservation_id": lease,
              "failure_kind": "TURN_UNREACHABLE", "turn_started": True, "reachable": False}, now_ms=int(time.time() * 1000))
+        app.store.retain_auto_control("AUTO_RECONCILE", f"native-send-issue:{lease}",
+            {"ctrl_id": "root", "project_id": "project:alpha", "reservation_id": lease,
+             "reason": "NATIVE_SEND_RESPONSE_UNCERTAIN", "native_send_issue": {"kind": "TOOL_ERROR"}},
+            now_ms=int(time.time() * 1000) + 1)
         with closing(sqlite3.connect(self.database)) as db:
             db.execute("UPDATE threads SET archived=1 WHERE id='root'"); db.commit()
         time.sleep(0.002)
@@ -12083,6 +12087,49 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(len([c for c in retained.values() if c["receipts"][0]["action"] == "AUTO"]),5)
         self.assertEqual(restarted.evaluate_auto_once()["reason"], "REPLAY")
         self.assertEqual(len(host["sent"]),5)
+
+    def _assert_configured_auto_redacts_native_tool_error(self, secret, private_fragment):
+        app, host, ledger, authority, transport, _ = self._configured_auto_case(terminal=False)
+        request = transport.request
+        def returned_error(method, params):
+            result = request(method, params)
+            if method == "send_message_to_thread":
+                return {"isError": True, "content": [{"type": "text", "text": secret}]}
+            return result
+        transport.request = returned_error
+        first = app.evaluate_auto_once()
+        self.assertEqual((first["dispatched"], first["reason"]), (False, "APP_TASK_DELIVERY_UNCERTAIN"))
+        self.assertEqual(first["native_send_issue"], {"action": "send_message_to_thread", "kind": "TOOL_ERROR",
+            "reason": "Host tool error details redacted"})
+        self.assertTrue(first["state"]["in_flight"])
+        self.assertEqual(first["state"]["attention"]["native_send_issue"], first["native_send_issue"])
+        self.assertNotIn(secret, repr(first))
+        self.assertNotIn(secret, repr(ledger.replay()["connector_receipts"]))
+        native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+        status = restarted.auto_status("root", "project:alpha")
+        self.assertEqual(status["attention"]["native_send_issue"], first["native_send_issue"])
+        self.assertNotIn(secret, repr(status))
+        with closing(restarted.store._connect()) as db:
+            rows = db.execute("SELECT payload_json FROM execution_event_receipts WHERE identity LIKE 'native-send-issue:%'").fetchall()
+        visible = repr(first) + repr(status) + repr([row[0] for row in rows])
+        self.assertNotIn(secret, visible)
+        self.assertNotIn(private_fragment, visible)
+        if secret == "PIN: 1234":
+            self.assertFalse(any(hashlib.sha256(f"PIN: {pin:04d}".encode()).hexdigest() in visible for pin in range(10000)))
+        self.assertEqual(restarted.evaluate_auto_once()["reason"], "IN_FLIGHT")
+        self.assertEqual(len(host["sent"]), 1)
+
+    def test_configured_auto_surfaces_safe_native_tool_error_and_reconciles_without_resend(self):
+        self._assert_configured_auto_redacts_native_tool_error("PIN: 1234", "PIN: 1234")
+
+    def test_configured_auto_redacts_private_policy_word_suffix(self):
+        self._assert_configured_auto_redacts_native_tool_error(
+            "approval required by workspace policy: never approve", "never approve")
+
+    def test_configured_auto_redacts_negated_policy_message(self):
+        self._assert_configured_auto_redacts_native_tool_error(
+            "approval required: no, policy does not apply", "no, policy does not apply")
 
     def test_configured_auto_restart_without_transient_material_or_expired_grant_then_fresh_step(self):
         app, host, ledger, authority, transport, recipe = self._configured_auto_case(terminal=False, uncertain=True)

@@ -699,11 +699,18 @@ class ExecutionAdapterTests(unittest.TestCase):
         from pathlib import Path
         tools = NativeTaskTools(uncertain=True)
         envelope, _, connector = self.native_task_connector(tools)
+        text = ("The user explicitly granted standing Codex-chat messaging for delegation, "
+                "follow-ups and result collection. Slack and email have separate authority.")
+        material = HQDispatchMaterial("C:/work/project-a", text.encode("utf-8"))
+        envelope = replace(envelope, payload_digest=material.digest)
+        connector.material_resolver = FakeHQMaterialResolver(material)
         with tempfile.TemporaryDirectory() as directory:
             ledger = Ledger(Path(directory))
             result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
                 observed_project_id="project-a", observed_root_digest="a" * 64)
             self.assertEqual(result.status, "PENDING")
+            self.assertEqual(tools.prompt, text)
+            self.assertNotIn(text, repr(ledger.replay()["connector_receipts"]))
             self.assertEqual([r["status"] for r in ledger.replay()["connector_receipts"]["app-key"]["receipts"]],
                              ["COMMAND", "ACKNOWLEDGED"])
             _, _, restarted = self.native_task_connector(tools)
@@ -717,6 +724,138 @@ class ExecutionAdapterTests(unittest.TestCase):
             self.assertEqual((replay.status, replay.turn_id), ("REPLAY", "turn-after"))
             self.assertEqual(sum(m == "send_message_to_thread" for m, _ in tools.calls), 1)
             self.assertEqual(restarted.material_resolver.calls, [])
+
+    def test_native_returned_tool_error_is_reported_safely_and_reconciled_without_resend(self):
+        import tempfile
+        from pathlib import Path
+
+        for applied, detail, reason in (
+            (False, "blocked by policy", "blocked by policy"),
+            (False, "approval required by workspace policy", "approval required by workspace policy"),
+            (False, "Automatic approval review rejected the action: blocked by policy",
+             "automatic approval review rejected the action: blocked by policy"),
+            (False, "Error: approval required by workspace policy", "error: approval required by workspace policy"),
+            (False, "not blocked by policy", "not blocked by policy"),
+            (True, "PIN: 1234", "Host tool error details redacted"),
+            (True, "approval required by workspace policy: PIN: 1234", "Host tool error details redacted"),
+            (True, "Error: approval required by workspace policy: PIN: 1234", "Host tool error details redacted"),
+            (True, "approval required by workspace policy\nPrivate message from Alice", "Host tool error details redacted"),
+            (True, "approval required for user Alice by workspace policy", "Host tool error details redacted"),
+            (True, "approval required by workspace policy: never approve", "Host tool error details redacted"),
+            (True, "approval required: no, policy does not apply", "Host tool error details redacted"),
+        ):
+            with self.subTest(applied=applied), tempfile.TemporaryDirectory() as directory:
+                tools = NativeTaskTools()
+                request = tools.request
+                def returned_error(method, params):
+                    if method == "send_message_to_thread":
+                        if applied:
+                            request(method, params)  # An error response does not prove non-delivery.
+                        else:
+                            tools.calls.append((method, dict(params)))
+                        return {"isError": True, "content": [{"type": "text", "text": detail}]}
+                    return request(method, params)
+                tools.request = returned_error
+                envelope, material, connector = self.native_task_connector(tools)
+                ledger = Ledger(Path(directory))
+                result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual((result.status, result.attention), ("PENDING", "APP_TASK_DELIVERY_UNCERTAIN"))
+                self.assertEqual(result.native_send_issue, {"action": "send_message_to_thread", "kind": "TOOL_ERROR",
+                    "reason": reason})
+                retained = ledger.replay()["connector_receipts"]["app-key"]["receipts"]
+                self.assertEqual([r["status"] for r in retained], ["COMMAND", "ACKNOWLEDGED"])
+                self.assertNotIn(detail, repr(retained))
+                self.assertNotIn(material.instruction, repr(result))
+                if reason != detail.lower():
+                    self.assertNotIn(detail, repr(result))
+                self.assertNotIn("PIN: 1234", repr(result))
+                self.assertNotIn("Alice", repr(result))
+                self.assertNotIn("never approve", repr(result))
+                if detail == "PIN: 1234":
+                    visible = repr(result) + repr(retained)
+                    self.assertFalse(any(sha256(f"PIN: {pin:04d}".encode()).hexdigest() in visible for pin in range(10000)))
+                _, _, restarted = self.native_task_connector(tools)
+                restarted.material_resolver = UnavailableHQMaterialResolver()
+                result = restarted.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=100,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(result.status, "RESULT" if applied else "PENDING")
+                self.assertEqual(sum(method == "send_message_to_thread" for method, _ in tools.calls), 1)
+
+    def test_native_send_success_and_unknown_response_require_observation(self):
+        import tempfile
+        from pathlib import Path
+
+        cases = (
+            ({"content": [{"type": "text", "text": '{"threadId":"thread-1"}'}], "isError": False}, True),
+            (None, False),
+            ({"isError": "true", "threadId": "thread-1"}, False),
+            ({"content": [], "isError": False}, False),
+            ({"content": [{"type": "text", "text": "not json"}], "isError": False}, False),
+            ({"threadId": "other"}, False),
+        )
+        for response, success in cases:
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as directory:
+                tools = NativeTaskTools()
+                request = tools.request
+                def return_response(method, params):
+                    result = request(method, params)
+                    return response if method == "send_message_to_thread" else result
+                tools.request = return_response
+                envelope, _, connector = self.native_task_connector(tools)
+                ledger = Ledger(Path(directory))
+                result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a" * 64)
+                if success:
+                    self.assertEqual((result.status, result.turn_id), ("RESULT", "turn-after"))
+                    self.assertIsNone(result.native_send_issue)
+                else:
+                    self.assertEqual((result.status, result.attention), ("PENDING", "APP_TASK_DELIVERY_UNCERTAIN"))
+                    self.assertEqual(result.native_send_issue, {"action": "send_message_to_thread",
+                        "kind": "UNRECOGNIZED_RESPONSE", "reason": "Native send response was unrecognized"})
+                    _, _, restarted = self.native_task_connector(tools)
+                    restarted.material_resolver = UnavailableHQMaterialResolver()
+                    result = restarted.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=100,
+                        observed_project_id="project-a", observed_root_digest="a" * 64)
+                    self.assertEqual((result.status, result.turn_id), ("RESULT", "turn-after"))
+                self.assertEqual(sum(method == "send_message_to_thread" for method, _ in tools.calls), 1)
+
+    def test_user_chat_scope_does_not_bypass_host_authorization_or_a_denial(self):
+        import tempfile
+        from pathlib import Path
+
+        text = ("The user explicitly granted standing Codex-chat messaging for delegation "
+                "and result collection.")
+        for failure in ("host-verifier", "host-send"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                tools = NativeTaskTools()
+                original_request = tools.request
+                if failure == "host-send":
+                    def request(method, params):
+                        if method == "send_message_to_thread":
+                            tools.calls.append((method, dict(params)))
+                            raise PermissionError("host rejected the send")
+                        return original_request(method, params)
+                    tools.request = request
+                envelope, _, connector = self.native_task_connector(tools)
+                material = HQDispatchMaterial("C:/work/project-a", text.encode("utf-8"))
+                envelope = replace(envelope, payload_digest=material.digest)
+                connector.material_resolver = FakeHQMaterialResolver(material)
+                ledger = Ledger(Path(directory))
+                if failure == "host-verifier":
+                    connector.authorization_verifier = FakeHQAuthorizationVerifier(False)
+                    with self.assertRaises(InvariantError):
+                        connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                            observed_project_id="project-a", observed_root_digest="a" * 64)
+                    self.assertFalse(any(method == "send_message_to_thread" for method, _ in tools.calls))
+                else:
+                    result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2,
+                        observed_project_id="project-a", observed_root_digest="a" * 64)
+                    self.assertEqual((result.status, result.attention), ("PENDING", "APP_TASK_DELIVERY_UNCERTAIN"))
+                    result = connector.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=100,
+                        observed_project_id="project-a", observed_root_digest="a" * 64)
+                    self.assertEqual(result.status, "PENDING")
+                    self.assertEqual(sum(method == "send_message_to_thread" for method, _ in tools.calls), 1)
 
     def test_native_capture_busy_wrong_root_expiry_and_disabled_never_send(self):
         import tempfile
