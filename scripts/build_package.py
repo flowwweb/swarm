@@ -50,6 +50,9 @@ PACKAGING_IGNORED_FILE_NAMES = frozenset({".DS_Store", ".coverage", ".env", "Thu
 PACKAGING_IGNORED_SUFFIXES = frozenset({".log", ".pyc", ".pyo", ".sqlite", ".sqlite3"})
 DEVELOPMENT_ONLY_PATHS = frozenset(
     {
+        # Retained source provenance, excluded from the public package until artwork custody resolves.
+        "skills/swarm/assets/ui/brand/supporters/nemo-horizontal-canonical-on-dark.svg",
+        "skills/swarm/assets/ui/brand/supporters/helm-lockup-white.svg",
         "console/package-lock.json",
         "console/package.json",
         "docs/friction-audit.md",
@@ -60,10 +63,73 @@ DEVELOPMENT_ONLY_PATHS = frozenset(
         "scripts/select_ci_scope.py",
         "scripts/optimize_images.py",
         "scripts/test_optimize_images.py",
+        # Generated review copy of the shipped compact entry; never shipped itself.
+        "skills/swarm/swarm.min.md",
     }
 )
+# Human-edited instruction source -> generated compact copy. Packages and the
+# plugin mirror ship the compact text under the native entry filename.
+COMPACT_ENTRIES = {"skills/swarm/SKILL.md": "skills/swarm/swarm.min.md"}
+COMPACT_WORD_CAP = 420
+_COMPACT_BLOCK = re.compile(r"^<!-- compact -->\n(.*?)\n<!-- /compact -->$", re.S | re.M)
+_MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+
+
+def compact_entry(source: bytes, source_name: str) -> bytes:
+    """Frontmatter plus the source's marked `<!-- compact -->` blocks, bound to the source digest."""
+    text = source.decode("utf-8").replace("\r\n", "\n")
+    frontmatter = ""
+    if text.startswith("---\n"):
+        end = text.index("\n---\n", 4) + 5
+        frontmatter, text = text[:end], text[end:]
+    blocks = [block.strip("\n") for block in _COMPACT_BLOCK.findall(text)]
+    if not blocks:
+        raise ValueError(f"instruction source has no compact blocks: {source_name}")
+    digest = hashlib.sha256(source.replace(b"\r\n", b"\n")).hexdigest()[:16]
+    header = f"<!-- generated from {source_name} sha256:{digest}; edit the source, not this file -->"
+    return (frontmatter + header + "\n\n" + "\n\n".join(blocks) + "\n").encode("utf-8")
+
+
+def runtime_file_bytes(name: str, payload: bytes) -> bytes:
+    """Historical source and already-compiled installs contain no compact directives."""
+    if name in COMPACT_ENTRIES and b"<!-- compact -->" in payload:
+        compiled = compact_entry(payload, name)
+        if compact_word_count(compiled) > COMPACT_WORD_CAP:
+            raise ValueError(f"{name}: generated entry exceeds {COMPACT_WORD_CAP} words")
+        return compiled
+    return payload
+
+
+def compact_word_count(payload: bytes) -> int:
+    """Words = Unicode-whitespace-separated tokens of the full UTF-8 Markdown, frontmatter included."""
+    return len(payload.decode("utf-8").split())
+
+
+def _heading_slugs(text: str) -> set[str]:
+    slugs = set()
+    for line in text.splitlines():
+        if line.startswith("#"):
+            title = line.lstrip("#").strip().lower()
+            slugs.add(re.sub(r"\s", "-", re.sub(r"[^\w\s-]", "", title)))
+    return slugs
+
+
+def compact_link_errors(payload: bytes, base: Path) -> list[str]:
+    """Relative links and anchors in a compact entry must resolve from the entry's directory."""
+    errors = []
+    for target in _MARKDOWN_LINK.findall(payload.decode("utf-8")):
+        if re.match(r"^[a-z][a-z0-9+.-]*:", target):
+            continue
+        path, _, anchor = target.partition("#")
+        resolved = base / PurePosixPath(path) if path else None
+        if resolved is None or not resolved.is_file():
+            errors.append(f"missing link target: {target}")
+        elif anchor and anchor not in _heading_slugs(resolved.read_text(encoding="utf-8")):
+            errors.append(f"missing link anchor: {target}")
+    return errors
 DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
     {
+        ".codex/swarm",
         ".github",
         "console/node_modules",
         "console/tests",
@@ -221,6 +287,14 @@ def _desktop_dependency_pins(read_bytes: Callable[[str], bytes]) -> dict[str, st
             if module == "swarm_desktop.py":
                 declared["skills/swarm/scripts/swarm_mcp.py"] = ast.literal_eval(values["MCP_SHA256"])
             if module == "swarm_mcp.py":
+                if "SUPPORTER_LOGOS" in values:
+                    logos = ast.literal_eval(values["SUPPORTER_LOGOS"])
+                    if not isinstance(logos, dict) or not logos:
+                        raise ValueError("invalid supporter logo pins")
+                    for name, digest in logos.items():
+                        if not isinstance(name, str) or Path(name).name != name:
+                            raise ValueError("invalid supporter logo path")
+                        declared["skills/swarm/assets/ui/brand/supporters/" + name] = digest
                 sdk = values["HQ_SDK_PATH"]
                 if not (isinstance(sdk, ast.BinOp) and isinstance(sdk.op, ast.Div)
                         and isinstance(sdk.left, ast.Name) and sdk.left.id == "SWARM_SKILL_ROOT"):
@@ -380,8 +454,14 @@ def canonical_worktree_bytes(root: Path, archive_name: str, payload: bytes) -> b
     archive_name = normalise_relative_path(archive_name)
     expected = _git_hash_object(root, payload, archive_name=archive_name)
     candidates = (payload, payload.replace(b"\r\n", b"\n"))
+    algorithm = {40: "sha1", 64: "sha256"}.get(len(expected))
+    if algorithm is None:
+        raise ValueError("unsupported Git object hash")
     for candidate in dict.fromkeys(candidates):
-        if _git_hash_object(root, candidate) == expected:
+        digest = hashlib.new(algorithm)
+        digest.update(f"blob {len(candidate)}\0".encode("ascii"))
+        digest.update(candidate)
+        if digest.hexdigest() == expected:
             return candidate
     raise ValueError(
         f"configured clean filter cannot be materialized safely for: {archive_name}"
@@ -473,6 +553,7 @@ def _capture_snapshot(root: Path, commit: str, tree: str) -> GitSnapshot:
         if object_type != "blob" or mode not in {"100644", "100755"}:
             raise ValueError(f"unsupported tracked source entry: {archive_name} ({mode} {object_type})")
         blob = _git_bytes(root, "cat-file", "blob", object_id)
+        blob = runtime_file_bytes(archive_name, blob)
         blob_ids[archive_name] = object_id
         blobs[archive_name] = blob
         files[archive_name] = hashlib.sha256(blob).hexdigest()
@@ -629,12 +710,53 @@ def _build_snapshot_bytes(snapshot: GitSnapshot) -> tuple[bytes, dict[str, objec
     return payload.getvalue(), metadata
 
 
+def _build_claude_snapshot_bytes(snapshot: GitSnapshot) -> tuple[bytes, dict[str, object]]:
+    """Package the Claude entrypoint and the same snapshot's canonical runtime."""
+    import io
+
+    host_prefix = "hosts/claude/"
+    selected = {
+        name[len(host_prefix):] if name.startswith(host_prefix) else name: blob
+        for name, blob in snapshot.blobs.items()
+        if name.startswith(host_prefix)
+        or name.startswith("skills/swarm/runtime/")
+        or name == "skills/swarm/scripts/swarm_contract.py"
+    }
+    required = {".claude-plugin/plugin.json", "skills/swarm/SKILL.md",
+                "skills/swarm/scripts/swarm_contract.py", "skills/swarm/runtime/__init__.py"}
+    if not required.issubset(selected):
+        raise ValueError("Claude package requires the canonical entrypoint and runtime")
+    validate_canonical_paths([*selected, PACKAGE_METADATA_PATH], "Claude package")
+    try:
+        manifest = json.loads(selected[".claude-plugin/plugin.json"].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("Claude manifest is invalid") from error
+    if manifest.get("name") != "swarm" or not isinstance(manifest.get("version"), str):
+        raise ValueError("Claude manifest identity is invalid")
+    files = {name: hashlib.sha256(blob).hexdigest() for name, blob in sorted(selected.items())}
+    metadata = {"schema": "swarm-claude-package-v1", "target": "claude",
+                "version": manifest["version"], "commit": snapshot.commit,
+                "tree": snapshot.tree, "files": files}
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_STORED, strict_timestamps=True) as archive:
+        for name, blob in sorted(selected.items()):
+            info = zipfile.ZipInfo(name, date_time=ZIP_TIMESTAMP)
+            info.create_system = 3
+            info.external_attr = 0o100644 << 16
+            archive.writestr(info, blob)
+        info = zipfile.ZipInfo(PACKAGE_METADATA_PATH, date_time=ZIP_TIMESTAMP)
+        info.create_system = 3
+        info.external_attr = 0o100644 << 16
+        archive.writestr(info, _metadata_bytes(metadata))
+    return payload.getvalue(), metadata
+
+
 def build_package_bytes(root: Path) -> tuple[bytes, dict[str, object]]:
     """Build deterministic ZIP bytes from one validated immutable Git snapshot."""
     return _build_snapshot_bytes(release_identity(root))
 
 
-def write_package(root: Path, output: Path, verify_repeat: bool = False, *, commit: str | None = None, tree: str | None = None) -> tuple[str, int]:
+def write_package(root: Path, output: Path, verify_repeat: bool = False, *, commit: str | None = None, tree: str | None = None, target: str = "codex") -> tuple[str, int]:
     root = root.resolve()
     output = output.resolve()
     try:
@@ -647,9 +769,12 @@ def write_package(root: Path, output: Path, verify_repeat: bool = False, *, comm
     if (commit is None) != (tree is None):
         raise ValueError("commit and tree must be supplied together")
     snapshot = release_identity(root) if commit is None else immutable_release_identity(root, commit, tree)
-    first, metadata = _build_snapshot_bytes(snapshot)
+    if target not in {"codex", "claude"}:
+        raise ValueError("unsupported package target")
+    build = _build_snapshot_bytes if target == "codex" else _build_claude_snapshot_bytes
+    first, metadata = build(snapshot)
     if verify_repeat:
-        second, _ = _build_snapshot_bytes(snapshot)
+        second, _ = build(snapshot)
         if first != second:
             raise ValueError("repeated package build was not byte-identical")
     output.write_bytes(first)
@@ -667,9 +792,10 @@ def main() -> int:
     parser.add_argument("--verify-repeat", action="store_true", help="build twice and require identical ZIP bytes")
     parser.add_argument("--commit", help="full immutable commit ID; requires --tree")
     parser.add_argument("--tree", help="full expected tree ID; requires --commit")
+    parser.add_argument("--target", choices=("codex", "claude"), default="codex")
     args = parser.parse_args()
     try:
-        checksum, count = write_package(args.source, args.output, args.verify_repeat, commit=args.commit, tree=args.tree)
+        checksum, count = write_package(args.source, args.output, args.verify_repeat, commit=args.commit, tree=args.tree, target=args.target)
     except ValueError as error:
         parser.error(str(error))
     print(f"built {args.output.resolve()} ({count} files, sha256 {checksum})")

@@ -11,6 +11,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InternalApprovalFallbackContractTests(unittest.TestCase):
+    def test_codex_chat_authority_requires_a_user_grant_and_carries_its_scope(self) -> None:
+        entry = " ".join((ROOT / "SKILL.md").read_text(encoding="utf-8").split())
+        contract = " ".join((ROOT / "references" / "task-contract.md").read_text(encoding="utf-8").split())
+        self.assertIn("Carry explicit grants", entry)
+        self.assertIn("For Codex-chat sends: [task-contract.md](references/task-contract.md#codex-chat-authority)", entry)
+        self.assertIn("user explicitly grants standing Codex-chat messaging", contract)
+        self.assertIn("through delegation, follow-ups and result collection", contract)
+        self.assertIn("for actions within that grant without asking again", contract)
+        self.assertIn("Under `never`, do not request elevation", contract)
+        self.assertIn("include its source and scope in the owner's handoff", contract)
+        self.assertIn("another agent's assertion does not create a user grant", contract)
+        self.assertIn("Slack, email and other external messages require their own authority", contract)
+        self.assertIn("Reconcile an uncertain send against the intended chat before retrying", contract)
+        self.assertIn("a send acknowledgement alone is not delivery proof", contract)
+
+        payload = json.loads((ROOT / "evals" / "evals.json").read_text(encoding="utf-8"))
+        granted, missing = (next(item for item in payload["evals"] if item["id"] == number)
+                            for number in (97, 98))
+        self.assertIn("explicitly grants standing permission", granted["prompt"])
+        self.assertIn("no such grant", missing["prompt"])
+        self.assertIn("actual policy denial", missing["prompt"])
+        self.assertIn("Slack update was not authorized", granted["prompt"])
+
     def test_local_access_requests_once_and_pending_approval_waits(self) -> None:
         skill = "\n".join((ROOT / name).read_text(encoding="utf-8") for name in ("SKILL.md", "references/hierarchy.md"))
         hierarchy = (ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
@@ -18,13 +41,25 @@ class InternalApprovalFallbackContractTests(unittest.TestCase):
         hierarchy = " ".join(hierarchy.split())
         recovery = " ".join(recovery.split())
 
-        self.assertRegex(skill, r"(?is)ordinary\s+local access failure.*requests supported sandbox or access\s+approval once.*Pending approval\s+waits")
+        self.assertRegex(skill, r"(?is)ordinary calls for authorized reads.*effective policy.*only where the effective policy supports an approval request.*request it once.*Pending approval\s+waits")
         self.assertIn("before host-gate fallback or blocker classification", hierarchy)
         self.assertIn("Pending approval waits; it is not failed capacity or route exhaustion", hierarchy)
         self.assertIn("Pending approval waits; do not cancel the request, repeat it, count waiting as route exhaustion, or report a terminal blocker", recovery)
         self.assertIn("Once access is approved, retry the exact action", recovery)
         self.assertIn("Reconcile interrupted turns and uncertain writes before retrying", recovery)
         self.assertNotIn("Never ask the user to approve an internal helper", recovery)
+
+    def test_routine_bookkeeping_recovers_one_shared_boundary_without_replaying_events(self) -> None:
+        recovery = " ".join((ROOT / "references" / "runtime-recovery.md").read_text(encoding="utf-8").split())
+        self.assertIn("Start already-authorized routine bookkeeping with an ordinary call and no elevation parameter", recovery)
+        self.assertIn("Reconcile any saved events before retrying and preserve existing task/project binding", recovery)
+        self.assertIn("Under `never`, do not request elevation", recovery)
+        self.assertIn("resolve a shared access boundary once instead of requesting approval for each file or frame", recovery)
+        self.assertIn("a different tool must not bypass a denial", recovery)
+        payload = json.loads((ROOT / "evals" / "evals.json").read_text(encoding="utf-8"))
+        case = next(item for item in payload["evals"] if item["id"] == 99)
+        self.assertIn("approval policy is not visible", case["prompt"])
+        self.assertIn("before any retry or duplicate write", " ".join(case["assertions"]))
 
     def test_host_gate_fallback_preserves_the_delegated_producer(self) -> None:
         recovery = " ".join((ROOT / "references" / "runtime-recovery.md").read_text(encoding="utf-8").split())

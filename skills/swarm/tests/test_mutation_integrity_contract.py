@@ -4,8 +4,10 @@ from pathlib import Path
 
 class MutationIntegrityContractTests(unittest.TestCase):
     def test_failed_writes_keep_recovery_exact_and_non_destructive(self):
-        skill = (Path(__file__).parents[1] / "SKILL.md").read_text(encoding="utf-8")
-        self.assertRegex(skill, r"(?is)failed, timed-out, or non-atomic writes? as untrusted.*exact target.*diff scope.*preserve pre-existing.*verified baseline/backup.*smaller patches.*never broadly roll back")
+        root = (Path(__file__).parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        self.assertRegex(root, r"(?s)recover a failed write only at its exact target")
+        skill = (Path(__file__).parents[1] / "references" / "task-contract.md").read_text(encoding="utf-8")
+        self.assertRegex(" ".join(skill.split()), r"(?is)failed, timed-out, or non-atomic writes? as untrusted.*exact target.*diff scope.*preserve pre-existing.*verified baseline/backup.*smaller patches.*never broadly roll back")
 
     def test_user_action_precedence_requires_host_owned_mutation_receipts(self):
         root = Path(__file__).parents[1]
@@ -21,36 +23,44 @@ class MutationIntegrityContractTests(unittest.TestCase):
 
     def test_step_zero_and_lifecycle_scope_configured_pinning(self):
         root = Path(__file__).parents[1]
-        skill = (root / "SKILL.md").read_text(encoding="utf-8")
+        # Step 0, pins and rotation live in hierarchy.md; an explicit rotate now carries
+        # exact-predecessor unpin/archive authority (supersedes the fresh-request-only rule).
+        skill = (root / "references" / "hierarchy.md").read_text(encoding="utf-8")
         task_contract = (root / "references" / "task-contract.md").read_text(encoding="utf-8")
-        skill_step_zero = skill.split("**Step 0, never defer:**", 1)[1].split("After the Step 0 custody check", 1)[0]
+        skill_step_zero = skill.split("**Step 0, never defer:**", 1)[1].split("## Intake, steering and topology", 1)[0]
         self.assertRegex(skill_step_zero, r"(?is)Naming authority does not include pinning, unpinning, reordering, archiving")
         self.assertRegex(skill_step_zero, r"(?is)separate user authority.*plugin runtime never grants it")
         self.assertIn("Preserve existing pin and placement state", skill_step_zero)
-        self.assertIn("[SKILL.md Step 0](../SKILL.md#start)", task_contract)
-        self.assertRegex(skill, r"(?is)configured `lifecycle.pin_created_tasks = true`.*top-level CTRL only")
-        self.assertIn("whether newly created or adopted from an existing task", skill)
-        self.assertIn("newly created or adopted top-level CTRL", skill_step_zero)
-        self.assertRegex(skill, r"(?is)unpinning still needs an exact\s+current user request")
-        self.assertRegex(skill, r"(?is)Before archiving a predecessor CTRL.*verify.*pinned membership.*sections.itemKeys")
-        self.assertRegex(skill, r"(?is)plugin runtime.*independent host\s+verification.*cannot mint approval")
+        self.assertIn("[Step 0](hierarchy.md#task-naming-pins-and-rotation)", task_contract)
+        self.assertRegex(skill_step_zero, r"(?is)configured\s+`lifecycle.pin_created_tasks = true`.*top-level CTRL only")
+        self.assertIn("whether newly created or adopted from an existing task", " ".join(skill_step_zero.split()))
+        self.assertNotRegex(skill_step_zero, r"(?is)unpinning still needs an exact\s+current user request")
+        self.assertRegex(skill_step_zero, r"(?is)explicit, authorized rotate.*exact predecessor only")
+        self.assertRegex(skill_step_zero, r"(?is)user keep-pinned exception leaves the predecessor\s+pinned and unarchived")
+        self.assertRegex(skill_step_zero, r"(?is)in-flight lease on the predecessor stops")
+        self.assertRegex(skill_step_zero, r"(?is)runtime.s intent cannot mint approval.*independent host\s+verification")
         combined = "\n".join((skill, task_contract))
         for forbidden in ("AUTO_PIN", "TEMPORARY_REVIEW_PIN", "concrete ready-review handoff"):
             self.assertNotIn(forbidden, combined)
 
     def test_explicit_main_pin_requires_relative_order_readback(self):
         root = Path(__file__).parents[1]
-        skill = (root / "SKILL.md").read_text(encoding="utf-8")
-        self.assertRegex(skill, r"(?s)explicit main-task pin request.*list_threads.*before and after.*sections.itemKeys.*before pinned project folders")
-        self.assertRegex(skill, r"(?s)pinnedIndex.*mutation acknowledgement alone.*do not prove relative order")
-        self.assertIn("Preserve unrelated order and pins", skill)
-        self.assertRegex(skill, r"(?s)move_thread_to_sidebar_section.*sectionId='pinned'.*freshly read the complete pinned.*task ID list before `reorder_section`.*preserving their relative order.*complete list, never a subset")
-        self.assertRegex(skill, r"(?s)fresh pinned membership.*reorder_section.*moves tasks only, not projects.*Never unpin folders to simulate")
-        self.assertRegex(skill, r"(?s)Discovery omissions do not prove.*list_threads.*move_thread_to_sidebar_section.*actual schemas")
-        self.assertRegex(skill, r"(?s)Never invent a method or arguments.*leave placement unverified")
+        # Superseded: the global-first rule (main ahead of every other pin/folder) is removed;
+        # a rotated CTRL takes its predecessor's slot and unrelated order is preserved.
+        skill = (root / "references" / "hierarchy.md").read_text(encoding="utf-8")
+        self.assertNotIn("before pinned project folders", skill)
+        self.assertNotIn("first `sections.itemKeys` position", skill)
+        self.assertIn("There is no global-first rule", " ".join(skill.split()))
+        self.assertIn("do not treat `pinnedIndex` or an acknowledgement as order proof",
+                      " ".join(skill.split()))
+        self.assertIn("preserve unrelated order and pins", " ".join(skill.split()))
+        self.assertRegex(skill, r"(?s)move_thread_to_sidebar_section.*sectionId='pinned'.*complete freshly read pinned list, never a subset")
+        self.assertRegex(skill, r"(?s)reorder_section.*moves tasks only, not projects.*never unpin folders")
+        self.assertRegex(skill, r"(?s)Discovery omissions do not prove.*invent a method or arguments")
+        self.assertRegex(skill, r"(?s)report that boundary and leave placement `UNVERIFIED`")
         self.assertNotIn("current host may append", skill)
-        self.assertRegex(skill, r"(?s)project name only: emoji \+ project,.*exactly one space.*Never add a CTRL label, suffix or duplicate-main description.*internal structural roles unchanged")
-        for title in ("🐟 Nemo", "🧱 BLÖCKS", "⚓ Helm"):
+        self.assertRegex(skill, r"(?s)one leading emoji plus\s+the project name only, with exactly one space and no CTRL label or suffix")
+        for title in ("🐟 Aquarium", "🧱 TÖWERS", "⚓ Harbor"):
             self.assertIn(title, skill)
         self.assertNotIn("Add a short description only to distinguish", skill)
 
@@ -110,10 +120,14 @@ class MutationIntegrityContractTests(unittest.TestCase):
         self.assertIn("`O:\\`", combined)
         self.assertRegex(combined, r"(?is)large sequential artifacts.*immutable evidence.*archives.*installers.*release bundles")
         self.assertRegex(combined, r"(?is)active worktrees.*databases.*dependency trees.*random-I/O-heavy caches.*local")
-        self.assertRegex(combined, r"(?is)10 GiB.*not.*freeze gate")
+        policy = " ".join(combined.split())
+        self.assertIn("an operating reserve is distinct from an individual operation's minimum or critical safety floor", policy)
+        self.assertIn("Slow or stop only the specific unsafe operation", policy)
+        self.assertIn("constraints expire at closure; retain receipts as history, not limits on other work", policy)
+        self.assertIn("pressure alone never authorizes deletion", policy)
         self.assertRegex(combined, r"(?is)stale or rebuildable residue.*(?:incrementally|bounded\s+increments).*free space")
         self.assertRegex(combined, r"(?is)never\s+touches active or\s+growing logs.*current sessions.*databases.*dirty product work")
-        self.assertRegex(combined, r"(?is)live[-\s]+process(?:-referenced|.*paths referenced)")
+        self.assertRegex(combined, r"(?is)paths referenced\s+by a live process")
 
     def test_storage_lane_and_senior_lane_heartbeat_contracts_are_explicit(self):
         root = Path(__file__).parents[1]

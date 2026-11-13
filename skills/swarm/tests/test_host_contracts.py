@@ -57,6 +57,9 @@ class HostContractTests(unittest.TestCase):
             ).hexdigest()
             for relative in source
         }
+        canonical["skills/swarm/SKILL.md"] = hashlib.sha256(
+            (REPOSITORY_ROOT / "skills/swarm/swarm.min.md").read_bytes()
+        ).hexdigest()
         self.assertEqual(
             canonical,
             verifier.installed_file_hashes(mirror),
@@ -84,7 +87,7 @@ class HostContractTests(unittest.TestCase):
             self.assertEqual(count, len(verifier._declared_skill_file_hashes(REPOSITORY_ROOT / "skills" / "swarm")))
             self.assertEqual(
                 hashlib.sha256((installed / "SKILL.md").read_bytes()).hexdigest(),
-                hashlib.sha256((REPOSITORY_ROOT / "skills" / "swarm" / "SKILL.md").read_bytes()).hexdigest(),
+                hashlib.sha256((REPOSITORY_ROOT / "skills" / "swarm" / "swarm.min.md").read_bytes()).hexdigest(),
             )
             self.assertFalse((installed / "tests").exists())
             self.assertFalse((installed / "evals").exists())

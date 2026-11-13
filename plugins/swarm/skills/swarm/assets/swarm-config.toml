@@ -29,11 +29,15 @@ doer_choices = ["🔨", "💻", "✏️", "🎨", "📚", "📊", "🔌", "🧪"
 [task_titles]
 # New-task presentation only. Existing custom titles and pins remain user-owned.
 # Variables: {project}, {unit}, {role}, {responsibility}, {created:MMM D}.
-# Empty middle-dot segments are omitted. Dates require the retained creation date.
+# Template segments are split on • (legacy · also works); empty segments are omitted
+# and the rest are joined with the separator: " • " (default), " | ", or " / ".
+# {created:MMM D} renders the retained creation timestamp's own date, e.g. Nov 11;
+# it is never recomputed on resume.
 controller_template = "{project}"
-unit_template = "{project} · {unit} · {responsibility}"
-lead_template = "{project} · {role} · {responsibility}"
-worker_template = "{project} · {role} · {responsibility}"
+unit_template = "{project} • {unit} • {responsibility} • {created:MMM D}"
+lead_template = "{project} • {role} • {responsibility} • {created:MMM D}"
+worker_template = "{project} • {role} • {responsibility} • {created:MMM D}"
+separator = " • "
 controller_show_emoji = true
 unit_show_emoji = true
 lead_show_emoji = true
@@ -385,7 +389,8 @@ low_review_retention = 7
 high_review_retention = 30
 stale_task_archive_delay = 1
 completed_task_retention = 30
-# Pinned work is exempt until manually unpinned or, if selected, project close.
+# Pinned work is exempt from hygiene archive until unpinned by the user, by an
+# explicit rotate (exact predecessor only), or, if selected, project close.
 pinned_item_policy = "manual"
 
 [feedback]

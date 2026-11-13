@@ -6,11 +6,14 @@ from pathlib import Path
 
 SKILL = Path(__file__).resolve().parents[1] / "SKILL.md"
 REVIEW_CONTRACT = Path(__file__).resolve().parents[1] / "references" / "review-contract.md"
+# Root rules relocated to their task-triggered owners.
+ROOT_POLICY = (SKILL, *(Path(__file__).resolve().parents[1] / "references" / name
+                        for name in ("task-contract.md", "design-guide.md", "monitoring.md")))
 
 
 class VisualApprovalContractTests(unittest.TestCase):
     def test_user_defined_approval_boundary_avoids_both_false_approval_and_over_escalation(self) -> None:
-        skill = "\n".join((path.read_text(encoding="utf-8") for path in (SKILL, REVIEW_CONTRACT)))
+        skill = "\n".join((path.read_text(encoding="utf-8") for path in (*ROOT_POLICY, REVIEW_CONTRACT)))
 
         self.assertRegex(skill, r"(?is)Explicit user direction outranks.*reversible.*smallest decision")
         self.assertRegex(skill, r"(?is)reserved choice requires candidates and a wait.*never.*approval")
@@ -21,7 +24,7 @@ class VisualApprovalContractTests(unittest.TestCase):
         self.assertRegex(skill, r"(?is)taste-led generation.*clear user direction permits generation.*reserved choice requires candidates")
 
     def test_mockup_requests_require_separate_imagegen_bitmaps_unless_user_requests_composite(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
+        skill = " ".join(" ".join(path.read_text(encoding="utf-8") for path in ROOT_POLICY).split())
 
         self.assertRegex(
             skill,

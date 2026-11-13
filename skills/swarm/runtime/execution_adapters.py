@@ -6,17 +6,19 @@ host task state.
 """
 from __future__ import annotations
 
-from dataclasses import InitVar, dataclass, field
+from dataclasses import InitVar, dataclass, field, replace
 from enum import StrEnum
 from hashlib import sha256
 import json
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Mapping, Protocol
+from typing import Callable, ContextManager, Mapping, Protocol
+from xml.etree import ElementTree
 
 from .core import (
     ArtifactIdentity,
     DelegatedReceiptVerdict,
     DelegatedReturnReceipt,
+    ProofClass,
     ExecutionRoute,
     ExecutionRoutingDecision,
     InvariantError,
@@ -371,6 +373,182 @@ class CodexAppTaskTransport(Protocol):
     def verify_observation(self, observation: HQAppTaskObservation, envelope: HQCommandEnvelope) -> bool: ...
 
 
+class _NativeSendOutcomeUncertain(Exception):
+    """A native send returned an error or an unrecognized acknowledgement."""
+
+    def __init__(self, kind: str, reason: str) -> None:
+        super().__init__(reason)
+        self.issue = {"action": "send_message_to_thread", "kind": kind, "reason": reason}
+
+
+def _safe_native_send_reason(detail: object) -> str:
+    """Return only a complete, predefined generic host message."""
+    redacted = "Host tool error details redacted"
+    if not isinstance(detail, str) or len(detail) > 160:
+        return redacted
+    safe_reasons = frozenset({
+        "approval required", "approval required by policy", "approval required by workspace policy",
+        "approval is required by workspace policy", "approval required under workspace policy",
+        "approval required by organization policy", "approval required by host policy",
+        "approval policy is never", "permission denied", "permission denied by workspace policy",
+        "blocked by policy", "blocked by workspace policy", "request rejected by workspace policy",
+        "automatic approval review rejected the action: blocked by policy",
+        "error: approval required by workspace policy", "not blocked by policy",
+    })
+    normalized = detail.lower()
+    return normalized if normalized in safe_reasons else redacted
+
+
+class NativeCodexAppTaskTransport:
+    """Capture one native tool exchange; the injected host owns all tool access.
+
+    Only safe observation metadata is kept in memory. The connector retains the
+    pre-send turn in its existing ACK, so a fresh instance can reconcile without
+    recovering a prompt or sending it again. No polling or model overrides.
+    """
+
+    def __init__(self, request: Callable[[str, Mapping[str, object]], object], *, clock_ms: Callable[[], int]) -> None:
+        self.request = request
+        self.clock_ms = clock_ms
+        self._observation: HQAppTaskObservation | None = None
+
+    def _read(self, thread_id: str) -> Mapping[str, object]:
+        raw = self.request("read_thread", {"threadId": thread_id, "turnLimit": 2,
+            "includeOutputs": False, "maxOutputCharsPerItem": 65536})
+        if isinstance(raw, Mapping) and "content" in raw:
+            content = raw["content"]
+            if raw.get("isError") or not isinstance(content, list) or len(content) != 1:
+                raise InvariantError("native task read is unavailable or ambiguous")
+            item = content[0]
+            if not isinstance(item, Mapping) or item.get("type") != "text":
+                raise InvariantError("native task read requires exact structured text")
+            raw = json.loads(item["text"])
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("thread"), Mapping):
+            raise InvariantError("native task read requires a thread")
+        thread = raw["thread"]
+        if thread.get("id") != thread_id or not isinstance(thread.get("cwd"), str) or not thread["cwd"]:
+            raise InvariantError("native task read identity or cwd conflicts")
+        turns = raw.get("turns")
+        if (not isinstance(turns, list) or not turns or len(turns) > 2
+                or raw.get("page", {}).get("order") != "newest_first"
+                or any(not isinstance(turn, Mapping) or not isinstance(turn.get("id"), str)
+                       or not turn["id"] for turn in turns)
+                or len({turn["id"] for turn in turns}) != len(turns)):
+            raise InvariantError("native task read requires ordered distinct turns")
+        return raw
+
+    def prepare_command(self, envelope: HQCommandEnvelope) -> tuple[str, str, int]:
+        read = self._read(envelope.target_thread_id)
+        if read["turns"][0].get("status") == "inProgress":
+            self.request("wait_threads", {"targets": [{"threadId": envelope.target_thread_id}], "timeoutMs": 30000})
+            read = self._read(envelope.target_thread_id)
+        terminal = {"completed", "failed", "interrupted"} if envelope.action is HQCommandAction.AUTO else {"completed"}
+        if read["turns"][0].get("status") not in terminal:
+            raise InvariantError("native task has no completed pre-send turn")
+        return read["turns"][0]["id"], read["thread"]["cwd"], self.clock_ms()
+
+    def send_message_to_thread(self, *, thread_id: str, prompt: str) -> object:
+        raw = self.request("send_message_to_thread", {"threadId": thread_id, "prompt": prompt})
+        if isinstance(raw, Mapping) and raw.get("isError") is True:
+            content = raw.get("content")
+            item = content[0] if isinstance(content, list) and len(content) == 1 else None
+            detail = item.get("text") if isinstance(item, Mapping) and item.get("type") == "text" else None
+            # Host output may contain private prompts or credentials. Only complete,
+            # predefined generic messages are returned, without a text hash.
+            raise _NativeSendOutcomeUncertain("TOOL_ERROR", _safe_native_send_reason(detail))
+        body = raw
+        if isinstance(raw, Mapping) and "isError" in raw and type(raw["isError"]) is not bool:
+            body = None
+        elif isinstance(raw, Mapping) and "content" in raw:
+            content = raw["content"]
+            item = content[0] if isinstance(content, list) and len(content) == 1 else None
+            try:
+                body = json.loads(item["text"]) if isinstance(item, Mapping) and item.get("type") == "text" else None
+            except (KeyError, TypeError, ValueError):
+                body = None
+        if not isinstance(body, Mapping) or body.get("threadId") != thread_id:
+            raise _NativeSendOutcomeUncertain("UNRECOGNIZED_RESPONSE", "Native send response was unrecognized")
+        return raw  # An acknowledgement is not evidence of delivery.
+
+    def observe_command(self, envelope: HQCommandEnvelope, *, previous_turn_id: str = "") -> HQAppTaskObservation | None:
+        self._observation = None
+        if not previous_turn_id:
+            return None  # Retained COMMAND alone does not establish a pre-send floor.
+        read = self._read(envelope.target_thread_id)
+        turns = read["turns"]
+        if len(turns) != 2 or turns[1]["id"] != previous_turn_id:
+            return None
+        messages = [item for item in turns[0].get("items", [])
+                    if isinstance(item, Mapping) and item.get("type") == "userMessage"]
+        if len(messages) != 1 or not isinstance(messages[0].get("content"), list) or not messages[0]["content"]:
+            return None  # Summaries and a thread-only send response are not proof.
+        content = messages[0]["content"]
+        if any(not isinstance(part, Mapping) or part.get("type") != "text"
+               or not isinstance(part.get("text"), str) for part in content):
+            return None
+        text = "".join(part["text"] for part in content)
+        if (sha256(text.encode("utf-8")).hexdigest() != envelope.payload_digest
+                and text.startswith("<codex_delegation>")):
+            try:
+                # XML's literal-CR normalization must not change the original UTF-8 input.
+                wrapper = ElementTree.fromstring(text.replace("\r", "&#13;"))
+                if (wrapper.attrib or (wrapper.text or "").strip()
+                        or [part.tag for part in wrapper] != ["source_thread_id", "input"]
+                        or any(part.attrib or len(part) for part in wrapper)
+                        or any((part.tail or "").strip() for part in wrapper)
+                        or not wrapper[0].text or wrapper[1].text is None):
+                    return None
+                text = wrapper[1].text  # Decode once; the input hash, never the sender label, binds it.
+            except ElementTree.ParseError:
+                return None
+        if sha256(text.encode("utf-8")).hexdigest() != envelope.payload_digest:
+            return None
+        evidence = sha256(json.dumps(read, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+        self._observation = HQAppTaskObservation(evidence, envelope.digest, envelope.payload_digest,
+            envelope.target_thread_id, previous_turn_id, turns[0]["id"], read["thread"]["cwd"], self.clock_ms())
+        return self._observation
+
+    def verify_observation(self, observation: HQAppTaskObservation, envelope: HQCommandEnvelope) -> bool:
+        return observation == self._observation and observation.command_digest == envelope.digest
+
+    def observe_turn(self, thread_id: str, turn_id: str) -> Mapping[str, object] | None:
+        read = self._read(thread_id)
+        turn = next((item for item in read["turns"] if item["id"] == turn_id), None)
+        if turn is None or turn.get("status") not in {"inProgress", "completed", "failed", "interrupted"}:
+            return None
+        observation, digest = observed_result(turn.get("items"))
+        return {"thread_id": thread_id, "turn_id": turn_id, "cwd": read["thread"]["cwd"], "status": turn["status"],
+                "result_observation": observation, "result_digest": digest}
+
+
+RESULT_OBSERVATIONS = frozenset({"READABLE", "MISSING", "UNREADABLE"})
+
+
+def observed_result(items: object) -> tuple[str, str]:
+    """Digest the readable final agent text of one turn; the text itself is never retained.
+
+    Terminal status says nothing about content: a turn with no final agent text is
+    MISSING, and malformed result items are UNREADABLE.
+    """
+    if not isinstance(items, list):
+        return "UNREADABLE", ""
+    texts, malformed = [], False
+    for item in items:
+        if not isinstance(item, Mapping) or item.get("type") != "agentMessage":
+            continue
+        if item.get("phase") not in (None, "final_answer"):
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            texts.append(text)
+        elif not isinstance(text, str):
+            malformed = True
+    if texts:
+        encoded = json.dumps(texts, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        return "READABLE", sha256(encoded).hexdigest()
+    return ("UNREADABLE" if malformed else "MISSING"), ""
+
+
 @dataclass(frozen=True)
 class HQConnectorResult:
     status: str
@@ -380,16 +558,47 @@ class HQConnectorResult:
     observed_root_digest: str = ""
     local_plan: Mapping[str, str] | None = None
     attention: str = ""
+    native_send_issue: Mapping[str, str] | None = None
 
 
 class UniversalHQConnector:
-    def __init__(self, adapter: "CodexAppServerAdapter", *, authorization_verifier: HQAuthorizationVerifier, material_resolver: HQDispatchMaterialResolver, root_verifier: HQRootVerifier) -> None:
+    def __init__(self, adapter: "CodexAppServerAdapter", *, authorization_verifier: HQAuthorizationVerifier, material_resolver: HQDispatchMaterialResolver, root_verifier: HQRootVerifier, admission_guard: Callable[[], bool] | None = None, admission_scope: Callable[[], ContextManager[object]] | None = None) -> None:
         if not isinstance(adapter, CodexAppServerAdapter):
             raise InvariantError("universal connector requires the Codex adapter")
         self.adapter = adapter
         self.authorization_verifier = authorization_verifier
         self.material_resolver = material_resolver
         self.root_verifier = root_verifier
+        self.admission_guard = admission_guard
+        if admission_scope is not None and not callable(admission_scope):
+            raise InvariantError("HQ admission scope requires a local context factory")
+        self.admission_scope = admission_scope
+
+    def _reserve_command(self, ledger, command, envelope):
+        def reserve():
+            if self.admission_guard is None:
+                return ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
+            return ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision,
+                                                    _before_append=self.admission_guard)
+        if self.admission_scope is None:
+            return reserve()
+        def replay_only():
+            return ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision,
+                                                    _before_append=lambda: False)
+        retained = replay_only()
+        if retained["status"] == "REPLAY":
+            return retained
+        try:
+            # Local scope precedes the Ledger lock; no host tools run here.
+            with self.admission_scope():
+                return reserve()
+        except Exception:
+            # A competing admission may have won while scope acquisition failed.
+            # This probe can only recover exact REPLAY, never append a command.
+            retained = replay_only()
+            if retained["status"] == "REPLAY":
+                return retained
+            raise
 
     @staticmethod
     def _receipt(envelope: HQCommandEnvelope, *, receipt_id: str, index: int, status: str, observed_at_ms: int, thread_id: str | None = None, turn_id: str | None = None, observed_root_digest: str | None = None) -> dict[str, object]:
@@ -641,7 +850,12 @@ class UniversalHQConnector:
         if transport is None or not self.adapter.plan_hq(envelope).ready:
             return HQConnectorResult("PENDING", envelope.digest, attention="APP_TASK_CAPABILITY_UNAVAILABLE")
         try:
-            observation = transport.observe_command(envelope)
+            if isinstance(transport, NativeCodexAppTaskTransport):
+                observation = transport.observe_command(envelope,
+                    previous_turn_id=str(ack.get("native_pre_turn_id") or "") if ack else "")
+                now_ms = max(now_ms, transport.clock_ms())
+            else:
+                observation = transport.observe_command(envelope)
             if observation is None:
                 return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
                                          attention="APP_TASK_EVIDENCE_PENDING")
@@ -673,7 +887,7 @@ class UniversalHQConnector:
         projection = ledger.replay()
         retained = projection.get("connector_receipts", {}).get(envelope.idempotency_key)
         if retained is not None:
-            reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
+            reservation = self._reserve_command(ledger, command, envelope)
             if reservation["status"] == "REPLAY":
                 return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms, terminal_handoff=terminal_handoff)
             raise InvariantError("HQ command reservation conflicts")
@@ -690,7 +904,21 @@ class UniversalHQConnector:
         if not isinstance(material, HQDispatchMaterial) or material.digest != envelope.payload_digest:
             raise InvariantError("HQ dispatch material does not match the authorized digest")
         self._verify_cwd_root(envelope, material.cwd)
-        reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
+        native_pre = None
+        task_transport = self.adapter.task_transport
+        if isinstance(task_transport, NativeCodexAppTaskTransport) and self.adapter.plan_hq(envelope).ready:
+            try:
+                previous_turn, cwd, captured_at_ms = task_transport.prepare_command(envelope)
+                verified_root = self._verify_cwd_root(envelope, cwd)
+                if type(captured_at_ms) is not int or captured_at_ms < now_ms:
+                    raise InvariantError("native task capture clock regressed")
+                self._validate_authorization(envelope, authorization, captured_at_ms)
+                now_ms = captured_at_ms
+                native_pre = (previous_turn, verified_root)
+            except Exception:
+                return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
+                                         attention="APP_TASK_PRE_SEND_UNAVAILABLE")
+        reservation = self._reserve_command(ledger, command, envelope)
         if reservation["status"] == "REPLAY":
             return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms, terminal_handoff=terminal_handoff)
         if reservation["status"] != "APPENDED":
@@ -703,15 +931,28 @@ class UniversalHQConnector:
             ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-unsupported", index=1, status="UNSUPPORTED", observed_at_ms=now_ms))
             return HQConnectorResult("UNSUPPORTED", envelope.digest)
         if self.adapter.task_transport is not None:
+            ack = None
+            if native_pre is not None:
+                # ACK confirms the observed existing thread/root, not delivery.
+                # Keep the pre-send floor separate from the nullable result turn.
+                ack = self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1,
+                    status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=envelope.target_thread_id,
+                    observed_root_digest=native_pre[1])
+                ack["native_pre_turn_id"] = native_pre[0]
+                ledger.append_connector_receipt(ack)
             try:
                 # Only APPENDED reaches this call. Its return is NOT a turn receipt.
                 # Omit model/thinking; the app preserves the existing task settings.
                 self.adapter.task_transport.send_message_to_thread(
                     thread_id=envelope.target_thread_id, prompt=material.instruction)
+            except _NativeSendOutcomeUncertain as exc:
+                return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
+                    attention="APP_TASK_DELIVERY_UNCERTAIN", native_send_issue=exc.issue)
             except Exception:
                 return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id,
                                          attention="APP_TASK_DELIVERY_UNCERTAIN")
-            return self._observe_app_task(envelope, ledger, now_ms=now_ms, terminal_handoff=terminal_handoff)
+            return self._observe_app_task(envelope, ledger, now_ms=now_ms, ack=ack,
+                                          terminal_handoff=terminal_handoff)
         first_capability = "thread.start" if envelope.target_intent is HQTargetIntent.NEW_THREAD else "thread.resume"
         try:
             started = self.adapter.dispatch(envelope, material, first_capability, thread_id=envelope.target_thread_id)
@@ -1122,8 +1363,20 @@ class ExecutionReservation:
     project_id: str = ""
     service_tier_receipt_id: str = ""
     settings_task_id: str = ""
+    provider_model_observation: dict[str, str] | None = None
+    collecting_owner_id: str = ""
+    result_observation: str = ""
+    result_digest: str = ""
 
     def __post_init__(self) -> None:
+        if self.collecting_owner_id:
+            _text(self.collecting_owner_id, "execution collecting owner")
+        if self.result_observation and (not self.collecting_owner_id or self.result_observation not in RESULT_OBSERVATIONS):
+            raise InvariantError("result observation requires a collecting owner and a typed outcome")
+        if (self.result_observation == "READABLE") != bool(self.result_digest):
+            raise InvariantError("a readable result requires exactly one observed digest")
+        if self.result_digest:
+            self.result_digest = _digest(self.result_digest, "observed result")
         for value, label in ((self.reservation_id, "execution reservation id"), (self.task_id, "execution task id"), (self.owner_id, "execution owner id")):
             _text(value, label)
         if self.project_id:
@@ -1158,6 +1411,23 @@ class ExecutionReservation:
             self.snapshot_digest = _digest(self.snapshot_digest, "retained continuation snapshot")
         if not isinstance(self.updated_at_ms, int) or isinstance(self.updated_at_ms, bool) or self.updated_at_ms < 0:
             raise InvariantError("execution reservation requires a nonnegative update time")
+        if self.provider_model_observation is not None:
+            observation = self.provider_model_observation
+            fields = {"task_id", "artifact_digest", "thread_id", "turn_id", "material_receipt_id", "evidence_digest", "model", "provider_session_id", "source"}
+            if not isinstance(observation, dict) or set(observation) != fields:
+                raise InvariantError("provider model observation requires exact run bindings")
+            for field in fields:
+                value = observation[field]
+                if _text(value, "provider observation " + field) != value or len(value) > (128 if field == "model" else 256):
+                    raise InvariantError("provider observation fields must be exact bounded text")
+            _digest(observation["evidence_digest"], "provider observation evidence")
+            if observation["source"] != "provider_result":
+                raise InvariantError("provider model source is unsupported")
+            if (observation["task_id"] != self.task_id or observation["artifact_digest"] != self.artifact.content_address()
+                    or observation["thread_id"] != self.host_thread_id or observation["turn_id"] != self.host_turn_id
+                    or observation["material_receipt_id"] != self.material_receipt_id or not self.host_completed
+                    or not self.material_receipt_id):
+                raise InvariantError("provider model observation conflicts with retained run")
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -1189,6 +1459,10 @@ class ExecutionReservation:
             "host_turn_id": self.host_turn_id,
             "host_completed": self.host_completed,
             "material_receipt_id": self.material_receipt_id,
+            **({"collecting_owner_id": self.collecting_owner_id,
+                "result_observation": self.result_observation,
+                "result_digest": self.result_digest} if self.collecting_owner_id else {}),
+            **({"provider_model_observation": dict(self.provider_model_observation)} if self.provider_model_observation else {}),
             "failure_kind": None if self.failure_kind is None else self.failure_kind.value,
             "retry_count": self.retry_count,
             "snapshot_digest": self.snapshot_digest,
@@ -1235,6 +1509,10 @@ class ExecutionReservation:
             host_turn_id=str(payload.get("host_turn_id") or ""),
             host_completed=payload.get("host_completed", False),  # type: ignore[arg-type]
             material_receipt_id=str(payload.get("material_receipt_id") or ""),
+            collecting_owner_id=str(payload.get("collecting_owner_id") or ""),
+            result_observation=str(payload.get("result_observation") or ""),
+            result_digest=str(payload.get("result_digest") or ""),
+            provider_model_observation=payload.get("provider_model_observation"),
             failure_kind=None if failure in (None, "") else ExecutionFailureKind(str(failure)),
             retry_count=int(payload.get("retry_count") or 0),
             snapshot_digest=str(payload.get("snapshot_digest") or ""),
@@ -1309,10 +1587,11 @@ class ExecutionDispatchLedger:
         self._reservations[reservation.reservation_id] = reservation
         self._task_reservations[reservation.task_id] = reservation.reservation_id
 
-    def reserve(self, reservation_id: str, task_id: str, owner_id: str, artifact: ArtifactIdentity, *, observed_at_ms: int, project_id: str = "", settings_task_id: str = "") -> ExecutionReservation:
+    def reserve(self, reservation_id: str, task_id: str, owner_id: str, artifact: ArtifactIdentity, *, observed_at_ms: int, project_id: str = "", settings_task_id: str = "", collecting_owner_id: str = "") -> ExecutionReservation:
         if reservation_id in self._reservations or task_id in self._task_reservations:
             raise InvariantError("duplicate dispatch reservation is prohibited")
-        reservation = ExecutionReservation(reservation_id, task_id, owner_id, artifact, updated_at_ms=observed_at_ms, project_id=project_id, settings_task_id=settings_task_id)
+        reservation = ExecutionReservation(reservation_id, task_id, owner_id, artifact, updated_at_ms=observed_at_ms, project_id=project_id, settings_task_id=settings_task_id,
+            collecting_owner_id=collecting_owner_id)
         self._add_reservation(reservation)
         return reservation
 
@@ -1334,6 +1613,8 @@ class ExecutionDispatchLedger:
         reservation = self.reservation(reservation_id)
         if direct_user_keep_out:
             raise InvariantError("direct-user CTRL keep-out blocks delegated dispatch")
+        if reservation.provider_model_observation is not None:
+            raise InvariantError("observed provider result cannot be dispatched again")
         generation = self._generation_for(reservation)
         if generation is None:
             raise InvariantError("latest host execution config is unavailable; dispatch remains UNVERIFIED")
@@ -1410,6 +1691,9 @@ class ExecutionDispatchLedger:
             raise InvariantError("host observation requires a typed readable event digest")
         if event.evidence_digest in self._event_digests:
             return False
+        if ((reservation.host_thread_id and event.thread_id != reservation.host_thread_id)
+                or (reservation.host_turn_id and event.turn_id != reservation.host_turn_id)):
+            raise InvariantError("host event conflicts with retained run")
         if reservation.state is not ExecutionDispatchState.ACTIVE:
             raise InvariantError("host events require an active retained reservation")
         self._event_digests.add(event.evidence_digest)
@@ -1429,6 +1713,53 @@ class ExecutionDispatchLedger:
                 reservation.service_tier_receipt_id = served_tier.receipt_id
                 reservation.service_tier_truth = ServiceTierTruth.CONFIRMED if actual_ok else ServiceTierTruth.UNVERIFIED
         reservation.updated_at_ms = observed_at_ms
+        return True
+
+    def collection_status(self, owner_id: str) -> dict[str, object]:
+        """Every dispatched obligation owed to one collector, oldest first; nothing is dropped."""
+        pending, collected = [], 0
+        for item in sorted(self.reservations, key=lambda value: (value.updated_at_ms, value.reservation_id)):
+            if item.collecting_owner_id != owner_id or not item.request_digest:
+                continue
+            if item.result_observation == "READABLE":
+                collected += 1
+                continue
+            terminal = item.host_completed or item.failure_kind is not None
+            phase = ("AWAITING_TERMINAL" if not terminal else
+                     "TERMINAL_RESULT_MISSING" if item.result_observation == "MISSING" else
+                     "TERMINAL_RESULT_UNREADABLE" if item.result_observation == "UNREADABLE" else
+                     "TERMINAL_UNREAD")
+            pending.append({"reservation_id": item.reservation_id, "task_id": item.task_id,
+                "owner_id": item.owner_id, "thread_id": item.host_thread_id, "turn_id": item.host_turn_id,
+                "phase": phase, "terminal_status": "" if not terminal else "failed" if item.failure_kind else "completed",
+                "material_receipt_id": item.material_receipt_id})
+        unread = any(item["phase"] != "AWAITING_TERMINAL" for item in pending)
+        return {"pending": pending, "pending_count": len(pending), "collected_count": collected,
+                "yield_status": "UNREAD_RESULTS" if unread else "AWAITING_RESULTS" if pending else "CLEAR",
+                "claim_limit": "Collected means an observed readable result digest; it is not verification or acceptance. "
+                               "Terminal status and ACK are not collection."}
+
+    def collect_result(self, reservation_id: str, collecting_owner_id: str, *, observation: str,
+                       result_digest: str, observed_at_ms: int) -> bool:
+        """Retain the collector's observed result outcome for one terminal run.
+
+        READABLE requires the observed digest and never changes afterwards; MISSING or
+        UNREADABLE stay unread debt and may later upgrade to READABLE.
+        """
+        item = self.reservation(reservation_id)
+        if not item.collecting_owner_id or item.collecting_owner_id != collecting_owner_id:
+            raise InvariantError("collection requires the retained collector")
+        if observation not in RESULT_OBSERVATIONS or (observation == "READABLE") != bool(result_digest):
+            raise InvariantError("collection requires a typed observation and a digest only for a readable result")
+        digest = _digest(result_digest, "observed result") if result_digest else ""
+        if not item.request_digest or not (item.host_completed or item.failure_kind is not None):
+            raise InvariantError("collection requires a dispatched terminal run")
+        if (item.result_observation, item.result_digest) == (observation, digest):
+            return False
+        if item.result_observation == "READABLE":
+            raise InvariantError("observed result conflicts with the retained collected digest")
+        item.result_observation, item.result_digest = observation, digest
+        item.updated_at_ms = max(observed_at_ms, item.updated_at_ms)
         return True
 
     def fail_transport(self, reservation_id: str, kind: ExecutionFailureKind, *, observed_at_ms: int, http_status: int = 0, detail: str = "") -> ExecutionReservation:
@@ -1475,6 +1806,50 @@ class ExecutionDispatchLedger:
         reservation.material_receipt_id = receipt.receipt_id
         reservation.state = ExecutionDispatchState.MATERIAL_RECEIPT
         reservation.updated_at_ms = observed_at_ms
+        return reservation
+
+    def ingest_provider_result(self, reservation_id: str, result_bytes: bytes, *,
+                               thread_id: str, turn_id: str, provider_session_id: str,
+                               receipt: DelegatedReturnReceipt) -> ExecutionReservation:
+        """Read bounded result bytes for descriptive metadata; caller supplies the observed binding."""
+        reservation = self.reservation(reservation_id)
+        if not isinstance(result_bytes, bytes) or not 0 < len(result_bytes) <= 1024 * 1024:
+            raise InvariantError("provider result must be bounded bytes")
+        try:
+            result = json.loads(result_bytes)
+            usage = result["modelUsage"]
+            if result.get("is_error") is True:
+                raise ValueError("provider result reports an error")
+            if not isinstance(usage, dict) or len(usage) != 1:
+                raise ValueError("provider result must name one model")
+            model, detail = next(iter(usage.items()))
+            if not isinstance(detail, dict) or detail.get("canonicalModel") != model:
+                raise ValueError("provider result model is inconsistent")
+            if result.get("session_id") != provider_session_id:
+                raise ValueError("provider result session mismatch")
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
+            raise InvariantError("provider result cannot establish model observation") from exc
+        evidence_digest = sha256(result_bytes).hexdigest()
+        if (not isinstance(receipt, DelegatedReturnReceipt) or receipt.verdict is not DelegatedReceiptVerdict.ACCEPT
+                or receipt.receipt_id != reservation.material_receipt_id or receipt.task_id != reservation.task_id
+                or receipt.owner_id != reservation.owner_id or receipt.artifact != reservation.artifact
+                or not any(item.proof_class is ProofClass.PROVIDER and item.artifact_key == reservation.artifact.key()
+                           and item.id == "provider-result:" + provider_session_id and item.digest == evidence_digest
+                           for item in receipt.evidence)):
+            raise InvariantError("provider result requires exact accepted receipt and provider evidence")
+        return self._record_provider_model(reservation_id, {
+            "task_id": reservation.task_id, "artifact_digest": reservation.artifact.content_address(),
+            "thread_id": thread_id, "turn_id": turn_id, "material_receipt_id": receipt.receipt_id,
+            "evidence_digest": evidence_digest, "model": model,
+            "provider_session_id": provider_session_id, "source": "provider_result"})
+
+    def _record_provider_model(self, reservation_id: str, observation: dict[str, str]) -> ExecutionReservation:
+        """Retain descriptive provider output; it grants no execution or acceptance authority."""
+        reservation = self.reservation(reservation_id)
+        candidate = replace(reservation, provider_model_observation=dict(observation))
+        if reservation.provider_model_observation is not None and reservation.provider_model_observation != candidate.provider_model_observation:
+            raise InvariantError("provider model observation is immutable")
+        reservation.provider_model_observation = candidate.provider_model_observation
         return reservation
 
     def record_independent_review(self, reservation_id: str, runtime: Swarm, *, observed_at_ms: int) -> ExecutionReservation:
@@ -1579,9 +1954,10 @@ class CodexAppServerAdapter(ExecutionAdapter):
         if self.task_transport is not None:
             if not self.enabled:
                 return AdapterExecutionPlan(AdapterPlanStatus.DISABLED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="app task capability is disabled")
-            if envelope.action is not HQCommandAction.TASK or any(not callable(getattr(self.task_transport, name, None)) for name in (
+            actions = {HQCommandAction.TASK, HQCommandAction.AUTO} if isinstance(self.task_transport, NativeCodexAppTaskTransport) else {HQCommandAction.TASK}
+            if envelope.action not in actions or any(not callable(getattr(self.task_transport, name, None)) for name in (
                     "send_message_to_thread", "observe_command", "verify_observation")):
-                return AdapterExecutionPlan(AdapterPlanStatus.BLOCKED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="app task capability supports verified existing-thread TASK only")
+                return AdapterExecutionPlan(AdapterPlanStatus.BLOCKED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="app task capability requires a supported verified existing-thread action")
             return AdapterExecutionPlan(AdapterPlanStatus.READY, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), (), "codex-app-task-tool")
         if not self.enabled or self.transport is None:
             return AdapterExecutionPlan(AdapterPlanStatus.DISABLED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="Codex App Server adapter is disabled or unavailable")

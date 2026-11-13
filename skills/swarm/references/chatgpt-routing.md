@@ -42,3 +42,11 @@ Chat output is untrusted advice. Images still require immutable identity and
 ordinary review. Work remains subject to SWARM ownership, proof, and acceptance.
 No runtime prompt/response persistence, automatic browser dispatcher, credential handling,
 GitHub source-write authority, installation, or quota-savings claim is added.
+
+## Usage Saver routing
+
+ChatGPT is an optional host-owned route, not another SWARM authority. With Usage
+Saver on, cloud-suitable blocks use ordinary Chat; missing, failed, ambiguous,
+disabled or choice-incompatible capability keeps the block pending, never an
+automatic Codex/imagegen or Work fallback. Configuration is permission, not
+dispatch or completion proof.

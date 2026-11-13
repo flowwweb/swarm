@@ -45,7 +45,7 @@ class TopologyMaterializationTests(unittest.TestCase):
         return (swarm or Swarm()).topology_dispatch_preflight("ctrl", "thread-ctrl")
 
     def ctrl(self) -> LaneMaterialization:
-        return LaneMaterialization("ctrl", Role.CTRL, "Ship the SWARM release", icon="🐙")
+        return LaneMaterialization("ctrl", Role.CTRL, "Ship the SWARM release", icon="🐙", project="SWARM")
 
     def lead(self, lane_id="runtime", parent="ctrl", *, direct=False) -> LaneMaterialization:
         return LaneMaterialization(
@@ -59,6 +59,7 @@ class TopologyMaterializationTests(unittest.TestCase):
             "runtime-policy" if direct else "",
             direct_production=direct,
             durable_boundary=None if direct else SubordinateBoundaryFacts(integration_review_surface=True),
+            project="SWARM", created="2026-11-11T09:30:00+07:00",
         )
 
     def doer(self, lane_id="adapter", parent="runtime", artifact="codex-adapter", profession="developer") -> LaneMaterialization:
@@ -71,9 +72,10 @@ class TopologyMaterializationTests(unittest.TestCase):
             "💻",
             artifact_id=artifact,
             direct_production=True,
+            project="SWARM", created="2026-11-11T09:30:00+07:00",
         )
 
-    def test_one_ctrl_admin_and_profession_plus_structural_role_are_visible_in_titles(self) -> None:
+    def test_visible_lane_titles_come_from_shared_presentation_config(self) -> None:
         reviewer = LaneMaterialization(
             "review",
             Role.DOER,
@@ -84,15 +86,30 @@ class TopologyMaterializationTests(unittest.TestCase):
             artifact_id="review-receipt",
             review_target_id="adapter",
             direct_production=True,
+            project="SWARM", created="2026-11-11T09:30:00+07:00",
         )
         plan = TopologyMaterializationPlan((self.ctrl(), self.lead(), self.doer(), reviewer))
-        self.assertEqual(plan.lanes[0].title, "🐙 Ship the SWARM release")
+        # CTRL is one emoji + project only; structural roles are never display prefixes.
+        self.assertEqual(plan.lanes[0].title, "🐙 SWARM")
         self.assertIs(plan.lanes[0].structural_role, Role.CTRL)
-        self.assertEqual(LaneMaterialization("plain", Role.CTRL, "Ship release").title, "Ship release")
-        self.assertEqual(LaneMaterialization("royal", Role.CTRL, "Ship release", icon="👑").title, "👑 Ship release")
-        self.assertEqual(plan.lanes[1].title, "🏛️Architect LEAD - Runtime policy")
-        self.assertEqual(plan.lanes[2].title, "💻Dev DOER - Codex adapter")
-        self.assertEqual(plan.lanes[3].title, "🔎Reviewer DOER - Exact candidate")
+        self.assertEqual(LaneMaterialization("plain", Role.CTRL, "Ship release", project="Harbor").title, "Harbor")
+        self.assertEqual(LaneMaterialization("royal", Role.CTRL, "Ship release", icon="👑", project="Harbor").title, "👑 Harbor")
+        self.assertEqual(plan.lanes[1].title, "🏛️ SWARM • Architect • Runtime policy • Nov 11")
+        self.assertEqual(plan.lanes[2].title, "💻 SWARM • Dev • Codex adapter • Nov 11")
+        self.assertEqual(plan.lanes[3].title, "🔎 SWARM • Reviewer • Exact candidate • Nov 11")
+        for lane in plan.lanes:
+            self.assertNotRegex(lane.title, r"\b(CTRL|LEAD|DOER)\b")
+        # The configured separator and emoji toggle apply through the same owner.
+        from skills.swarm.runtime import topology
+        config = topology._presentation()
+        piped = replace(self.doer(), naming=config.merge({"task_titles": {"separator": " | "}, "role_icons": {"enabled": False}}))
+        self.assertEqual(piped.title, "SWARM | Dev | Codex adapter | Nov 11")
+        self.assertEqual(replace(self.doer(), created="2026-11-11T23:59:00-08:00").title, plan.lanes[2].title,
+                         "the date is the retained timestamp's own calendar day")
+        with self.assertRaisesRegex(InvariantError, "creation timestamp"):
+            replace(self.doer(), created="")
+        with self.assertRaisesRegex(InvariantError, "lane project"):
+            LaneMaterialization("bare", Role.CTRL, "Ship release")
         self.assertEqual(len(plan.plan_digest), 64)
         self.assertEqual(sum(lane.structural_role is Role.CTRL for lane in plan.lanes), 1)
 
@@ -108,11 +125,12 @@ class TopologyMaterializationTests(unittest.TestCase):
                 ProfessionAssignment("manager"),
                 "🧭",
                 "empty-boundary",
+                project="SWARM", created="2026-11-11T09:30:00+07:00",
             )
 
     def test_helm_style_bare_or_profession_only_titles_and_lead_roster_fail_closed(self) -> None:
         for title in ("LEAD - product", "DESIGNER", "REVIEW"):
-            with self.subTest(title=title), self.assertRaisesRegex(InvariantError, "generated icon, profession"):
+            with self.subTest(title=title), self.assertRaisesRegex(InvariantError, "generated presentation title"):
                 LaneMaterialization(
                     "product",
                     Role.DOER,
@@ -123,6 +141,7 @@ class TopologyMaterializationTests(unittest.TestCase):
                     artifact_id="product-brief",
                     direct_production=True,
                     requested_title=title,
+                    project="SWARM", created="2026-11-11T09:30:00+07:00",
                 )
         with self.assertRaisesRegex(InvariantError, "durable-boundary evidence"):
             LaneMaterialization(
@@ -133,9 +152,10 @@ class TopologyMaterializationTests(unittest.TestCase):
                 ProfessionAssignment("analyst"),
                 "📊",
                 "data.py",
+                project="SWARM", created="2026-11-11T09:30:00+07:00",
             )
         bounded = self.doer("data", parent="ctrl", artifact="data.py", profession="analyst")
-        self.assertEqual((bounded.structural_role, bounded.title), (Role.DOER, "💻Analyst DOER - Codex adapter"))
+        self.assertEqual((bounded.structural_role, bounded.title), (Role.DOER, "💻 SWARM • Analyst • Codex adapter • Nov 11"))
 
     def test_typed_durable_nested_lead_is_valid_in_the_current_ready_wave(self) -> None:
         nested = LaneMaterialization(
@@ -147,7 +167,8 @@ class TopologyMaterializationTests(unittest.TestCase):
             "📊",
             "src/data",
             durable_boundary=SubordinateBoundaryFacts(heartbeat_obligation=True, worktree_isolation=True),
-            requested_title="📊Analyst LEAD - Data boundary",
+            requested_title="📊 SWARM • Analyst • Data boundary • Nov 11",
+            project="SWARM", created="2026-11-11T09:30:00+07:00",
         )
         plan = TopologyMaterializationPlan((self.ctrl(), nested))
         packet = self.preflight().prepare(plan, ready_lane_ids=("data",))
@@ -166,6 +187,7 @@ class TopologyMaterializationTests(unittest.TestCase):
             artifact_id="review-receipt",
             review_target_id="adapter",
             direct_production=True,
+            project="SWARM", created="2026-11-11T09:30:00+07:00",
         )
         plan = TopologyMaterializationPlan((self.ctrl(), producer, reviewer))
         preflight = self.preflight()
@@ -178,7 +200,7 @@ class TopologyMaterializationTests(unittest.TestCase):
         producer = self.doer("adapter", parent="ctrl", artifact="codex-adapter")
         reviewer = LaneMaterialization(
             "review", Role.DOER, "Exact candidate", "ctrl", ProfessionAssignment("reviewer"), "🔎",
-            artifact_id="review-receipt", review_target_id="adapter", direct_production=True,
+            artifact_id="review-receipt", review_target_id="adapter", direct_production=True, project="SWARM", created="2026-11-11T09:30:00+07:00",
         )
         plan = TopologyMaterializationPlan((self.ctrl(), producer, reviewer))
         with tempfile.TemporaryDirectory() as root:
@@ -386,6 +408,7 @@ class TopologyMaterializationTests(unittest.TestCase):
                 "🔎",
                 artifact_id="receipt",
                 direct_production=True,
+                project="SWARM", created="2026-11-11T09:30:00+07:00",
             )
 
 

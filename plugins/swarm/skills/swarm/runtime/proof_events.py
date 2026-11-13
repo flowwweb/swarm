@@ -86,7 +86,7 @@ def register_proof_event(
     claim_limit: str = "Available for review; acceptance is recorded separately.",
     created_at_ms: int | None = None,
 ) -> dict[str, Any]:
-    """Copy one immutable media artifact and append one immutable event receipt."""
+    """Record an original media reference and its immutable digest receipt."""
     codex_home = Path(codex_home).expanduser().resolve()
     source_path = Path(source_path).expanduser().resolve(strict=True)
     evidence_id = _safe_id(evidence_id, "evidence_id")
@@ -104,39 +104,47 @@ def register_proof_event(
     media_type, suffix = media_signature(source_path)
     digest = _digest(source_path)
     swarm_root = codex_home / "swarm"
-    media_root = swarm_root / "proof-media"
-    event_root = swarm_root / "proof-events"
-    media_root.mkdir(parents=True, exist_ok=True)
-    event_root.mkdir(parents=True, exist_ok=True)
-    if swarm_root.resolve() != swarm_root or media_root.resolve() != media_root or event_root.resolve() != event_root:
-        raise ProofEventError("proof evidence store must not use links or junctions")
-    media_path = media_root / f"{digest}{suffix}"
-    if media_path.exists():
-        if not media_path.is_file() or media_path.stat().st_size != size_bytes or _digest(media_path) != digest:
-            raise ProofEventError("stored proof media does not match its content address")
-    else:
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(dir=media_root, prefix=".proof-", suffix=suffix, delete=False) as handle:
-                temporary = Path(handle.name)
-            shutil.copyfile(source_path, temporary)
-            if temporary.stat().st_size != size_bytes or _digest(temporary) != digest:
-                raise ProofEventError("proof media changed while it was copied")
+    if media_type.startswith("video/"):
+        media_root = swarm_root / "proof-media"
+        event_root = swarm_root / "proof-events"
+        media_root.mkdir(parents=True, exist_ok=True)
+        event_root.mkdir(parents=True, exist_ok=True)
+        if swarm_root.resolve() != swarm_root or media_root.resolve() != media_root or event_root.resolve() != event_root:
+            raise ProofEventError("proof evidence store must not use links or junctions")
+        media_path = media_root / f"{digest}{suffix}"
+        if media_path.exists():
+            if not media_path.is_file() or media_path.stat().st_size != size_bytes or _digest(media_path) != digest:
+                raise ProofEventError("stored proof media does not match its content address")
+        else:
+            temporary: Path | None = None
             try:
-                os.link(temporary, media_path)
-            except FileExistsError:
-                if not media_path.is_file() or media_path.stat().st_size != size_bytes or _digest(media_path) != digest:
-                    raise ProofEventError("stored proof media does not match its content address")
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                with tempfile.NamedTemporaryFile(dir=media_root, prefix=".proof-", suffix=suffix, delete=False) as handle:
+                    temporary = Path(handle.name)
+                shutil.copyfile(source_path, temporary)
+                if temporary.stat().st_size != size_bytes or _digest(temporary) != digest:
+                    raise ProofEventError("proof media changed while it was copied")
+                try:
+                    os.link(temporary, media_path)
+                except FileExistsError:
+                    if not media_path.is_file() or media_path.stat().st_size != size_bytes or _digest(media_path) != digest:
+                        raise ProofEventError("stored proof media does not match its content address")
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+        locator = f"proof-media/{media_path.name}"
+    else:
+        event_root = swarm_root / "proof-events"
+        event_root.mkdir(parents=True, exist_ok=True)
+        if swarm_root.resolve() != swarm_root or event_root.resolve() != event_root:
+            raise ProofEventError("proof evidence store must not use links or junctions")
+        locator = str(source_path)
     event = {
         "schema_version": 1,
         "source": "CtrlEvidence",
         "evidence_id": evidence_id,
         "task_id": task_id,
         "kind": kind,
-        "locator": f"proof-media/{media_path.name}",
+        "locator": locator,
         "caption": caption,
         "claim_limit": claim_limit,
         "digest": digest,
@@ -148,6 +156,10 @@ def register_proof_event(
     event_name = hashlib.sha256(evidence_id.encode("utf-8")).hexdigest() + ".json"
     event_path = event_root / event_name
     if event_path.exists():
+        existing = json.loads(event_path.read_text(encoding="utf-8"))
+        if isinstance(existing, dict) and str(existing.get("locator", "")).startswith("proof-media/"):
+            legacy = dict(event, locator=existing["locator"])
+            return _matching_existing_event(event_path, legacy)
         return _matching_existing_event(event_path, event)
     encoded = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     temporary = None

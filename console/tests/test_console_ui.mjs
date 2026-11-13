@@ -1364,7 +1364,7 @@ assert.match(app, /dialog\.onclose = \(\) => card\.isConnected && card\.focus/);
   const svg = {setAttribute(){}};
   sandbox.$ = id => id === '#metric-detail-dialog' ? dialog : id === '#metric-detail-title' ? title : id === '#metric-detail-content' ? content : svg;
   sandbox.$$ = () => [];
-  Object.assign(sandbox, {URLSearchParams, renderHighestUsageTasks(){},renderAccountUsage(){},renderOverviewMetric(){},tokenBurnRatePresentation:()=>({state:'UNKNOWN'}),usageHistorySeries:()=>[],usageRangeLabel:()=>'',usageRequestKey:()=> 'scope'});
+  Object.assign(sandbox, {URLSearchParams, renderHighestUsageTasks(){},renderAccountUsage(){},renderOverviewUsage(){},renderOverviewMetric(){},tokenBurnRatePresentation:()=>({state:'UNKNOWN'}),usageHistorySeries:()=>[],usageRangeLabel:()=>'',usageRequestKey:()=> 'scope'});
   Object.assign(sandbox.state,{projectId:'all',ctrlId:'',usageWindowHours:1,usageRequestGeneration:0,usageScopeKey:'scope',usageStatus:'current',usageHistory:{ok:true}});
   sandbox.accountUsageDetails=()=>sandbox.state.usageStatus==='current' ? '<p>Quota '+sandbox.state.usageHistory.quota+'</p><p>ETA supplied</p>' : '<p>UNKNOWN</p>';
   vm.runInContext(app.slice(app.indexOf('function renderUsageCharts()'),app.indexOf('function accountUsageWindows(')) + app.slice(app.indexOf('async function refreshUsageHistory()'),app.indexOf('async function refreshProjectProgress()')),sandbox);
@@ -1408,7 +1408,7 @@ assert.doesNotMatch(app.slice(app.indexOf('function renderUsageCharts()'), app.i
   assert.equal(sandbox.accountUsageWindows(now+300001).length,0);
   state.usageScopeKey='old'; assert.equal(sandbox.accountUsageWindows(now).length,0);
   assert.equal(sandbox.accountUsageGraph({history:[{sampled_at_ms:now,remaining_percent:60}]}),'');
-  assert.equal(sandbox.accountUsageGraph({history:[{sampled_at_ms:0,remaining_percent:70},{sampled_at_ms:now,remaining_percent:60}]}),'');
+  assert.equal((sandbox.accountUsageGraph({history:[{sampled_at_ms:0,remaining_percent:70},{sampled_at_ms:now,remaining_percent:60}]}).match(/<circle /g) || []).length, 2);
   let card;
   Object.assign(sandbox,{Date:class extends Date {static now(){return now;}},escapeHTML:String,
     $:()=>({setAttribute(){}}),renderOverviewMetric:(_,value)=>{card=value;}});
@@ -2491,6 +2491,7 @@ function assertConfigWriteEnvelope(payload, expected = {}) {
 function configDescriptorFixture(config = fixture.config) {
   const next = structuredClone(config);
   next.state = "KNOWN";
+  next.available = true;
   next.scope = { type: "global" };
   next.revision = "global-revision-1";
   next.write_contract = { available: true };
@@ -4122,7 +4123,7 @@ proofFeed.items.push({
     assert.deepEqual(onboardingTablet.runtimeErrors, []);
     await onboardingTabletPage.close();
 
-    const onboardingMobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const onboardingMobilePage = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
     const onboardingMobile = await mount(onboardingMobilePage, scopedFixture(), { ...overrides, keepOnboarding: true });
     await assertDialogFrame(onboardingMobilePage, "#onboarding-dialog");
     await captureOnboardingEvidence(onboardingMobilePage, "06-slide-1-mobile-390x844");
@@ -4153,8 +4154,12 @@ proofFeed.items.push({
       const body = document.querySelector("#onboarding-dialog > .onboarding-shell > .onboarding-panels");
       const controls = [...dialog.querySelectorAll("button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none" && control.getClientRects().length).map(rect);
       const configControls = [...configuration.querySelectorAll("input,select,summary,button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none" && control.getClientRects().length).map((control) => rect(control.matches('input[type="checkbox"]') ? control.closest(".settings-switch,.toggle-row") : control.matches('input[type="radio"]') ? control.closest("label") : control));
-      return { dialog: rect(dialog), primary, back, heading, controls, configControls, panel: { scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth, overflowY: getComputedStyle(panel).overflowY }, configuration: { scrollWidth: configuration.scrollWidth, clientWidth: configuration.clientWidth, overflowY: getComputedStyle(configuration).overflowY }, body: { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY }, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
+      return { dialog: rect(dialog), primary, back, heading, controls, configControls, panel: { scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth, overflowY: getComputedStyle(panel).overflowY }, configuration: { scrollWidth: configuration.scrollWidth, clientWidth: configuration.clientWidth, overflowY: getComputedStyle(configuration).overflowY }, body: { scrollTop: body.scrollTop, scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY }, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
     });
+    if (evidenceDir) {
+      fs.writeFileSync(path.join(evidenceDir, "onboarding-mobile-after-tooltip-geometry.json"), JSON.stringify({ back: mobileGeometry.back, heading: mobileGeometry.heading, body: mobileGeometry.body }, null, 2));
+      await captureOnboardingEvidence(onboardingMobilePage, "onboarding-mobile-after-tooltip");
+    }
     assert.ok(Math.abs(mobileGeometry.dialog.width - 390) <= 1 && Math.abs(mobileGeometry.dialog.height - 844) <= 1);
     assert.ok(mobileGeometry.controls.every((control) => control.width >= 44 && control.height >= 44));
     assert.ok(mobileGeometry.panel.scrollWidth <= mobileGeometry.panel.clientWidth + 1);
@@ -4172,6 +4177,36 @@ proofFeed.items.push({
     );
     assert.ok(mobileGeometry.configControls.every((control) => control.width >= 44 && control.height >= 44), JSON.stringify(mobileGeometry.configControls));
     assert.ok(mobileGeometry.documentWidth <= mobileGeometry.viewport.width);
+    const assertMobileBackUsable = async (interaction) => {
+      const observed = await onboardingMobilePage.locator("#onboarding-back").evaluate((back) => {
+        const target = back.getBoundingClientRect(), body = back.closest(".onboarding-panels").getBoundingClientRect();
+        const heading = document.querySelector("#onboarding-panel-5 h2").getBoundingClientRect();
+        const hit = document.elementFromPoint(target.left + target.width / 2, target.top + target.height / 2);
+        const separate = heading.top >= target.bottom + 8 || target.top >= heading.bottom + 8 || heading.left >= target.right + 8 || target.left >= heading.right + 8;
+        return { width: target.width, height: target.height, top: target.top, bottom: target.bottom, bodyTop: body.top, bodyBottom: body.bottom, hit: !!hit && (hit === back || back.contains(hit)), separate };
+      });
+      assert.ok(observed.width >= 44 && observed.height >= 44 && observed.top >= observed.bodyTop && observed.bottom <= observed.bodyBottom && observed.hit && observed.separate, interaction + ': ' + JSON.stringify(observed));
+    };
+    await assertMobileBackUsable("mouse help");
+    await mobileTaskLifeInfo.tap();
+    assert.equal(await onboardingMobilePage.getByRole("tooltip").isVisible(), true);
+    await mobileTaskLifeInfo.tap();
+    await assertMobileBackUsable("touch help");
+    if (evidenceDir) await captureOnboardingEvidence(onboardingMobilePage, "onboarding-mobile-after-touch-help");
+    await onboardingMobilePage.locator("#onboarding-back").tap();
+    assert.equal(await onboardingMobilePage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "3", "touch Back navigates immediately after help");
+    await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
+    assert.equal(await onboardingMobilePage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "4");
+    const mobileBack = onboardingMobilePage.locator("#onboarding-back");
+    await mobileBack.focus();
+    assert.equal(await mobileBack.evaluate((back) => {
+      const target = back.getBoundingClientRect(), viewport = back.closest(".onboarding-panels").getBoundingClientRect();
+      return document.activeElement === back && target.top >= viewport.top && target.bottom <= viewport.bottom;
+    }), true, "keyboard focus reveals the complete Back control");
+    await onboardingMobilePage.keyboard.press("Enter");
+    assert.equal(await onboardingMobilePage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "3");
+    await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
+    assert.equal(await onboardingMobilePage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "4");
     assert.equal(await onboardingMobilePage.locator("#onboarding-panel-5 .onboarding-config-advanced").count(), 0);
     assert.equal(await onboardingMobilePage.getByRole("button", { name: "Advanced settings" }).isVisible(), true);
     await onboardingMobilePage.getByRole("button", { name: "Advanced settings" }).click();
@@ -5185,6 +5220,7 @@ proofFeed.items.push({
       const box = element.getBoundingClientRect();
       return { top: Math.round(box.top), right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom), height: Math.round(box.height) };
     }), { top: 0, right: 0, bottom: 0, height: 1024 });
+    await page.waitForFunction(() => document.activeElement?.id === "message-draft");
     assert.equal(await page.evaluate(() => document.activeElement?.id), "message-draft");
     assert.deepEqual(await page.locator("#message-recipient option").allTextContents(), ["No observed conversations"]);
     assert.equal(await page.locator("#message-recipient").isDisabled(), true);

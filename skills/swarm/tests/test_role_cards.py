@@ -99,14 +99,17 @@ class RoleCardTests(unittest.TestCase):
 
     def test_global_guidance_is_composed_once_and_repo_guidance_is_scoped(self) -> None:
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        hierarchy = (SKILL_ROOT / "references/hierarchy.md").read_text(encoding="utf-8")
         cards = "\n".join(path.read_text(encoding="utf-8") for path in ROLE_ROOT.glob("*.md"))
         guidance = (REPOSITORY_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-        self.assertEqual(skill.count("Global policy is composed once"), 1)
+        # Role composition moved to hierarchy.md; the root loads only the assigned card.
+        self.assertEqual(hierarchy.count("Global policy is composed once"), 1)
+        self.assertIn("Load only your own `roles/<profession>.md` card", skill)
         self.assertNotIn("Global policy is composed once", cards)
         recovery = "references/runtime-recovery.md"
         self.assertIn(f"[runtime-recovery.md]({recovery})", skill)
         lab = "references/lab-workflow.md"
-        self.assertIn(f"[Lab workflow]({lab})", skill)
+        self.assertIn(f"[lab-workflow.md]({lab})", skill)
         lab_contract = (SKILL_ROOT / lab).read_text(encoding="utf-8")
         self.assertRegex(lab_contract, r"existing milestone, task, block,\s+artifact, decision-set, proof, and review\s+contracts")
         task_contract = (SKILL_ROOT / "references/task-contract.md").read_text(encoding="utf-8")

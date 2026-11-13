@@ -72,6 +72,26 @@ class RuntimeTests(unittest.TestCase):
   self.assertEqual(choose_depth(TopologyFacts(**{**portfolio.__dict__,"architecture_gate":True})),Depth.PROJECT)
   self.s.tasks["A"].state=TaskState.COMPLETE
   self.assertEqual(self.s.collapse(Role.CTRL,"L"),Depth.ATOMIC)
+ def test_collapse_cannot_remove_core_unit_or_ctrl(self):
+  self.s.tasks["L"]=RuntimeTask("L","L","CTRL",1,{},work_unit={"kind":"LAB"})
+  before=(set(self.s.topology),dict(self.s.leases),self.s.workers["D"].state)
+  for identity in ("L","CTRL"):
+   with self.assertRaisesRegex(InvariantError,"core CTRL or Unit"): self.s.collapse(Role.CTRL,identity)
+   self.assertEqual((self.s.topology,self.s.leases,self.s.workers["D"].state),before)
+ def test_retirement_cannot_reassign_unit_coordinator_but_allows_lower_worker(self):
+  self.s.add_worker(Role.LEAD,Worker("R","L",2))
+  self.s.tasks["A"].work_unit={"kind":"LAB"}
+  self.s.lease(Role.CTRL,"surface","D")
+  before=(self.s.tasks["A"].owner,set(self.s.workers["D"].task_ids),dict(self.s.leases))
+  with self.assertRaisesRegex(InvariantError,"core CTRL or Unit coordination"):
+   self.s.retire(Role.LEAD,"D","R")
+  self.assertEqual((self.s.tasks["A"].owner,self.s.workers["D"].task_ids,self.s.leases),before)
+  self.assertEqual(self.s.context_decision(worker_id="D",stale=True,replacement="R"),"preserve")
+  self.assertEqual((self.s.tasks["A"].owner,self.s.workers["D"].task_ids,self.s.leases),before)
+  self.s.tasks["A"].work_unit=None
+  self.s.retire(Role.LEAD,"D","R")
+  self.assertEqual(self.s.tasks["A"].owner,"R")
+  self.assertEqual(self.s.leases,{"surface":"D"})
  def test_hygiene_archives_not_deletes_and_preserves_stale_provenance(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
   self.s.workers["D"].task_ids.discard("A")
@@ -107,6 +127,15 @@ class RuntimeTests(unittest.TestCase):
  def test_bounded_context_spine(self):
   with self.assertRaises(InvariantError): ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=["a"],history=[str(i) for i in range(1000)],budget=1)
   package=ContextPackage.build(goal="g",architecture={"a":1},dependencies=["d"],artifacts=["x"],acceptance=[],history=[str(i) for i in range(1000)],budget=1); self.assertEqual(package.goal,"g"); self.assertEqual(package.history,())
+ def test_mission_remains_in_trimmed_and_transferred_context(self):
+  from runtime import MissionReference
+  digest="sha256:"+"a"*64; mission=MissionReference("project:alpha",digest,"UNKNOWN")
+  args=dict(goal="Change the UI",architecture={},dependencies=["optional"],artifacts=[],acceptance=["review"],history=["old"],mission=mission,project_id="project:alpha",brief_digest=digest)
+  with self.assertRaisesRegex(InvariantError,"canonical spine"): ContextPackage.build(**args,budget=2)
+  package=ContextPackage.build(**args,budget=3); self.assertEqual(package.dependencies,()); self.assertEqual(package.history,())
+  self.s.package_context(Role.LEAD,"D",package); context=self.s.workers["D"].context
+  self.assertEqual((context["mission"],context["goal"],context["acceptance"]),(mission,"Change the UI",("review",)))
+  with self.assertRaisesRegex(InvariantError,"does not match"): ContextPackage.build(**{**args,"project_id":"project:other"},budget=3)
  def test_context_signal_executes_retirement_and_transfer(self):
   self.s.add_worker(Role.LEAD,Worker("R","L",2)); package=ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=[],history=[],budget=1); self.s.package_context(Role.LEAD,"D",package); self.s.workers["D"].context["bloat"]=True
   self.assertEqual(self.s.context_decision(worker_id="D",replacement="R"),"retire"); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["A"].owner,"R")

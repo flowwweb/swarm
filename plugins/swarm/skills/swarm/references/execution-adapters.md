@@ -52,3 +52,42 @@ and injected transport must start, supervise, and stop App Server under the
 host's sandbox, approval, and credential policy. Enabling the adapter does not
 prove the Codex binary, model, provider, service tier, or host task API was
 available or used.
+
+## Auto lanes and result collection
+
+The console observer reconciles every admitted Auto lease in one pass. A lease
+whose scope or read fails records one metadata-only `LANE_RECONCILE_FAILED`
+trace (deduplicated while unchanged), keeps its lease, and never blocks a
+disjoint lane; retained-journal corruption still fails the whole pass closed.
+Leases carry a digest-only writer scope (root plus ancestors): equal, nested or
+unknown scopes serialize and are refused before any host grant, while a
+proven-disjoint root may dispatch in the same pass.
+
+Terminal status is not collection. On a terminal native read the observer
+records the collector's own result observation: `READABLE` with the SHA-256 of
+the final agent text (never the text), or `MISSING`/`UNREADABLE`. Every
+dispatched obligation stays in `auto_status.collection` until a readable digest
+exists; the display is bounded, the retained debt is not. Collection is not
+verification, a material receipt or acceptance, and a later material receipt
+never replaces the collected digest. Collection debt does not gate further
+dispatch.
+
+Coverage is limited to admitted native Auto dispatches. Lanes created or
+messaged through generic host tools, hidden subagents and external CLIs are not
+admitted and carry no collection duty or trace. The observer runs only while the
+console process is alive; an idle parent is not woken. A synchronous trusted
+`Stop`/`SubagentStop` `decision:block` hook is a candidate seam only: the shipped
+`Stop`/`SubagentStop` hooks are asynchronous telemetry, and host trust,
+invocation and wake behavior remain `UNVERIFIED`.
+
+The repository's normal console and MCP constructors do not inject the native
+Codex-chat transport or its authorization verifier. Native Auto and its result
+collection therefore require a host that supplies both; source tests with an
+injected fixture do not prove that any installed host does so. Agent-initiated
+chat and external CLI collection remain instruction-only.
+
+A native send error leaves delivery uncertain and must be reconciled against
+the intended chat before any retry. Unrecognized host text stays redacted.
+The existing `RELEASE_UNREACHABLE` route requires an independent retained
+unreachable-turn observation and the exact CTRL recovery authority; a send error
+alone does not establish non-delivery or authorize release.

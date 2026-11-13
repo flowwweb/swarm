@@ -44,3 +44,12 @@ current task-local need.
 Source pages are discoverable at `skills.sh/<owner>/<repo>/<skill>`. Popularity
 is discovery evidence only, never security, quality, compatibility, or install
 approval.
+
+## Skill requests
+
+Every agent may request a role skill by exact name, source/version or digest,
+purpose, scope and rollback receipt. The host owns installation; task-local scope
+is the default and persistent installation needs explicit authorization. Never
+silently install or update a skill; external or unreviewed skills fail closed,
+and no skill expands model, tool, provider, destructive, review or acceptance
+authority.

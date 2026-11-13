@@ -13,6 +13,7 @@ sys.path.insert(0, str(SKILL_ROOT))
 from runtime import (  # noqa: E402
     GraphProfile,
     InvariantError,
+    MissionReference,
     Swarm,
     TaskIntake,
     prepare_task_intake,
@@ -80,6 +81,19 @@ class IntakeGraphTests(unittest.TestCase):
             TaskIntake("", "strategy")
         with self.assertRaisesRegex(InvariantError, "goal and efficiency questions"):
             TaskIntake("goal", "strategy", questions_asked=("goal",))
+
+    def test_mission_reference_survives_intake_and_rejects_other_scope(self) -> None:
+        digest = "sha256:" + "a" * 64
+        mission = MissionReference("project:alpha", digest, "KNOWN")
+        plan = prepare_task_intake(goal="Refactor the UI", efficiency_strategy="Keep it bounded.",
+            mission=mission, project_id="project:alpha", brief_digest=digest)
+        self.assertEqual(plan.intake.mission, mission)
+        self.assertEqual(plan.intake.goal, "Refactor the UI")
+        for project_id, brief_digest in (("project:other", digest), ("project:alpha", "sha256:" + "b" * 64)):
+            with self.assertRaisesRegex(InvariantError, "does not match"):
+                prepare_task_intake(goal="Refactor", efficiency_strategy="Bound it.", mission=mission,
+                    project_id=project_id, brief_digest=brief_digest)
+        self.assertIsNone(prepare_task_intake(goal="Maintain", efficiency_strategy="Bound it.").intake.mission)
 
     def test_general_selection_stays_shallow(self) -> None:
         plan = prepare_task_intake(

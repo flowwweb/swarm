@@ -30,8 +30,8 @@ import unicodedata
 import webbrowser
 import uuid
 from collections import Counter
-from contextlib import closing, contextmanager, ExitStack
-from dataclasses import asdict
+from contextlib import closing, contextmanager, ExitStack, nullcontext
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -57,6 +57,7 @@ from runtime.progress_events import (  # noqa: E402
     PULSE_ROOT,
     ProgressLedger,
     ProgressEventError,
+    VelocityMetadataError,
     ProgressPulseEvent,
     build_role_manifest,
     build_task_manifest,
@@ -69,9 +70,11 @@ from runtime.progress_events import (  # noqa: E402
     task_creation_binding_event,
     validate_task_manifest,
     validate_progress_pulse,
+    _bound_evidence_digest,
 )
 from runtime.execution_adapters import (  # noqa: E402
     HQAuthorizationReceipt,
+    HQAutoGrant, NativeCodexAppTaskTransport,
     HQCommandEnvelope,
     HQCommandAction, HQTargetIntent, HQDispatchMaterial, HQRootObservation,
     UniversalHQConnector,
@@ -91,16 +94,23 @@ from runtime.core import (  # noqa: E402
 from runtime.incidents import IncidentLedger  # noqa: E402
 from project_model_views import (  # noqa: E402
     ProjectModelError,
+    ProjectBriefMissing,
+    ProjectBriefPathRejected,
     parse_project_brief_markdown,
+    project_mission_from_brief,
     project_schema1_views,
     validate_flow_definition,
     validate_flow_assignment,
+    flow_hive_lessons,
+    ticket_discussion,
     mutate_project_brief,
+    set_explicit_project_alias,
     mutate_project_tickets,
     allocate_project_ticket_ids,
     migrate_legacy_project_tickets,
     read_project_tickets,
     create_flow_draft,
+    _brief_update_lock,
 )
 
 INSTANCE_ID = hashlib.sha256(str(CONSOLE_ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:16]
@@ -119,6 +129,11 @@ CONSOLE_STATE_DIR_ENV = "SWARM_CONSOLE_DATA_DIR"
 CONSOLE_STATE_FILENAME = "console-state.sqlite3"
 USAGE_SAVER_TUNNEL_METADATA_KEY = "usage-saver-tunnel:v1"
 TOKEN_SAMPLE_SECONDS = 60
+COLLECTION_DISPLAY_LIMIT = 16
+AUTO_LANE_FAILURE = "LANE_RECONCILE_FAILED"
+# Retained-journal corruption stays global and fail-closed; it is never isolated as one lane's wait.
+AUTO_INTEGRITY_MARKERS = ("digest mismatch", "digest conflicts", "restore failed closed",
+                          "retained Auto packet conflicts", "retained content")
 AUTO_BRIDGE_TIMEOUT_SECONDS = 60
 AUTO_CTRL_OVERRIDE_KEY = "_auto"
 AUTO_PURPOSE = "swarm-auto-continuation"
@@ -425,6 +440,26 @@ def _require_flow_projection_budget(definitions: list, assignments: list) -> Non
 def _auto_digest(payload: Any) -> str:
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _auto_writer_scope(root: Path) -> dict[str, Any]:
+    """Digest-only writer scope: the observed root plus every ancestor, so nesting is detectable."""
+    path = Path(root)
+    return {"writer_scope": _auto_digest(_normalized_project_path(str(path))),
+            "writer_ancestors": sorted(_auto_digest(_normalized_project_path(str(parent))) for parent in path.parents)}
+
+
+def _writer_scopes_overlap(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
+    """Equal, nested or unknown scopes overlap; only proven-disjoint roots may run concurrently."""
+    def scope(value):
+        if not isinstance(value, dict) or not isinstance(value.get("writer_scope"), str):
+            return None
+        ancestors = value.get("writer_ancestors")
+        return value["writer_scope"], set(ancestors) if isinstance(ancestors, list) else None
+    a, b = scope(left), scope(right)
+    if a is None or b is None or a[1] is None or b[1] is None:
+        return True
+    return a[0] == b[0] or a[0] in b[1] or b[0] in a[1]
 
 
 def _codex_app_server_executable() -> tuple[str, str]:
@@ -1845,6 +1880,67 @@ def _media_signature(path: Path) -> str:
     raise ConsoleError("proof media signature is not allowlisted")
 
 
+def _canonical_proof_event_name(evidence_id: str) -> str:
+    return hashlib.sha256(evidence_id.encode("utf-8")).hexdigest() + ".json"
+
+
+def _canonical_proof_event_filename(event_name: str) -> str | None:
+    """Recognize canonical names using the local platform's path spelling rules."""
+    normalized = os.path.normcase(event_name)
+    return normalized if re.fullmatch(r"[0-9a-f]{64}\.json", normalized) else None
+
+
+def _same_proof_event_name(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    canonical = _canonical_proof_event_filename(left)
+    return canonical is not None and canonical == _canonical_proof_event_filename(right)
+
+
+def _proof_file_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _recheck_proof_file(path: Path, resolved: Path, original: os.stat_result) -> None:
+    current = path.resolve(strict=True)
+    if current != resolved or _proof_file_identity(current.stat()) != _proof_file_identity(original):
+        raise OSError("proof file changed during reconciliation")
+
+
+@contextmanager
+def _hold_proof_file(path: Path):
+    """On Windows, prevent writes and replacement until the receipt decision commits."""
+    if os.name != "nt":
+        yield None
+        return
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    # Existing readers can continue, but handles with write or delete access
+    # cannot coexist with this retained read handle.
+    handle = create(str(path), 0x80000000, 0x00000001, None, 3, 0x08000000, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except BaseException:
+        close(handle)
+        raise
+    try:
+        yield os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _media_metadata(
     locator: str,
     supplied_digest: str = "",
@@ -2527,6 +2623,8 @@ class ConsoleStore:
                     media_digest TEXT,
                     observed_at_ms INTEGER NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS proof_event_receipts_evidence_id
+                    ON proof_event_receipts(evidence_id);
                 CREATE TABLE IF NOT EXISTS ctrl_overrides (
                     ctrl_id TEXT PRIMARY KEY,
                     revision INTEGER NOT NULL,
@@ -2747,6 +2845,23 @@ class ConsoleStore:
             for name in ("event_digest", "task_id", "project_id", "media_digest"):
                 if name not in proof_receipt_columns:
                     connection.execute(f"ALTER TABLE proof_event_receipts ADD COLUMN {name} TEXT")
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            for table in ("proof_media", "proof_event_receipts"):
+                columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+                if "canonical_event_name" not in columns:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN canonical_event_name TEXT")
+                connection.execute(
+                    f"CREATE INDEX IF NOT EXISTS {table}_canonical_event_rowid "
+                    f"ON {table}(canonical_event_name) WHERE evidence_id != ''"
+                )
+            if os.name == "nt":
+                # A canonical Windows path has one identity across ASCII case
+                # spellings, including old unbound rejection receipts.
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS proof_event_receipts_name_nocase "
+                    "ON proof_event_receipts(event_name COLLATE NOCASE)"
+                )
             connection.execute(
                 """
                 UPDATE proof_event_receipts
@@ -2854,6 +2969,42 @@ class ConsoleStore:
                 "surface_kind='available_media' WHERE disposition IN ('AVAILABLE', 'SURFACED')"
             )
             connection.commit()
+            self._backfill_proof_canonical_names(connection)
+
+    @staticmethod
+    def _backfill_proof_canonical_names(connection: sqlite3.Connection, *, max_batches: int | None = None) -> None:
+        """Backfill existing identities in short write batches; hash before locking."""
+        for table in ("proof_media", "proof_event_receipts"):
+            high = connection.execute(f"SELECT MAX(rowid) FROM {table}").fetchone()[0]
+            if high is None:
+                continue
+            batches = 0
+            for missing in (None, ""):
+                last: int | None = None
+                while True:
+                    lower = "" if last is None else " AND rowid > ?"
+                    parameters = (missing, high) if last is None else (missing, high, last)
+                    rows = connection.execute(
+                        f"SELECT rowid, evidence_id FROM {table} INDEXED BY {table}_canonical_event_rowid "
+                        f"WHERE canonical_event_name IS ? AND evidence_id != '' AND rowid <= ?{lower} "
+                        "ORDER BY rowid LIMIT 128", parameters,
+                    ).fetchall()
+                    if not rows:
+                        break
+                    last = int(rows[-1][0])
+                    updates = [(_canonical_proof_event_name(row[1]), row[0], row[1], missing)
+                               for row in rows if isinstance(row[1], str)]
+                    if updates:
+                        connection.executemany(
+                            f"UPDATE {table} SET canonical_event_name=? WHERE rowid=? AND evidence_id=? "
+                            "AND canonical_event_name IS ?", updates,
+                        )
+                        connection.commit()
+                    batches += 1
+                    if max_batches is not None and batches >= max_batches:
+                        break
+                if max_batches is not None and batches >= max_batches:
+                    break
 
     @staticmethod
     def _execution_payload(payload: dict[str, Any]) -> tuple[str, str]:
@@ -2876,13 +3027,16 @@ class ConsoleStore:
     @staticmethod
     def _validate_execution_reservation_advance(retained: dict[str, Any], incoming: dict[str, Any]) -> None:
         """Reject stale or regressive reservation snapshots before the retained CAS write."""
-        for field in ("reservation_id", "task_id", "owner_id", "project_id", "settings_task_id"):
+        for field in ("reservation_id", "task_id", "owner_id", "project_id", "settings_task_id", "collecting_owner_id"):
             if retained.get(field, "") != incoming.get(field, ""):
                 raise ConsoleError("execution reservation conflicts with retained identity")
         retained_artifact = json.dumps(retained.get("artifact"), sort_keys=True, separators=(",", ":"))
         incoming_artifact = json.dumps(incoming.get("artifact"), sort_keys=True, separators=(",", ":"))
         if retained_artifact != incoming_artifact:
             raise ConsoleError("execution reservation conflicts with retained identity")
+        if retained.get("result_observation") == "READABLE" and (
+                incoming.get("result_observation"), incoming.get("result_digest")) != ("READABLE", retained.get("result_digest")):
+            raise ConsoleError("execution collected result cannot regress or change")
         if bool(retained.get("host_completed")) and not bool(incoming.get("host_completed")):
             next_turn = (
                 str(incoming.get("state") or "") == "active"
@@ -2906,6 +3060,9 @@ class ConsoleStore:
             "independent_review": {"independent_review", "complete"},
             "complete": {"complete"},
         }
+        old_observation = retained.get("provider_model_observation")
+        if old_observation is not None and incoming.get("provider_model_observation") != old_observation:
+            raise ConsoleError("retained provider model observation is immutable")
         retained_state = str(retained.get("state") or "")
         incoming_state = str(incoming.get("state") or "")
         if incoming_state == "independent_review":
@@ -2926,7 +3083,8 @@ class ConsoleStore:
         if incoming_state == "complete" and not bool(incoming.get("host_completed")):
             raise ConsoleError("completed execution reservation requires consumed host completion")
 
-    def persist_execution_ledger(self, ledger: ExecutionDispatchLedger, *, now_ms: int) -> None:
+    def persist_execution_ledger(self, ledger: ExecutionDispatchLedger, *, now_ms: int,
+                                 _auto_events: tuple[tuple[str, str, dict[str, Any]], ...] = ()) -> None:
         """Persist only typed queue identities/digests; raw request or tool content is never accepted."""
         if not isinstance(ledger, ExecutionDispatchLedger) or not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
             raise ConsoleError("execution ledger persistence requires typed state and nonnegative time")
@@ -3015,7 +3173,57 @@ class ConsoleStore:
                     "INSERT OR IGNORE INTO execution_event_receipts(event_digest, retained_at_ms) VALUES (?, ?)",
                     (event_digest, now_ms),
                 )
+            for kind, identity, payload in _auto_events:
+                if kind not in {"AUTO_DISPATCH", "AUTO_DECISION", "AUTO_RELEASE"}:
+                    raise ConsoleError("execution transaction has an invalid Auto receipt")
+                if kind == "AUTO_RELEASE":
+                    row = connection.execute("SELECT fields_json FROM ctrl_overrides WHERE ctrl_id = ?", (payload["ctrl_id"],)).fetchone()
+                    fields = {} if row is None else json.loads(row["fields_json"])
+                    settings = self._auto_settings(fields, ctrl_id=payload["ctrl_id"], project_id=payload["project_id"])
+                    if settings["enabled"] or payload.get("reason") != "PRE_SEND_CANCELLED":
+                        raise ConsoleConflict("Auto preparation cancellation lost its disabled scope")
+                    fields[AUTO_CTRL_OVERRIDE_KEY] = {**settings, "stop_after_turn": False}
+                    connection.execute("UPDATE ctrl_overrides SET fields_json = ?, updated_at_ms = ? WHERE ctrl_id = ?",
+                                       (json.dumps(fields, sort_keys=True), now_ms, payload["ctrl_id"]))
+                self._retain_auto_event(connection, event_kind=kind, identity=identity, payload=payload, now_ms=now_ms)
             connection.commit()
+
+    @staticmethod
+    def _collection_view(ledger: ExecutionDispatchLedger, owner_id: str) -> dict[str, Any]:
+        """Bound only the displayed list; every unread duty stays retained and counted."""
+        status = ledger.collection_status(owner_id)
+        pending = status["pending"]
+        return {**status, "pending": pending[:COLLECTION_DISPLAY_LIMIT],
+                "omitted": max(0, len(pending) - COLLECTION_DISPLAY_LIMIT)}
+
+    def ingest_execution_provider_result(self, reservation_id: str, result_bytes: bytes, *,
+                                         receipt: DelegatedReturnReceipt, provider_session_id: str,
+                                         thread_id: str, turn_id: str, now_ms: int) -> dict[str, Any]:
+        """Persist observed result metadata only after an exact accepted material handoff."""
+        if type(now_ms) is not int or now_ms < 0 or not isinstance(receipt, DelegatedReturnReceipt):
+            raise ConsoleError("provider result requires an accepted receipt and nonnegative observation time")
+        with self._lock:
+            ledger = self.load_execution_ledger()
+            reservation_id = _auto_id(reservation_id, "reservation_id")
+            try:
+                reservation = ledger.reservation(reservation_id)
+            except InvariantError as exc:
+                raise ConsoleError(str(exc)) from exc
+            if now_ms < reservation.updated_at_ms:
+                raise ConsoleConflict("provider result observation is stale")
+            before = reservation.snapshot()
+            try:
+                if not (reservation.material_receipt_id == receipt.receipt_id and reservation.state in {
+                        ExecutionDispatchState.MATERIAL_RECEIPT, ExecutionDispatchState.INDEPENDENT_REVIEW, ExecutionDispatchState.COMPLETE}):
+                    raise ConsoleConflict("material receipt is not recorded")
+                ledger.ingest_provider_result(reservation_id, result_bytes, thread_id=thread_id, turn_id=turn_id,
+                    provider_session_id=provider_session_id, receipt=receipt)
+            except InvariantError as exc:
+                raise ConsoleError(str(exc)) from exc
+            if reservation.snapshot() != before:
+                reservation.updated_at_ms = now_ms
+                self.persist_execution_ledger(ledger, now_ms=now_ms)
+            return reservation.snapshot()
 
     def load_execution_ledger(self) -> ExecutionDispatchLedger:
         """Restore retained reservations and dedupe receipts without replaying host work."""
@@ -3078,6 +3286,51 @@ class ConsoleStore:
         required = {"ctrl_id", "project_id", "goal_id", "task_id", "request_id", "observed_turn_id", "decision_digest", "route_digest", "next_operation"}
         return binding if required <= set(binding) else None
 
+    @staticmethod
+    def auto_dispatch_identity(decision: dict[str, Any]) -> str:
+        return _auto_digest(tuple(decision[key] for key in ("goal_id", "request_id", "observed_turn_id", "decision_digest")))
+
+    def auto_connector_packet(self, reservation_id: str, command_digest: str = "") -> dict[str, Any] | None:
+        prefix = f"connector:{_auto_id(reservation_id, 'reservation_id')}"
+        with self._lock, closing(self._connect()) as connection:
+            if command_digest:
+                if re.fullmatch(r"[0-9a-f]{64}", command_digest) is None:
+                    raise ConsoleError("Auto connector command digest is invalid")
+                row = connection.execute(
+                    "SELECT payload_json, payload_digest FROM execution_event_receipts "
+                    "WHERE event_kind = 'AUTO_DECISION' AND identity IN (?, ?) ORDER BY rowid DESC LIMIT 1",
+                    (prefix, f"{prefix}:{command_digest}"),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT payload_json, payload_digest FROM execution_event_receipts "
+                    "WHERE event_kind = 'AUTO_DECISION' AND (identity = ? OR substr(identity, 1, ?) = ?) ORDER BY rowid DESC LIMIT 1",
+                    (prefix, len(prefix) + 1, prefix + ":"),
+                ).fetchone()
+        if row is None:
+            return None
+        packet = json.loads(row["payload_json"])
+        if self._auto_payload(packet)[1] != row["payload_digest"]:
+            raise ConsoleError("retained Auto connector packet digest conflicts")
+        return packet
+
+    def _cancel_auto_preparation(self, reservation_id: str, cursor: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+        # Caller holds the existing connector admission lock and proved no COMMAND.
+        with self._lock:
+            ledger = self.load_execution_ledger()
+            reservation = ledger.reservation(reservation_id)
+            binding = self._auto_binding(reservation)
+            if binding is None or reservation.state is not ExecutionDispatchState.ACTIVE or reservation.host_turn_id:
+                raise ConsoleConflict("Auto cancellation requires an exact unsubmitted preparation")
+            reservation.state = ExecutionDispatchState.UNVERIFIED
+            reservation.updated_at_ms = max(now_ms, reservation.updated_at_ms + 1)
+            payload = {"ctrl_id": binding["ctrl_id"], "project_id": binding["project_id"],
+                "reservation_id": reservation_id, "reason": "PRE_SEND_CANCELLED", "observed_cursor": cursor,
+                "material_progress": False}
+            self.persist_execution_ledger(ledger, now_ms=reservation.updated_at_ms,
+                _auto_events=(("AUTO_RELEASE", f"{reservation_id}:pre-send-cancel", payload),))
+        return self.auto_status(binding["ctrl_id"], binding["project_id"])
+
     def _auto_active(self, ledger: ExecutionDispatchLedger | None = None) -> list[tuple[ExecutionReservation, dict[str, str]]]:
         ledger = ledger or self.load_execution_ledger()
         return [
@@ -3085,6 +3338,17 @@ class ConsoleStore:
             if (binding := self._auto_binding(item)) is not None
             and item.state is ExecutionDispatchState.ACTIVE and not item.host_completed
         ]
+
+    def auto_writer_busy(self, scope: dict[str, Any] | None, ledger: ExecutionDispatchLedger | None = None) -> bool:
+        """True when any active lease may share a writer with this scope.
+
+        Only host-observed roots that are neither equal nor nested run concurrently;
+        a lease or candidate without a retained scope serializes conservatively.
+        """
+        for active, _ in self._auto_active(ledger):
+            if _writer_scopes_overlap(scope, self.auto_connector_packet(active.reservation_id)):
+                return True
+        return False
 
     @classmethod
     def _retain_auto_event(
@@ -3114,12 +3378,16 @@ class ConsoleStore:
             row = connection.execute("SELECT revision, fields_json, updated_at_ms FROM ctrl_overrides WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
             fields = {} if row is None else json.loads(str(row["fields_json"]))
             settings = self._auto_settings(fields, ctrl_id=ctrl_id, project_id=project_id)
+            # Filter by this lane before limiting, so other lanes' volume cannot hide its latest disposition.
             receipt_rows = connection.execute(
                 "SELECT event_kind, payload_json FROM execution_event_receipts "
                 "WHERE event_kind IN ('AUTO_DECISION', 'AUTO_OUTCOME', 'AUTO_RELEASE') "
-                "ORDER BY retained_at_ms DESC, event_kind DESC LIMIT 128"
+                "AND instr(payload_json, ?) > 0 AND instr(payload_json, ?) > 0 "
+                "ORDER BY retained_at_ms DESC, event_kind DESC LIMIT 128",
+                ('"ctrl_id":' + json.dumps(ctrl_id, ensure_ascii=True), '"project_id":' + json.dumps(project_id, ensure_ascii=True)),
             ).fetchall()
-        active = [(item, binding) for item, binding in self._auto_active() if binding["ctrl_id"] == ctrl_id and binding["project_id"] == project_id]
+        ledger = self.load_execution_ledger()
+        active = [(item, binding) for item, binding in self._auto_active(ledger) if binding["ctrl_id"] == ctrl_id and binding["project_id"] == project_id]
         if len(active) > 1:
             raise ConsoleError("multiple retained Auto continuation leases fail closed")
         latest = None
@@ -3143,14 +3411,23 @@ class ConsoleStore:
         result["attention"] = None
         if reservation is not None:
             result["attention"] = {"kind": "IN_FLIGHT_OUTCOME_UNVERIFIED", "reason": "reconcile the retained host thread and turn before any new dispatch", "recovery_authority": ctrl_id}
+            with self._lock, closing(self._connect()) as connection:
+                issue_row = connection.execute(
+                    "SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_RECONCILE' AND identity = ?",
+                    (f"native-send-issue:{reservation.reservation_id}",),
+                ).fetchone()
+            if issue_row is not None:
+                issue = json.loads(str(issue_row["payload_json"]))
+                if (issue.get("ctrl_id"), issue.get("project_id"), issue.get("reservation_id")) == (ctrl_id, project_id, reservation.reservation_id):
+                    result["attention"]["native_send_issue"] = issue.get("native_send_issue")
         elif result["last_disposition"] in {"WAIT_USER", "TERMINAL_BLOCKED"}:
             result["attention"] = {"kind": result["last_disposition"], "reason": result["release_condition"], "recovery_authority": result["responsible_authority"]}
         result["claim_limit"] = "Auto host completion is not material progress, proof, review, or acceptance."
+        result["collection"] = self._collection_view(ledger, ctrl_id)
         if reservation is not None:
             result["task_id"] = binding["task_id"]
-            result["speed_control"] = self.load_execution_ledger().speed_application(reservation.reservation_id)
+            result["speed_control"] = ledger.speed_application(reservation.reservation_id)
         elif latest is not None and latest.get("reservation_id"):
-            ledger = self.load_execution_ledger()
             result["speed_control"] = ledger.speed_application(latest["reservation_id"])
         else:
             result["speed_control"] = None
@@ -3203,6 +3480,7 @@ class ConsoleStore:
     def claim_auto_dispatch(
         self, decision: dict[str, Any], generation: ExecutionConfigGeneration, *, now_ms: int,
         scoped_generations: tuple[ExecutionConfigGeneration, ...] = (),
+        connector_packet: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         required = {
             "ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "request_id",
@@ -3226,15 +3504,25 @@ class ConsoleStore:
             raise ConsoleError("Auto instruction must be a positive bounded UTF-8 payload")
         if not isinstance(generation, ExecutionConfigGeneration):
             raise ConsoleError("Auto dispatch requires a typed current execution generation")
-        identity = _auto_digest((values["goal_id"], values["request_id"], values["observed_turn_id"], digests["decision_digest"]))
+        identity = self.auto_dispatch_identity({**values, **digests})
         payload = {**values, **digests, "request_bytes": request_bytes, "idempotency_key": identity}
         reservation_id = f"auto-{identity}"
+        events = [("AUTO_DISPATCH", identity, payload)]
+        if connector_packet is not None:
+            if (connector_packet.get("reservation_id") != reservation_id
+                    or any(connector_packet.get(key) != payload[key] for key in ("ctrl_id", "project_id", "decision_digest"))):
+                raise ConsoleError("Auto connector packet conflicts with its dispatch")
+            digest = HQCommandEnvelope(**{**connector_packet["envelope"],
+                "action": HQCommandAction(connector_packet["envelope"]["action"]),
+                "target_intent": HQTargetIntent(connector_packet["envelope"]["target_intent"])}).digest
+            events.append(("AUTO_DECISION", f"connector:{reservation_id}:{digest}", connector_packet))
         with self._lock:
             state = self.auto_status(values["ctrl_id"], values["project_id"])
             if not state["enabled"] or state["stop_after_turn"]:
                 return {"claimed": False, "reason": "AUTO_OFF", "idempotency_key": identity}
             ledger = self.load_execution_ledger()
-            if self._auto_active(ledger): return {"claimed": False, "reason": "IN_FLIGHT", "idempotency_key": identity}
+            if self.auto_writer_busy(connector_packet, ledger):
+                return {"claimed": False, "reason": "IN_FLIGHT", "idempotency_key": identity}
             existing = next((item for item in ledger.reservations if item.reservation_id == reservation_id), None)
             artifact = ArtifactIdentity(
                 f"auto:{values['project_id']}:{values['goal_id']}", digests["decision_digest"], AUTO_PURPOSE,
@@ -3249,12 +3537,11 @@ class ConsoleStore:
                 return {"claimed": False, "reason": "REPLAY", "idempotency_key": identity}
             self._observe_auto_speed(ledger, generation, scoped_generations, project_id=values["project_id"], task_id=values["task_id"])
             ledger.reserve(reservation_id, f"auto-operation-{identity}", values["owner_id"], artifact, observed_at_ms=now_ms,
-                           project_id=values["project_id"], settings_task_id=values["task_id"])
+                           project_id=values["project_id"], settings_task_id=values["task_id"],
+                           collecting_owner_id=values["ctrl_id"])
             ledger.dispatch(reservation_id, digests["instruction_digest"], request_bytes, observed_at_ms=now_ms)
-            self.persist_execution_ledger(ledger, now_ms=now_ms)
-            with closing(self._connect()) as connection:
-                self._retain_auto_event(connection, event_kind="AUTO_DISPATCH", identity=identity, payload=payload, now_ms=now_ms)
-                connection.commit()
+            # The lease and its recovery input must survive or roll back together.
+            self.persist_execution_ledger(ledger, now_ms=now_ms, _auto_events=tuple(events))
         return {"claimed": True, "reservation_id": reservation_id, "idempotency_key": identity,
                 "speed_control": ledger.speed_application(reservation_id)}
 
@@ -3324,7 +3611,8 @@ class ConsoleStore:
             connection.commit()
         return fresh
 
-    def finish_auto_dispatch(self, reservation_id: str, *, result: AutoBridgeResult, disposition: dict[str, Any] | None, now_ms: int) -> dict[str, Any]:
+    def finish_auto_dispatch(self, reservation_id: str, *, result: AutoBridgeResult, disposition: dict[str, Any] | None, now_ms: int,
+                             collection: dict[str, str] | None = None) -> dict[str, Any]:
         reservation_id = _auto_id(reservation_id, "reservation_id")
         if not isinstance(result, AutoBridgeResult):
             raise ConsoleError("Auto completion requires a typed bridge result")
@@ -3352,12 +3640,19 @@ class ConsoleStore:
                 ledger.observe_event(reservation_id, event, observed_at_ms=now_ms, served_tier=result.service_tier_receipt)
             elif not result.turn_started:
                 ledger.fail_transport(reservation_id, ExecutionFailureKind.TIMEOUT, observed_at_ms=now_ms)
+            if collection is not None and result.terminal and reservation.collecting_owner_id:
+                # The collector's own read of the terminal turn; status alone never collects.
+                ledger.collect_result(reservation_id, reservation.collecting_owner_id,
+                    observation=str(collection.get("result_observation") or "UNREADABLE"),
+                    result_digest=str(collection.get("result_digest") or ""), observed_at_ms=now_ms)
             reservation.updated_at_ms = now_ms
             self.persist_execution_ledger(ledger, now_ms=now_ms)
             payload = {"ctrl_id": binding["ctrl_id"], "project_id": binding["project_id"], "reservation_id": reservation_id,
                 "thread_id": reservation.host_thread_id, "turn_id": reservation.host_turn_id,
                 "bridge": {"ok": result.ok, "failure_kind": result.failure_kind, "turn_started": result.turn_started, "terminal": result.terminal, "reachable": result.reachable},
                 "disposition": disposition or {}, "material_progress": False}
+            if reservation.result_observation:
+                payload["collection"] = {"observation": reservation.result_observation, "result_digest": reservation.result_digest}
             with closing(self._connect()) as connection:
                 outcome_phase = "terminal" if result.terminal else "uncertain" if result.turn_started else "prestart"
                 self._retain_auto_event(connection, event_kind="AUTO_OUTCOME", identity=f"{reservation_id}:{outcome_phase}", payload=payload, now_ms=now_ms)
@@ -3396,8 +3691,10 @@ class ConsoleStore:
                     "SELECT event_kind, payload_json FROM execution_event_receipts "
                     "WHERE event_kind IN ('AUTO_OUTCOME', 'AUTO_RECONCILE') ORDER BY retained_at_ms DESC"
                 ).fetchall()
+            # Local lane and send diagnostics are not host reads and cannot shadow host evidence.
             latest_host_read = next(
-                (payload for row in rows if (payload := json.loads(str(row["payload_json"]))).get("reservation_id") == reservation_id),
+                (payload for row in rows if (payload := json.loads(str(row["payload_json"]))).get("reservation_id") == reservation_id
+                 and payload.get("reason") not in {AUTO_LANE_FAILURE, "NATIVE_SEND_RESPONSE_UNCERTAIN"}),
                 None,
             )
             bridge = latest_host_read.get("bridge") if isinstance(latest_host_read, dict) and isinstance(latest_host_read.get("bridge"), dict) else {}
@@ -4755,7 +5052,7 @@ class ConsoleStore:
         """Return the UI-compatible sequence from the durable proof cursor."""
         return int(self.proof_cursor()["sequence"])
 
-    def proof_media_item(self, evidence_id: str, digest: str, *, allowed_root: Path | None = None) -> dict[str, Any]:
+    def proof_media_item(self, evidence_id: str, digest: str, *, allowed_root: Path | None = None, codex_home: Path | None = None) -> dict[str, Any]:
         evidence_id = _safe_metadata_text(evidence_id, "evidence_id", maximum=256)
         digest = _safe_metadata_text(digest, "digest", maximum=64).casefold()
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -4779,6 +5076,11 @@ class ConsoleStore:
             raise ConsoleError("registered proof media exceeds the delivery guard")
         if row["size_bytes"] is not None and int(row["size_bytes"]) != stat.st_size:
             raise ConsoleError("registered proof media changed since registration")
+        if codex_home is not None and allowed_root is not None and not resolved.is_relative_to(allowed_root.resolve()):
+            if str(row["receipt"]).startswith("ctrl-original:"):
+                allowed_root = resolved.parent
+            else:
+                allowed_root = _proof_original_root(codex_home, str(row["project_id"]), resolved)
         current = _media_metadata(str(resolved), digest, allowed_root=allowed_root)
         if current["digest"] != digest:
             raise ConsoleError("registered proof media digest no longer matches the file")
@@ -4800,12 +5102,47 @@ class ConsoleStore:
             "claim_limit": "Available for review; acceptance is recorded separately.",
         }
 
+    @staticmethod
+    def _proof_event_identity_receipts(connection: sqlite3.Connection, evidence_id: str) -> list[sqlite3.Row]:
+        canonical_name = _canonical_proof_event_name(evidence_id)
+        comparison = "event_name = ? COLLATE NOCASE" if os.name == "nt" else "event_name = ?"
+        return connection.execute(
+            f"SELECT * FROM proof_event_receipts WHERE {comparison} OR evidence_id=?",
+            (canonical_name, evidence_id),
+        ).fetchall()
+
+    @staticmethod
+    def _proof_event_canonical_authorities(connection: sqlite3.Connection, event_name: str) -> set[str]:
+        canonical_name = _canonical_proof_event_filename(event_name)
+        if canonical_name is None:
+            return set()
+        authorities: set[str] = set()
+        for table in ("proof_media", "proof_event_receipts"):
+            # Old writers may still insert an unindexed identity after startup.
+            # Never make an unbound decision while such rows need backfilling.
+            pending = connection.execute(
+                f"SELECT 1 FROM {table} WHERE canonical_event_name IS NULL AND evidence_id != '' LIMIT 1"
+            ).fetchone() or connection.execute(
+                f"SELECT 1 FROM {table} WHERE canonical_event_name = '' AND evidence_id != '' LIMIT 1"
+            ).fetchone()
+            if pending is not None:
+                raise OSError("proof canonical authority index needs backfill")
+            rows = connection.execute(
+                f"SELECT evidence_id FROM {table} WHERE canonical_event_name=? AND evidence_id != '' LIMIT 2",
+                (canonical_name,),
+            ).fetchall()
+            authorities.update(str(row[0]) for row in rows)
+        return authorities
+
     def record_proof_media(
         self,
         payload: dict[str, Any],
         *,
         now_ms: int,
         allowed_root: Path | None = None,
+        check_event_receipts: bool = False,
+        _connection: sqlite3.Connection | None = None,
+        _metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         evidence_id = _safe_metadata_text(payload.get("evidence_id"), "evidence_id", maximum=256)
         task_id = _safe_metadata_text(payload.get("task_id"), "task_id", maximum=256)
@@ -4826,7 +5163,9 @@ class ConsoleStore:
         supplied_size = payload.get("size_bytes")
         if supplied_size is not None and (not isinstance(supplied_size, int) or isinstance(supplied_size, bool)):
             raise ConsoleError("proof media size must be an integer")
-        metadata = _media_metadata(
+        if _metadata is not None and _connection is None:
+            raise ValueError("prevalidated proof metadata requires the scanner transaction")
+        metadata = _metadata if _metadata is not None else _media_metadata(
             locator,
             str(payload.get("digest", "")),
             allowed_root=allowed_root,
@@ -4835,11 +5174,39 @@ class ConsoleStore:
         )
         if metadata["media_type"] not in MEDIA_TYPES:
             raise ConsoleError("proof media type is not allowlisted")
-        with self._lock, closing(self._connect()) as connection:
+        with (self._lock if _connection is None else nullcontext()), (
+            closing(self._connect()) if _connection is None else nullcontext(_connection)
+        ) as connection:
+            if check_event_receipts and _connection is None:
+                # Check existing receipt state and register in one SQLite write transaction.
+                connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT * FROM proof_media WHERE evidence_id=?",
                 (evidence_id,),
             ).fetchone()
+            if check_event_receipts:
+                receipts = self._proof_event_identity_receipts(connection, evidence_id)
+                if len(receipts) > 1:
+                    raise ConsoleError("proof event receipt identity is ambiguous")
+                if receipts:
+                    event_receipt = receipts[0]
+                    if event_receipt["status"] == "REJECTED":
+                        raise ConsoleError("proof event receipt was rejected")
+                    if (event_receipt["status"] != "IMPORTED" or existing is None
+                            or str(event_receipt["evidence_id"] or "") != evidence_id
+                            or str(event_receipt["task_id"] or "") != task_id
+                            or str(event_receipt["project_id"] or "") != project_id
+                            or str(event_receipt["media_digest"] or "") != metadata["digest"]
+                            or re.fullmatch(r"[0-9a-f]{64}", str(event_receipt["event_digest"] or "")) is None):
+                        raise ConsoleError("proof event receipt does not match the original")
+                    event_name = str(event_receipt["event_name"])
+                    if (Path(event_name).name != event_name or not (event_name.endswith(".json")
+                            or _canonical_proof_event_filename(event_name) is not None)
+                            or existing["receipt"] not in {f"proof-event:{Path(event_name).stem}",
+                                f"ctrl-original:{task_id}", f"ctrl-evidence:registered:{task_id}"}):
+                        raise ConsoleError("proof event receipt reference does not match the original")
+                    # Preserve the existing receipt rather than replacing its provenance.
+                    receipt = str(existing["receipt"])
             values = {
                 "task_id": task_id,
                 "project_id": project_id,
@@ -4865,8 +5232,8 @@ class ConsoleStore:
                 INSERT INTO proof_media(
                     evidence_id, task_id, project_id, kind, locator, caption,
                     claim_limit, disposition, receipt, surface_kind, media_type,
-                    mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms, canonical_event_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     evidence_id,
@@ -4885,10 +5252,12 @@ class ConsoleStore:
                     metadata["digest"],
                     now_ms,
                     now_ms,
+                    _canonical_proof_event_name(evidence_id),
                 ),
             )
             self._advance_proof_cursor(connection)
-            connection.commit()
+            if _connection is None:
+                connection.commit()
             row = connection.execute("SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,)).fetchone()
         return self._public_proof_row(row)
 
@@ -5816,10 +6185,10 @@ class ConsoleStore:
             _asset_id(project_id, "project_id")
         raise ConsoleError(f"asset purge is unavailable; retention_policy={ASSET_RETENTION_POLICY}")
 
-    def _proof_event_receipts(self) -> dict[str, dict[str, Any]]:
-        with self._lock, closing(self._connect()) as connection:
-            rows = connection.execute(
-                """
+    def _proof_event_receipts(
+        self, *, _connection: sqlite3.Connection | None = None, event_name: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        query = """
                 SELECT receipts.event_name, receipts.event_mtime_ns,
                        receipts.event_size, receipts.event_digest, receipts.status,
                        receipts.evidence_id, receipts.task_id, receipts.project_id,
@@ -5828,9 +6197,20 @@ class ConsoleStore:
                   FROM proof_event_receipts receipts
              LEFT JOIN proof_media media ON media.evidence_id = receipts.evidence_id
                 """
-            ).fetchall()
+        parameters: tuple[str, ...] = ()
+        if event_name is not None:
+            comparison = " = ? COLLATE NOCASE" if os.name == "nt" and _canonical_proof_event_filename(event_name) else " = ?"
+            query += " WHERE receipts.event_name" + comparison
+            parameters = (event_name,)
+        with (self._lock if _connection is None else nullcontext()), (
+            closing(self._connect()) if _connection is None else nullcontext(_connection)
+        ) as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        if event_name is not None and len(rows) > 1:
+            raise ConsoleError("proof event filename has ambiguous retained receipts")
         return {
-            str(row["event_name"]): {
+            (event_name if event_name is not None else str(row["event_name"])): {
+                "event_name": str(row["event_name"]),
                 "mtime_ns": int(row["event_mtime_ns"]),
                 "size": int(row["event_size"]),
                 "event_digest": str(row["event_digest"] or ""),
@@ -5876,9 +6256,11 @@ class ConsoleStore:
             return [start_token]
         return queue or [start_token]
 
-    def _set_proof_event_scan_queue(self, queue: list[str]) -> None:
+    def _set_proof_event_scan_queue(self, queue: list[str], *, _no_wait: bool = False) -> None:
         value = json.dumps(queue, separators=(",", ":"))
         with self._lock, closing(self._connect()) as connection:
+            if _no_wait:
+                connection.execute("PRAGMA busy_timeout = 0")
             connection.execute(
                 """
                 INSERT INTO store_metadata(key, value) VALUES (?, ?)
@@ -6093,9 +6475,12 @@ class ConsoleStore:
         task_id: str,
         project_id: str,
         media_digest: str,
+        _connection: sqlite3.Connection | None = None,
     ) -> None:
         """Bind nullable pre-contract fields once; never alter an existing binding."""
-        with self._lock, closing(self._connect()) as connection:
+        with (self._lock if _connection is None else nullcontext()), (
+            closing(self._connect()) if _connection is None else nullcontext(_connection)
+        ) as connection:
             connection.execute(
                 """
                 UPDATE proof_event_receipts
@@ -6121,9 +6506,11 @@ class ConsoleStore:
             if row is None or tuple(str(value or "") for value in row) != (
                 event_digest, task_id, project_id, media_digest,
             ):
-                connection.rollback()
+                if _connection is None:
+                    connection.rollback()
                 raise ConsoleError("legacy proof event receipt conflicts with immutable evidence")
-            connection.commit()
+            if _connection is None:
+                connection.commit()
 
     def _record_proof_event_receipt(
         self,
@@ -6138,19 +6525,32 @@ class ConsoleStore:
         project_id: str,
         media_digest: str,
         now_ms: int,
+        _connection: sqlite3.Connection | None = None,
     ) -> None:
-        with self._lock, closing(self._connect()) as connection:
+        with (self._lock if _connection is None else nullcontext()), (
+            closing(self._connect()) if _connection is None else nullcontext(_connection)
+        ) as connection:
+            if os.name == "nt" and _canonical_proof_event_filename(event_name):
+                existing = connection.execute(
+                    "SELECT event_name FROM proof_event_receipts WHERE event_name = ? COLLATE NOCASE",
+                    (event_name,),
+                ).fetchall()
+                if len(existing) > 1:
+                    raise ConsoleError("proof event filename has ambiguous retained receipts")
+                if existing:
+                    event_name = str(existing[0][0])
             connection.execute(
                 """
                 INSERT INTO proof_event_receipts(
                     event_name, event_mtime_ns, event_size, event_digest, status,
-                    evidence_id, task_id, project_id, media_digest, observed_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    evidence_id, task_id, project_id, media_digest, observed_at_ms, canonical_event_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(event_name) DO NOTHING
                 """,
                 (
                     event_name, mtime_ns, size, event_digest, status,
                     evidence_id, task_id, project_id, media_digest, now_ms,
+                    _canonical_proof_event_name(evidence_id) if evidence_id else None,
                 ),
             )
             row = connection.execute(
@@ -6168,9 +6568,11 @@ class ConsoleStore:
                 str(row["project_id"] or ""), str(row["media_digest"] or ""),
             )
             if actual != expected:
-                connection.rollback()
+                if _connection is None:
+                    connection.rollback()
                 raise ConsoleError("proof event filename is permanently bound to different evidence")
-            connection.commit()
+            if _connection is None:
+                connection.commit()
 
     def reconcile_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> dict[str, int]:
         """Reconcile one bounded immutable proof-event pass without reading task messages."""
@@ -6182,43 +6584,69 @@ class ConsoleStore:
         media_root = expected_media_root.resolve()
         if swarm_root != expected_swarm_root or event_root != expected_event_root or media_root != expected_media_root:
             return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0, "enumerated": 0}
-        if not event_root.is_dir() or not media_root.is_dir():
+        if not event_root.is_dir():
             return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 0, "capped": 0, "enumerated": 0}
+        try:
+            # Older concurrent writers can leave null identities after startup.
+            # Fill at most one short batch per table and retry honestly if busy.
+            with closing(self._connect()) as connection:
+                connection.execute("PRAGMA busy_timeout = 0")
+                self._backfill_proof_canonical_names(connection, max_batches=1)
+        except (OSError, sqlite3.Error):
+            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0, "enumerated": 0}
         nodes = {
             str(node.get("id")): node
             for node in overview.get("nodes", [])
             if not node.get("virtual") and node.get("id") and node.get("project_id")
         }
-        receipts = self._proof_event_receipts()
         imported = 0
         duplicates = 0
         rejected = 0
         retryable = 0
         try:
             event_paths, capped_pass, enumerated, next_scan_queue = self._bounded_proof_event_paths(event_root)
-        except OSError:
+        except (OSError, sqlite3.Error):
             return {
                 "imported": 0, "duplicates": 0, "rejected": 0,
                 "retryable": 1, "capped": 0, "enumerated": 0,
             }
         capped = int(capped_pass)
+        writer_busy = False
         for event_path in event_paths:
+            file_guards = ExitStack()
             event_stat: os.stat_result | None = None
+            resolved_event: Path | None = None
+            connection: sqlite3.Connection | None = None
+            prior_media: tuple[Any, ...] | None = None
+            prior_media_known = False
+            locator_path: Path | None = None
+            locator: Path | None = None
+            media_stat: os.stat_result | None = None
             evidence_id = ""
             task_id = ""
             project_id = ""
             event_digest = ""
             media_digest = ""
             try:
+                # Read and hash outside the shared writer transaction. A busy writer ends
+                # the pass immediately instead of imposing a timeout for every event.
+                connection = self._connect()
+                connection.execute("PRAGMA busy_timeout = 0")
                 resolved_event = event_path.resolve(strict=True)
+                event_guard = file_guards.enter_context(_hold_proof_file(resolved_event))
                 event_stat = resolved_event.stat()
+                if event_guard is not None and not os.path.samestat(event_guard, event_stat):
+                    raise OSError("proof event changed while opening")
                 if not resolved_event.is_file() or not resolved_event.is_relative_to(event_root) or event_stat.st_size > 16 * 1024:
                     continue
                 event_bytes = resolved_event.read_bytes()
                 if len(event_bytes) != event_stat.st_size:
                     raise OSError("proof event changed while being read")
+                _recheck_proof_file(event_path, resolved_event, event_stat)
                 event_digest = hashlib.sha256(event_bytes).hexdigest()
-                receipt = receipts.get(resolved_event.name)
+                receipt = self._proof_event_receipts(
+                    _connection=connection, event_name=resolved_event.name,
+                ).get(resolved_event.name)
                 if receipt is not None:
                     if (
                         receipt["mtime_ns"] != event_stat.st_mtime_ns
@@ -6231,7 +6659,11 @@ class ConsoleStore:
                         rejected += 1
                         continue
                     if receipt["status"] == "IMPORTED" and receipt["event_digest"] and receipt["media_present"]:
-                        duplicates += 1
+                        retained = self._proof_event_identity_receipts(connection, receipt["evidence_id"])
+                        if len(retained) != 1 or not _same_proof_event_name(retained[0]["event_name"], resolved_event.name):
+                            rejected += 1
+                        else:
+                            duplicates += 1
                         continue
                 event = json.loads(event_bytes.decode("utf-8"))
                 if not isinstance(event, dict) or event.get("schema_version") != 1 or event.get("source") != "CtrlEvidence":
@@ -6239,6 +6671,10 @@ class ConsoleStore:
                 if PROOF_EVENT_PRIVATE_FIELDS.intersection(key.casefold() for key in event):
                     raise ConsoleError("proof event includes prohibited private content")
                 evidence_id = _safe_metadata_text(event.get("evidence_id"), "evidence_id", maximum=256)
+                canonical_name = _canonical_proof_event_name(evidence_id)
+                if any((key := _canonical_proof_event_filename(name)) is not None and key != canonical_name
+                       for name in {event_path.name, resolved_event.name}):
+                    raise ConsoleError("canonical proof event filename does not match its identity")
                 task_id = _safe_metadata_text(event.get("task_id"), "task_id", maximum=256)
                 node = nodes.get(task_id)
                 observed_project_id = str(node["project_id"]) if node is not None else observed_task_project_id(codex_home, task_id)
@@ -6246,27 +6682,95 @@ class ConsoleStore:
                     retryable += 1
                     continue
                 project_id = observed_project_id
-                relative = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=512))
-                if relative.is_absolute() or ".." in relative.parts:
-                    raise ConsoleError("proof event locator escapes the evidence store")
-                locator = (swarm_root / relative).resolve(strict=True)
+                relative = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=4096))
+                explicit_receipt = None
+                existing = connection.execute(
+                    "SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,),
+                ).fetchone()
+                prior_media = tuple(existing) if existing is not None else None
+                prior_media_known = True
+                if relative.is_absolute():
+                    locator_path = relative
+                    locator = locator_path.resolve(strict=True)
+                    if (existing is not None and existing["task_id"] == task_id
+                            and existing["project_id"] == project_id and existing["locator"] == str(locator)
+                            and existing["receipt"] == f"ctrl-original:{task_id}"):
+                        selected_root = locator.parent
+                        explicit_receipt = existing["receipt"]
+                    else:
+                        selected_root = _proof_original_root(codex_home, project_id, locator)
+                else:
+                    if ".." in relative.parts:
+                        raise ConsoleError("proof event locator escapes the evidence store")
+                    locator_path = swarm_root / relative
+                    locator = locator_path.resolve(strict=True)
+                    selected_root = media_root
                 payload = {
                     **event,
                     "task_id": task_id,
                     "project_id": project_id,
                     "locator": str(locator),
                     "disposition": "PENDING",
-                    "receipt": f"proof-event:{resolved_event.stem}",
+                    "receipt": explicit_receipt or f"proof-event:{resolved_event.stem}",
                     "surface_kind": "available_media",
                 }
-                metadata = _media_metadata(
-                    str(locator),
-                    str(event.get("digest", "")),
-                    allowed_root=media_root,
-                    supplied_size=event.get("size_bytes"),
-                    supplied_media_type=str(event.get("media_type", "")),
-                )
+                media_guard = file_guards.enter_context(_hold_proof_file(locator))
+                media_stat = locator.stat()
+                if media_guard is not None and not os.path.samestat(media_guard, media_stat):
+                    raise OSError("proof media changed while opening")
+                try:
+                    metadata = _media_metadata(
+                        str(locator),
+                        str(event.get("digest", "")),
+                        allowed_root=selected_root,
+                        supplied_size=event.get("size_bytes"),
+                        supplied_media_type=str(event.get("media_type", "")),
+                    )
+                except (ConsoleError, ValueError, TypeError):
+                    _recheck_proof_file(locator_path, locator, media_stat)
+                    raise
+                _recheck_proof_file(locator_path, locator, media_stat)
+                if metadata["mtime_ns"] != media_stat.st_mtime_ns or metadata["size_bytes"] != media_stat.st_size:
+                    raise OSError("proof media changed during validation")
                 media_digest = str(metadata["digest"])
+
+                # Recheck both filesystem identities and all shared receipt state
+                # after acquiring the lock. Media and receipt still commit together.
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("SAVEPOINT proof_event")
+                _recheck_proof_file(event_path, resolved_event, event_stat)
+                _recheck_proof_file(locator_path, locator, media_stat)
+                receipt = self._proof_event_receipts(
+                    _connection=connection, event_name=resolved_event.name,
+                ).get(resolved_event.name)
+                for name in {event_path.name, resolved_event.name}:
+                    authorities = self._proof_event_canonical_authorities(connection, name)
+                    if authorities and authorities != {evidence_id}:
+                        raise ConsoleError("proof event filename shadows another identity")
+                retained = self._proof_event_identity_receipts(connection, evidence_id)
+                if len(retained) > 1 or (retained and not _same_proof_event_name(retained[0]["event_name"], resolved_event.name)):
+                    raise ConsoleError("proof event identity is bound to another filename")
+                if receipt is not None:
+                    if (receipt["mtime_ns"] != event_stat.st_mtime_ns
+                            or receipt["size"] != event_stat.st_size
+                            or (receipt["event_digest"] and receipt["event_digest"] != event_digest)
+                            or receipt["status"] == "REJECTED"):
+                        rejected += 1
+                        continue
+                    if receipt["status"] == "IMPORTED" and receipt["event_digest"] and receipt["media_present"]:
+                        duplicates += 1
+                        continue
+                current_media = connection.execute(
+                    "SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,),
+                ).fetchone()
+                direct_receipts = {f"ctrl-original:{task_id}", f"ctrl-evidence:registered:{task_id}"}
+                direct_match = (current_media is not None and current_media["task_id"] == task_id
+                    and current_media["project_id"] == project_id and current_media["locator"] == str(locator)
+                    and current_media["receipt"] in direct_receipts)
+                if direct_match:
+                    payload["receipt"] = str(current_media["receipt"])
+                elif (tuple(current_media) if current_media is not None else None) != prior_media:
+                    raise OSError("proof media changed during reconciliation")
                 if receipt is not None:
                     bound = (
                         receipt["evidence_id"], receipt["task_id"],
@@ -6285,13 +6789,15 @@ class ConsoleStore:
                         ):
                             raise ConsoleError("legacy proof event receipt cannot be bound safely")
                         self._bind_legacy_proof_event_receipt(
-                            resolved_event.name,
+                            receipt["event_name"],
                             event_digest=event_digest,
                             task_id=task_id,
                             project_id=project_id,
                             media_digest=media_digest,
+                            _connection=connection,
                         )
-                self.record_proof_media(payload, now_ms=now_ms, allowed_root=media_root)
+                self.record_proof_media(payload, now_ms=now_ms, allowed_root=selected_root,
+                                        _connection=connection, _metadata=metadata)
                 if receipt is None:
                     self._record_proof_event_receipt(
                         resolved_event.name,
@@ -6304,14 +6810,22 @@ class ConsoleStore:
                         project_id=project_id,
                         media_digest=media_digest,
                         now_ms=now_ms,
+                        _connection=connection,
                     )
-                    imported += 1
-                elif receipt["media_present"]:
+                connection.commit()
+                if receipt is not None and receipt["media_present"]:
                     duplicates += 1
                 else:
                     imported += 1
-            except (OSError, sqlite3.Error):
+            except OSError:
                 retryable += 1
+                continue
+            except sqlite3.Error as exc:
+                retryable += 1
+                if getattr(exc, "sqlite_errorcode", None) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) \
+                        or "locked" in str(exc).casefold():
+                    writer_busy = True
+                    break
                 continue
             except (ConsoleError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 if isinstance(exc.__cause__, OSError):
@@ -6319,28 +6833,89 @@ class ConsoleStore:
                     continue
                 if event_stat is not None:
                     try:
+                        if connection is None or resolved_event is None:
+                            raise OSError("proof event became unavailable")
+                        if not connection.in_transaction:
+                            connection.execute("BEGIN IMMEDIATE")
+                            connection.execute("SAVEPOINT proof_event")
+                            _recheck_proof_file(event_path, resolved_event, event_stat)
+                            if locator_path is not None and locator is not None and media_stat is not None:
+                                _recheck_proof_file(locator_path, locator, media_stat)
+                            if prior_media_known:
+                                current_media = connection.execute(
+                                    "SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,),
+                                ).fetchone()
+                                if (tuple(current_media) if current_media is not None else None) != prior_media:
+                                    raise OSError("proof media changed during reconciliation")
+                        # Undo any partial media update while retaining the writer lock.
+                        connection.execute("ROLLBACK TO proof_event")
+                        if self._proof_event_canonical_authorities(connection, event_path.name):
+                            # A filename-only rejection must not shadow earlier proof
+                            # or rejection authority, even when parsing never found an ID.
+                            rejected += 1
+                            continue
+                        rejected_evidence_id = evidence_id
+                        if evidence_id and any(
+                            (key := _canonical_proof_event_filename(name)) is not None
+                            and key != _canonical_proof_event_name(evidence_id)
+                            for name in {event_path.name, resolved_event.name}
+                        ):
+                            # The name belongs to an unknown identity, not the
+                            # parsed payload. Preserve its unbound rejection.
+                            rejected_evidence_id = ""
+                        if evidence_id:
+                            retained = self._proof_event_identity_receipts(connection, evidence_id)
+                            other_receipt = any(not _same_proof_event_name(row["event_name"], event_path.name) for row in retained)
+                            media_exists = connection.execute(
+                                "SELECT 1 FROM proof_media WHERE evidence_id=?", (evidence_id,),
+                            ).fetchone() is not None
+                            if other_receipt or (media_exists and not retained):
+                                # A conflicting filename cannot become a second authority
+                                # for this identity or poison an existing direct retry.
+                                canonical_name = _canonical_proof_event_name(evidence_id)
+                                if _same_proof_event_name(event_path.name, canonical_name):
+                                    # This name is itself an identity lookup key; retaining
+                                    # another rejection here would shadow the prior authority.
+                                    rejected += 1
+                                    continue
+                                rejected_evidence_id = ""
                         self._record_proof_event_receipt(
                             event_path.name,
                             mtime_ns=event_stat.st_mtime_ns,
                             size=event_stat.st_size,
                             status="REJECTED",
-                            evidence_id=evidence_id,
+                            evidence_id=rejected_evidence_id,
                             event_digest=event_digest,
                             task_id=task_id,
                             project_id=project_id,
                             media_digest=media_digest,
                             now_ms=now_ms,
+                            _connection=connection,
                         )
+                        connection.commit()
                         rejected += 1
                     except ConsoleError:
                         rejected += 1
-                    except sqlite3.Error:
+                    except OSError:
                         retryable += 1
+                    except sqlite3.Error as error:
+                        retryable += 1
+                        if getattr(error, "sqlite_errorcode", None) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) \
+                                or "locked" in str(error).casefold():
+                            writer_busy = True
+                            break
                 continue
-        try:
-            self._set_proof_event_scan_queue(next_scan_queue)
-        except sqlite3.Error:
-            retryable += 1
+            finally:
+                try:
+                    if connection is not None:
+                        connection.close()
+                finally:
+                    file_guards.close()
+        if not writer_busy:
+            try:
+                self._set_proof_event_scan_queue(next_scan_queue, _no_wait=True)
+            except sqlite3.Error:
+                retryable += 1
         return {
             "imported": imported,
             "duplicates": duplicates,
@@ -7255,6 +7830,26 @@ def bound_task_acceptance_binding(
         "review_strategy": review_strategy, "ctrl_id": ctrl_id, "root_digest": root_digest,
         "role_manifest_ref": role_manifest_ref,
     }
+
+
+def _proof_original_root(codex_home: Path, project_id: str, locator: Path) -> Path:
+    """Admit originals only from the observed project's roots or Codex visualizations."""
+    roots = [codex_home / "visualizations"]
+    try:
+        with closing(_readonly_connection(state_database(codex_home))) as connection:
+            roots.extend(Path(str(row[0])) for row in connection.execute(
+                "SELECT path FROM project_roots WHERE project_id=?", (project_id,)
+            ))
+    except (sqlite3.Error, OSError) as exc:
+        raise ConsoleError("proof original project roots are unavailable") from exc
+    try:
+        resolved = locator.resolve(strict=True)
+        for root in roots:
+            if root.is_absolute() and root.exists() and resolved.is_relative_to(root.resolve(strict=True)):
+                return root.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ConsoleError("registered original proof media is unavailable") from exc
+    raise ConsoleError("original proof media is outside the observed project and visualization roots")
 
 
 def observed_task_project_id(codex_home: Path, task_id: str) -> str | None:
@@ -8389,7 +8984,7 @@ class App:
     def __init__(
         self, codex_home: Path, config_path: Path, state_path: Path | None = None,
         *, auto_bridge: Any | None = None, project_view_resolver: Any | None = None,
-        task_transport: Any | None = None,
+        task_transport: Any | None = None, auto_authorization: Any | None = None,
     ):
         self.codex_home = codex_home.resolve()
         self.config_path = config_path.resolve()
@@ -8397,6 +8992,7 @@ class App:
         self.progress_ledger = ProgressLedger(self.codex_home)
         self.auto_bridge = auto_bridge or CodexStdioBridge()
         self.task_transport = task_transport  # Host-owned existing-task capability, never supplied by HTTP.
+        self.auto_authorization = auto_authorization  # Injected scoped-grant provider/verifier; never an HTTP flag.
         self.project_view_resolver = project_view_resolver or self._default_project_view_resolver
         self.builtin_role_avatar_assets = load_builtin_role_avatar_assets(
             SWARM_SKILL_ROOT / "assets" / "role-avatars"
@@ -8428,6 +9024,8 @@ class App:
         self._last_observed_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._progress_pulse_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._project_view_cache: dict[str, dict[str, Any]] = {}
+        self._auto_observer_failure: dict[str, Any] | None = None
+        self._auto_lane_failures: dict[tuple[str, str], dict[str, Any]] = {}
         self._observer_stop = threading.Event()
         self._observer_thread: threading.Thread | None = None
 
@@ -8510,15 +9108,36 @@ class App:
         self._native_project_map_snapshot = (identity, bindings)
         return copy.deepcopy(bindings)
 
-    def _saved_project_binding(self, project_id: str, purpose: str = "Project view") -> dict[str, Any]:
+    def _saved_project_binding(self, project_id: str, purpose: str = "Project view", *, native_bindings: dict[str, Any] | None = None) -> dict[str, Any]:
         """One snapshot of planning root identity: SQLite authority plus a proven native alias.
 
         A native ID and its mapped SQLite ID are aliases only when the host map names them and both
         saved roots resolve strictly to the same canonical directory. Labels or a shared cwd never do.
         """
-        native = self._native_project_map().get(project_id)
+        native_map = self._native_project_map() if native_bindings is None else native_bindings
+        native = native_map.get(project_id)
+        if native is None:
+            # Legacy callers may use a retained, explicit selection; a shared
+            # path by itself never creates an alias.
+            try:
+                with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+                    roots = connection.execute("SELECT path FROM project_roots WHERE project_id=? ORDER BY position", (project_id,)).fetchall()
+                if len(roots) == 1:
+                    root = Path(roots[0]["path"]).resolve(strict=True)
+                    document, _ = parse_project_brief_markdown((root / "SWARM.md").read_text(encoding="utf-8"), root=root)
+                    selected = document.get("explicit_project_alias")
+                    if isinstance(selected, dict) and selected.get("ledger_project_id") == project_id:
+                        native = (self._native_project_map() if native_bindings is None else native_map).get(selected.get("native_project_id"))
+                        if native is None:
+                            raise ConsoleError(f"{purpose} selected native project is unavailable")
+            except (OSError, ValueError, sqlite3.Error):
+                pass
         if native is not None and not native["valid"]:
             raise ConsoleError(f"{purpose} host saved-state native project record is invalid")
+        if native is not None:
+            explicit = self._explicit_project_alias(native, purpose)
+            if explicit is not None:
+                return explicit
         canonical_id = native["project_id"] if native is not None else project_id
         database = state_database(self.codex_home)
         with closing(sqlite3.connect(database)) as connection:
@@ -8568,11 +9187,135 @@ class App:
         return {"project_id": canonical_id, "root": root, "identities": identities,
                 "identity_error": identity_error, "native_id": native["native_id"] if native is not None else None}
 
+    def _explicit_project_alias(self, native: dict[str, Any], purpose: str, selection: dict[str, Any] | None = None, *, allow_archived: bool = False) -> dict[str, Any] | None:
+        """Resolve a local selection against current host state; never authorize execution."""
+        try:
+            root = Path(native["native_root"]).resolve(strict=True)
+            brief = root / "SWARM.md"
+            text = brief.read_text(encoding="utf-8")
+            document, brief_digest = parse_project_brief_markdown(text, root=root)
+        except (OSError, ValueError):
+            return None  # Preserve the existing resolver for projects without a readable brief.
+        retained = document.get("explicit_project_alias")
+        if selection is not None and retained is not None and retained != selection:
+            raise ConsoleError(f"{purpose} explicit project alias conflicts with retained configuration")
+        selected = selection if selection is not None else retained
+        if selected is None:
+            return None
+        fields = {"native_project_id", "host_project_id", "ledger_project_id", "controller_id"}
+        if (not isinstance(selected, dict) or set(selected) != fields
+                or any(not isinstance(selected[k], str) or not selected[k].strip() for k in fields)
+                or selected["native_project_id"] != native["native_id"]
+                or selected["host_project_id"] != native["project_id"]
+                or selected["host_project_id"] == selected["ledger_project_id"]):
+            raise ConsoleError(f"{purpose} explicit project alias conflicts with the host map")
+        host_file = self.codex_home / HOST_STATE_FILENAME
+        try:
+            raw = host_file.read_bytes()
+            if len(raw) > HOST_STATE_MAX_BYTES or _is_reparse_point(host_file):
+                raise ValueError("invalid host state")
+            state = json.loads(raw.decode("utf-8"))
+            assignment = state.get("thread-project-assignments", {}).get(selected["controller_id"])
+            if assignment != {"projectKind": "local", "projectId": selected["native_project_id"]}:
+                raise ValueError("controller project assignment changed")
+            host_key = "local:" + str(self.codex_home.resolve())
+            host_map = state.get(HOST_STATE_PROJECT_MAP_KEY, {}).get(host_key, {})
+            project = state.get(HOST_STATE_PROJECTS_KEY, {}).get(selected["native_project_id"], {})
+            if (host_map.get(selected["native_project_id"]) != selected["host_project_id"]
+                    or project.get("id") != selected["native_project_id"]
+                    or len(project.get("rootPaths", [])) != 1
+                    or Path(project["rootPaths"][0]).resolve(strict=True) != root):
+                raise ValueError("native project map changed")
+            with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+                roots = connection.execute("SELECT project_id,path FROM project_roots ORDER BY position").fetchall()
+                rows = connection.execute("SELECT id,name FROM projects WHERE id IN (?,?)", (selected["host_project_id"], selected["ledger_project_id"])).fetchall()
+                controller = connection.execute("SELECT archived FROM threads WHERE id=?", (selected["controller_id"],)).fetchall()
+            if len(rows) != 2 or len(controller) != 1 or (controller[0]["archived"] and not allow_archived):
+                raise ValueError("project or controller host record is missing")
+            resolved = []
+            for row in roots:
+                owner, path = str(row["project_id"]), Path(row["path"])
+                try:
+                    resolved.append((owner, path.resolve(strict=True)))
+                except FileNotFoundError:
+                    # A missing unrelated root cannot own an existing root; retain
+                    # fail-closed checks for both selected identities and aliases.
+                    if owner in {selected["host_project_id"], selected["ledger_project_id"]} or path.resolve(strict=False) == root:
+                        raise
+            owners = [owner for owner, path in resolved if path == root]
+            if sorted(owners) != sorted([selected["host_project_id"], selected["ledger_project_id"]]):
+                raise ValueError("project roots are ambiguous or changed")
+            if selected["ledger_project_id"] not in self.progress_ledger.replay()["ticket_identities"]:
+                raise ValueError("Ledger project identity is not retained")
+            if host_file.read_bytes() != raw or parse_project_brief_markdown(brief.read_text(encoding="utf-8"), root=root)[1] != brief_digest:
+                raise ValueError("host or project configuration changed during binding")
+            with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+                if (connection.execute("SELECT project_id,path FROM project_roots ORDER BY position").fetchall() != roots
+                        or connection.execute("SELECT archived FROM threads WHERE id=?", (selected["controller_id"],)).fetchall() != controller
+                        or connection.execute("SELECT id,name FROM projects WHERE id IN (?,?)", (selected["host_project_id"], selected["ledger_project_id"])).fetchall() != rows):
+                    raise ValueError("host project roots or controller changed during binding")
+            name = document["project"]["id"]
+            return {"project_id": selected["ledger_project_id"], "root": root,
+                    "identities": frozenset({selected["ledger_project_id"], selected["host_project_id"], selected["native_project_id"], name}),
+                    "identity_error": None, "native_id": selected["native_project_id"]}
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, ProgressEventError) as exc:
+            raise ConsoleError(f"{purpose} explicit project alias is unavailable or stale") from exc
+
+    def project_alias_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Save an acknowledged, revision-bound local selection; never admit a controller."""
+        operation = payload.get("operation") if isinstance(payload, dict) else None
+        fields = {"operation", "selection"} if operation == "read" else {"operation", "expected_digest", "selection", "acknowledge"}
+        if (operation not in {"read", "select", "clear"} or set(payload) != fields
+                or operation in {"select", "clear"} and payload["acknowledge"] is not True):
+            raise ConsoleError("project alias requires exact acknowledged selection and revision")
+        selection = payload["selection"]
+        if not isinstance(selection, dict) or not isinstance(selection.get("native_project_id"), str):
+            raise ConsoleError("project alias selection is invalid")
+        def verify():
+            native = self._native_project_map().get(selection["native_project_id"])
+            if native is None or not native["valid"]:
+                raise ConsoleError("project alias native project is unavailable")
+            result = self._explicit_project_alias(native, "Project alias", selection, allow_archived=operation in {"read", "clear"})
+            if result is None:
+                raise ConsoleError("project alias requires a readable canonical project brief")
+            return result
+        binding = verify()
+        if operation == "read":
+            _, digest = parse_project_brief_markdown((binding["root"] / "SWARM.md").read_text(encoding="utf-8"), root=binding["root"])
+            return {"ok": True, "project_id": binding["project_id"], "source_digest": digest,
+                    "provenance": "LOCAL_SELECTION_PREVIEW", "host_attested": False,
+                    "admitted": False, "dispatched": False, "accepted": False}
+        try:
+            digest = set_explicit_project_alias(binding["root"] / "SWARM.md", expected_digest=payload["expected_digest"],
+                selection=selection, updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                verify_current_scope=verify, clear=operation == "clear")
+        except ProjectModelError as exc:
+            raise ConsoleConflict(str(exc)) from exc
+        return {"ok": True, "project_id": binding["project_id"], "source_digest": digest,
+                "provenance": "LOCAL_CLEARED" if operation == "clear" else "LOCAL_CONFIGURED", "host_attested": False,
+                "admitted": False, "dispatched": False, "accepted": False}
+
     def _canonical_project_root(self, project_id: str, purpose: str = "Project view") -> Path:
         return self._saved_project_binding(project_id, purpose)["root"]
 
     def _canonical_project_identities(self, project_id: str) -> frozenset[str]:
         return _binding_identities(self._saved_project_binding(project_id))
+
+    def _project_mission(self, project_id: str, root: Path) -> dict[str, Any]:
+        """Read purpose only from the same saved project/root used for dispatch."""
+        unknown = {"project_id": project_id, "pointer": "/project/purpose", "state": "UNKNOWN",
+                   "confirmation": "UNVERIFIED", "reason": "BRIEF_UNAVAILABLE_OR_MISMATCH"}
+        try:
+            binding = self._saved_project_binding(project_id, "Mission")
+            if Path(binding["root"]).resolve(strict=True) != root.resolve(strict=True):
+                return unknown
+            path = root / "SWARM.md"
+            if _is_reparse_point(root) or _is_reparse_point(path) or not path.is_file() or path.stat().st_size > PROJECT_VIEW_MAX_BYTES:
+                return unknown
+            return project_mission_from_brief(path.read_text(encoding="utf-8"), project_id=project_id,
+                identities=_binding_identities(binding), root=root)
+        except (ConsoleError, ProjectModelError, OSError, UnicodeError, sqlite3.Error, ValueError):
+            return unknown
 
     def _asset_project_scope(self, project_id: Any) -> Path:
         """Bind an asset request to exactly one saved host project and root."""
@@ -8890,8 +9633,7 @@ class App:
             return "INVALID", None, "the project brief field links is invalid"
         project = document["project"]
         brief_id = App._host_project_text(project.get("id"), 256)
-        purpose = App._host_project_text(project.get("purpose"), 4096)
-        if brief_id is None or purpose is None:
+        if brief_id is None:
             return "INVALID", None, "the project brief identity is invalid"
         if brief_id.casefold() not in {project_id.casefold(), display_name.casefold(), *(alias.casefold() for alias in aliases)}:
             return "INVALID", None, "the project brief belongs to another saved project"
@@ -8901,6 +9643,7 @@ class App:
         self,
         record: dict[str, Any],
         root_binding: dict[str, Any],
+        *, native_bindings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         manifest = {
             "status": "UNAVAILABLE",
@@ -8943,7 +9686,7 @@ class App:
         # The same verified native-to-SQLite binding used by planning resolves this read projection;
         # the saved alias string and IDs in root_binding stay exactly as the host recorded them.
         try:
-            binding = self._saved_project_binding(record["id"])
+            binding = self._saved_project_binding(record["id"], native_bindings=native_bindings)
         except (ConsoleError, OSError, sqlite3.Error):
             binding = None
         if binding is None or (root_binding.get("availability") != "AVAILABLE" and binding["native_id"] is None):
@@ -10501,6 +11244,9 @@ class App:
             projects, roots = _host_project_catalog(connection)
             project, state = _canonical_project_binding(rows[0], projects, roots) if len(rows) == 1 else (None, "unbound")
         if project is None or project["id"] != project_id or state not in {"direct", "root"} or rows[0]["archived"]:
+            if (len(rows) == 1 and not rows[0]["archived"] and project is None and state == "conflicted"
+                    and self._selected_root_controller(project_id, thread_id, rows[0]["cwd"]) == root):
+                return root
             if allow_adopted and len(rows) == 1 and not rows[0]["archived"] and project is None and state == "unbound":
                 projection = self.progress_ledger.replay() if projection is None else projection
                 binding = projection["task_creation_bindings"].get(projection["task_creation_operations_by_task"].get(thread_id), {})
@@ -10511,6 +11257,20 @@ class App:
                         and observation.get("cwd_digest") == _auto_digest(_normalized_project_path(rows[0]["cwd"]))):
                     return root
             raise ConsoleError("task requires observed host project membership")
+        return root
+
+    def _selected_root_controller(self, project_id: str, thread_id: str, cwd: str) -> Path | None:
+        """Recognize only the explicitly selected root controller, not arbitrary same-root tasks."""
+        binding = self._saved_project_binding(project_id, "Selected controller")
+        if binding["project_id"] != project_id or binding["native_id"] is None:
+            return None
+        root = Path(binding["root"]).resolve(strict=True)
+        if _normalized_project_path(cwd) != _normalized_project_path(str(root)):
+            return None
+        document, _ = parse_project_brief_markdown((root / "SWARM.md").read_text(encoding="utf-8"), root=root)
+        selection = document.get("explicit_project_alias", {})
+        if selection.get("controller_id") != thread_id or selection.get("ledger_project_id") != project_id:
+            return None
         return root
 
     def task_history(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -10640,6 +11400,9 @@ class App:
                         raise ValueError("existing host owner is missing, archived or has invalid cwd")
                     projects, roots = _host_project_catalog(connection)
                     observed_project, state = _canonical_project_binding(row, projects, roots)
+                    if (root_owner and state == "conflicted" and observed_project is None
+                            and self._selected_root_controller(project_id, thread_id, row["cwd"]) == root):
+                        observed_project, state = {"id": project_id}, "explicit-local-alias"
                     if state in {"stale", "conflicted"} or (observed_project and observed_project["id"] != project_id):
                         raise ValueError("existing owner belongs to a different or ambiguous project")
                     cwd = _normalized_project_path(row["cwd"])
@@ -10802,6 +11565,113 @@ class App:
         Task manifests, host goals, dispatch and acceptance are never changed.
         """
         operation = payload.get("operation") if isinstance(payload, dict) else None
+        if operation in {"read_activity", "read_logs"}:
+            if set(payload) != {"operation", "project_id", "record_id"}:
+                raise ConsoleError("ticket evidence requires exact project and ticket identities")
+            binding = self._saved_project_binding(_auto_id(payload["project_id"], "project_id"))
+            _auto_id(payload["record_id"], "record_id")
+            project_id = binding["project_id"]
+            try:
+                tickets = read_project_tickets(Path(binding["root"]) / "SWARM.md", project_ids=frozenset(_binding_identities(binding)))
+                by_id = {row["id"]: row for row in tickets["records"]}
+                if payload["record_id"] not in by_id:
+                    raise ConsoleError("ticket evidence requires an existing planning ticket")
+                scoped, pending = set(), [payload["record_id"]]
+                while pending:
+                    identity = pending.pop()
+                    if identity in scoped: continue
+                    scoped.add(identity)
+                    pending.extend(row["id"] for row in tickets["records"] if row["parent_status"] == "BOUND" and row["parent"] and row["parent"]["id"] == identity)
+                snapshot = self.progress_ledger._velocity_read_snapshot(project_id)
+                projection, records, metadata, diagnostic, links = snapshot
+                refs_by_id = {identity: [ref for ref in self.progress_ledger.ticket_execution_status(projection, project_id, identity)["references"] if ref["membership"] == "REQUIRED"] for identity in scoped}
+                references = [ref for refs in refs_by_id.values() for ref in refs]
+                targets = {(ref["task_id"], ref["block_id"]) for ref in references if ref["manifest_current"]}
+                tasks = [by_id[identity] for identity in scoped if by_id[identity]["kind"] == "task"]
+                blocks = [by_id[identity] for identity in scoped if by_id[identity]["kind"] == "block"]
+                task_ids_with_blocks = {row["parent"]["id"] for row in blocks if row["parent_status"] == "BOUND" and row["parent"]}
+                leaves = blocks + [task for task in tasks if task["id"] not in task_ids_with_blocks]
+                coverage_complete = bool(leaves) and all(ref["manifest_current"] for ref in references) and all(
+                    refs_by_id[leaf["id"]] for leaf in leaves)
+                if operation == "read_logs":
+                    task_ids = {task for task, _ in targets}
+                    controllers = set()
+                    for task_id in task_ids:
+                        state = projection["task_manifests"].get(task_id, {})
+                        manifest = state.get("versions", {}).get(state.get("active_version"), {})
+                        ctrl = manifest.get("work_assignment", {}).get("accepting_ctrl_id", manifest.get("ctrl_id"))
+                        if isinstance(ctrl, str) and ctrl: controllers.add(ctrl)
+                    items, partial = [], not coverage_complete or not bool(controllers)
+                    for ctrl in controllers:
+                        try:
+                            page = self.run_log(ctrl, project_id=project_id)
+                            items.extend(item for item in page["items"] if (item.get("task_id"), (item.get("action_target") or {}).get("subject_id")) in targets)
+                            partial |= page["retention"]["page_truncated"] or page["retention"]["source_scan_truncated"]
+                        except ConsoleError:
+                            partial = True
+                    dedup = {item["event_id"]: item for item in items}
+                    return {"ok": True, "operation": operation, "project_id": project_id, "record_id": payload["record_id"],
+                            "items": sorted(dedup.values(), key=lambda item: item["event_seq"], reverse=True), "partial": partial,
+                            "claim_limit": "Retained scoped Ledger events. Model is shown only with exact provider-result evidence; effort is a requested setting, not observed compute."}
+                now = int(time.time() * 1000); day = 86400000; first = (now // day - 6) * day
+                series = [{"start_ms": first + i * day, "accepted": None} for i in range(7)]
+                activation = metadata.get("projects", {}).get(project_id) if metadata is not None else None
+                if activation and any(row["event_seq"] > activation["event_seq"] and row["event"].get("project_id") == project_id
+                        and not self.progress_ledger._is_non_material_record(row["event"])
+                        and row["event"].get("observed_at_ms", 0) < activation["observed_at_ms"] for row in records):
+                    activation = None
+                if activation and not diagnostic and targets and coverage_complete:
+                    rate = self.progress_ledger.project_accepted_progress_rate(project_id, observed_after_ms=first,
+                        observed_before_ms=now, as_of_ms=now, bucket_ms=now-first, _snapshot=(projection, records, links))
+                    receipts = metadata["receipts"]
+                    counts = [set() for _ in series]; unknown = set()
+                    for item in rate["outcomes"]:
+                        position = (item["observed_at_ms"] - first) // day
+                        if item["kind"] == "ACCEPTED" and 0 <= position < 7 and (item["task_id"], item["block_id"]) in targets:
+                            if item["timestamp_status"] == "ORDERED" and item["event_id"] in receipts and item["linkage"]["state"] == "LINKED":
+                                counts[position].add((item["task_id"], item["block_id"]))
+                            else:
+                                unknown.add(position)
+                    for index, bucket in enumerate(series):
+                        if index not in unknown and activation["observed_at_ms"] <= bucket["start_ms"] and not any(reason in rate["reasons"] for reason in ("OUT_OF_ORDER_TIMESTAMP", "TIMESTAMP_AFTER_AS_OF", "EVENT_IDENTITY_CONFLICT", "TOPOLOGY_CONFLICT")):
+                            bucket["accepted"] = len(counts[index])
+                return {"ok": True, "operation": operation, "project_id": project_id, "record_id": payload["record_id"],
+                        "days": series, "claim_limit": "UTC accepted blocks in the retained ticket subtree; null means coverage is unknown."}
+            except (ProjectModelError, ProgressEventError) as exc:
+                raise ConsoleError(str(exc)) from exc
+        if operation in {"read_discussion", "add_comment", "add_attachment"}:
+            required = {"operation", "project_id", "record_id"}
+            if operation != "read_discussion":
+                required |= {"expected_digest", "acknowledge", "changes"}
+            if set(payload) != required or (operation != "read_discussion" and payload["acknowledge"] is not True):
+                raise ConsoleError("ticket discussion requires exact fields and write acknowledgement")
+            requested_id = _auto_id(payload["project_id"], "project_id")
+            binding = self._saved_project_binding(requested_id)
+            if operation != "read_discussion" and self._saved_project_binding(requested_id) != binding:
+                raise ConsoleConflict("saved project binding changed; reload before saving")
+            try:
+                result = ticket_discussion(Path(binding["root"]) / "SWARM.md",
+                    project_ids=frozenset(_binding_identities(binding)), record_id=payload["record_id"],
+                    operation=operation, expected_digest=payload.get("expected_digest", ""),
+                    item=payload.get("changes"),
+                    updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+            except ProjectModelError as exc:
+                if str(exc) == "project brief digest conflict":
+                    raise ConsoleConflict(str(exc)) from exc
+                if str(exc) == "project brief update failed":
+                    raise ConsoleError("SOURCE_WRITE_UNCERTAIN: reload and reconcile the same request") from exc
+                raise ConsoleError(str(exc)) from exc
+            except FileNotFoundError as exc:
+                if operation != "read_discussion":
+                    raise
+                try:
+                    (Path(binding["root"]) / "SWARM.md").lstat()
+                except FileNotFoundError:
+                    raise ConsoleError("project brief unavailable") from ProjectBriefMissing("project brief missing")
+                except OSError:
+                    raise ConsoleError("ticket discussion unavailable") from exc
+                raise ConsoleError("ticket discussion unavailable") from exc
+            return {"ok": True, "project_id": binding["project_id"], "operation": operation, **result}
         write_fields = {"operation", "project_id", "expected_digest", "acknowledge", "collection", "record_id", "changes"}
         if operation == "read":
             if set(payload) != {"operation", "project_id"}:
@@ -11177,8 +12047,9 @@ class App:
         creation_root = assignment.get("root_equivalence", {}).get("physical_root_digest", root_digest) if assignment else root_digest
         if creation["root_digest"] != creation_root or self._observed_task_root(project_id, ctrl_id, allow_adopted=True) != root:
             raise ConsoleError("bound task owning CTRL or root changed")
-        if reviewer_id in {task_id, ctrl_id}:
-            raise ConsoleError("bound task requires an independent reviewer, not its producer or creator")
+        parent_id = creation.get("parent_edge", {}).get("parent_task_id")
+        if reviewer_id in {task_id, ctrl_id, parent_id}:
+            raise ConsoleError("bound task requires an independent reviewer, not its producer, lead or creator")
         _, config, _ = load_config(self.config_path)
         # Ordinary tasks inherit their retained owning CTRL goal; they need no duplicate native goal.
         if assignment:
@@ -11195,9 +12066,11 @@ class App:
             gates=[[gate_id, list(gate[1])] for gate_id, gate in zip(gate_ids, gates)], review_strategy=strategy,
             ctrl_id=ctrl_id, root_digest=root_digest,
             role_manifest_ref=assignment["role_manifest_ref"] if assignment else creation["role_manifest_ref"])
-        accepted_id = f"bound-accepted:{task_id}:{block_id}"
         retained = next((item for item in projection["blocks"].values()
                          if item["project_id"] == project_id and item["block_id"] == block_id and item["task_id"] == task_id), None)
+        attempt = 1 if retained is None else retained["attempt"] + (retained["lifecycle_state"] == "INVALIDATED_REWORK")
+        suffix = "" if attempt == 1 else f":attempt:{attempt}"
+        accepted_id = f"bound-accepted:{task_id}:{block_id}{suffix}"
         def task_completed(snapshot):
             return App._bound_blocks_accepted(snapshot, project_id, task_id, manifest)[0]
         replay = retained is not None and retained["latest_event_id"] == accepted_id
@@ -11255,12 +12128,22 @@ class App:
                 raise InvariantError("host task/root/goal/review binding changed during verification")
             if assignment:
                 self._work_assignment_scope(project_id, manifest, self.progress_ledger.replay(), accepting=True)
+            try:
+                started = self.progress_ledger.start_velocity_instrumentation(project_id=project_id, expected_event_seq=revision)
+            except VelocityMetadataError:
+                started = None  # Analytics metadata never authorizes or prevents the reviewed completion.
+                if self.progress_ledger.replay()["cursor"]["event_seq"] != revision:
+                    raise ProgressEventError("progress ledger changed; reload before completing")
+            if started is not None:
+                if started["cursor"]["event_seq"] != revision:
+                    raise ProgressEventError("progress ledger changed; reload before completing")
+                revision = started["cursor"]["event_seq"]
             self.progress_ledger.append_bound_block_evidence(
                 project_id=project_id, task_id=task_id, block_id=block_id, manifest_digest=manifest_digest,
-                expected_event_seq=revision, evidence_path=root / relative, expected_sha256=artifact_sha256)
+                expected_event_seq=revision, evidence_path=root / relative, expected_sha256=artifact_sha256, attempt=attempt)
             result = self.progress_ledger.append_runtime_block_acceptance(
                 swarm=swarm, project_id=project_id, task_id=task_id, block_id=block_id, manifest_digest=manifest_digest,
-                expected_event_seq=self.progress_ledger.replay()["cursor"]["event_seq"])
+                expected_event_seq=self.progress_ledger.replay()["cursor"]["event_seq"], attempt=attempt)
         except (InvariantError, ProgressEventError, OSError, ValueError) as exc:
             raise ConsoleError(str(exc)) from exc
         with self.overview_lock:
@@ -11282,7 +12165,8 @@ class App:
         accepted = {block["block_id"] for block in ledger["blocks"].values()
                     if block["project_id"] == project_id and block["task_id"] == task_id
                     and block["lifecycle_state"] == "ACCEPTED"
-                    and block["latest_event_id"] == f"bound-accepted:{task_id}:{block['block_id']}"}
+                    and block["latest_event_id"] == (f"bound-accepted:{task_id}:{block['block_id']}"
+                        + ("" if block.get("attempt", 1) == 1 else f":attempt:{block['attempt']}"))}
         count = sum(block_id in accepted for block_id in declared)
         return bool(declared) and count == len(declared), count, len(declared)
 
@@ -11295,9 +12179,9 @@ class App:
             raise ConsoleError("message context requires exact project and thread")
         project_id = _auto_id(payload["project_id"], "project_id")
         thread_id = _auto_id(payload["thread_id"], "thread_id")
-        root = self._observed_task_root(project_id, thread_id)
+        root = self._observed_task_root(project_id, thread_id, allow_adopted=True)
         revision = self.progress_ledger.replay()["cursor"]["event_seq"]
-        if type(revision) is not int or revision < 0 or self._observed_task_root(project_id, thread_id) != root:
+        if type(revision) is not int or revision < 0 or self._observed_task_root(project_id, thread_id, allow_adopted=True) != root:
             raise ConsoleError("message context changed or is unavailable")
         now = int(time.time() * 1000)
         return {"ok": True, "project_id": project_id, "target_thread_id": thread_id,
@@ -11321,7 +12205,7 @@ class App:
                 raise ValueError("an exact bound task creation contract is required")
             root = self._canonical_project_root(envelope.project_id)
             if action is HQCommandAction.TASK:
-                if envelope.ctrl_id or self._observed_task_root(envelope.project_id, envelope.target_thread_id) != root:
+                if envelope.ctrl_id or self._observed_task_root(envelope.project_id, envelope.target_thread_id, allow_adopted=True) != root:
                     raise ValueError("explicit task message requires exact membership, not a CTRL grant")
             material = HQDispatchMaterial(str(root), payload["instruction"].encode("utf-8"))
             root_digest = _auto_digest({"project_id": envelope.project_id, "canonical_root": _normalized_project_path(str(root))})
@@ -11347,15 +12231,25 @@ class App:
                                             self.progress_ledger.replay(), accepting=True)
 
         def observe(cwd):
-            if not isinstance(cwd, str) or Path(cwd).resolve(strict=True) != root:
+            if not isinstance(cwd, str) or not Path(cwd).is_absolute():
                 raise ValueError("host cwd conflicts with registered project root")
+            if Path(cwd).resolve(strict=True) != root:
+                if action is not HQCommandAction.TASK:
+                    raise ValueError("host cwd conflicts with registered project root")
+                current = self.progress_ledger.replay()
+                retained = current["task_creation_bindings"].get(current["task_creation_operations_by_task"].get(envelope.target_thread_id), {})
+                subject = retained.get("existing_host", {}).get("subject", {})
+                if (subject.get("thread_id") != envelope.target_thread_id
+                        or subject.get("cwd_digest") != _auto_digest(_normalized_project_path(cwd))
+                        or self._observed_task_root(envelope.project_id, envelope.target_thread_id, allow_adopted=True, projection=current) != root):
+                    raise ValueError("host cwd conflicts with adopted task identity")
             # Recheck host catalog custody, not a title or host-issued project fiction.
             if self._canonical_project_root(envelope.project_id) != root:
                 raise ValueError("registered project root changed")
-            if action is HQCommandAction.TASK and self._observed_task_root(envelope.project_id, envelope.target_thread_id) != root:
+            if action is HQCommandAction.TASK and self._observed_task_root(envelope.project_id, envelope.target_thread_id, allow_adopted=True) != root:
                 raise ValueError("target task membership changed")
             verify_assigned_work()
-            return HQRootObservation("hq-root", str(root), root_digest)
+            return HQRootObservation("hq-root", cwd, root_digest)
 
         with ExitStack() as stack:
             channel = None
@@ -11424,7 +12318,7 @@ class App:
             connector = UniversalHQConnector(adapter,
                 authorization_verifier=SimpleNamespace(verify=lambda receipt, command, now: receipt == auth and command == envelope and now <= auth.expires_at_ms),
                 material_resolver=SimpleNamespace(resolve=lambda command: material),
-                root_verifier=SimpleNamespace(observe=observe, verify=lambda observation, command: observation.canonical_cwd == str(root) and observation.root_digest == command.root_digest))
+                root_verifier=SimpleNamespace(observe=observe, verify=lambda observation, command: observation.root_digest == command.root_digest))
             unit = contract.get("task_manifest_draft", {}).get("work_unit") if contract else None
             if unit and envelope.idempotency_key not in self.progress_ledger.replay()["connector_receipts"]:
                 try:
@@ -11475,8 +12369,32 @@ class App:
         return overview
 
     def auto_status(self, ctrl_id: str, project_id: str) -> dict[str, Any]:
-        self._auto_scope(ctrl_id, project_id)
-        return {"ok": True, **self.store.auto_status(ctrl_id, project_id)}
+        native = isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport)
+        if native:
+            self._native_auto_scope(ctrl_id, project_id)  # Read scope only; execution still needs its verified grant.
+        else:
+            self._auto_scope(ctrl_id, project_id)
+        status = self.store.auto_status(ctrl_id, project_id)
+        if status["enabled"] or status["in_flight"]:
+            failure = self._auto_observer_failure or self._auto_lane_failures.get((ctrl_id, project_id))
+            capability = None
+            if not native:
+                capability = "NATIVE_AUTO_CAPABILITY_UNAVAILABLE"
+            elif not status["in_flight"] and (not callable(getattr(self.auto_authorization, "grant", None))
+                                               or not callable(getattr(self.auto_authorization, "verify", None))):
+                capability = "AUTO_HOST_AUTHORIZATION_UNAVAILABLE"
+            if failure or capability:
+                attention = dict(status["attention"] or {})
+                if not attention:
+                    attention = {"kind": failure["reason"] if failure else capability,
+                                 "reason": "Auto needs a working host capability and successful reconciliation.",
+                                 "recovery_authority": ctrl_id}
+                if failure:
+                    attention["observer_failure"] = dict(failure)
+                if capability:
+                    attention["capability_unavailable"] = capability
+                status["attention"] = attention
+        return {"ok": True, **status}
 
     def auto_command(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
@@ -11488,7 +12406,10 @@ class App:
             raise ConsoleError("Auto command must be ENABLE, DISABLE, or an exact RELEASE_UNREACHABLE request")
         ctrl_id = _auto_id(payload.get("ctrl_id"), "ctrl_id")
         project_id = _auto_id(payload.get("project_id"), "project_id")
-        self._auto_scope(ctrl_id, project_id)
+        if isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport):
+            self._native_auto_scope(ctrl_id, project_id)
+        else:
+            self._auto_scope(ctrl_id, project_id)
         if command == "RELEASE_UNREACHABLE":
             return {"ok": True, **self.store.release_auto_dispatch(
                 ctrl_id, project_id, payload.get("reservation_id"),
@@ -11504,13 +12425,290 @@ class App:
         )
         return {"ok": True, **result}
 
+    def _configured_auto_recipe(self, recipe):
+        fields = {"run_id", "project_id", "root_digest", "ctrl_id", "goal_id", "ctrl_manifest_digest",
+                  "brief_digest", "flow_id", "flow_version", "flow_digest", "assignment_id",
+                  "assignment_version", "assignment_digest", "iterations", "operation_bound", "expires_at_ms", "bindings", "digest"}
+        binding_fields = {"iteration", "node_id", "task_id", "manifest_digest", "block_id", "attempt",
+                          "role_manifest_ref", "output_id", "artifact_path"}
+        if not isinstance(recipe, dict) or set(recipe) != fields or len(self.store._auto_payload(recipe)[0]) > MAX_BODY_BYTES:
+            raise ConsoleError("configured Auto requires one bounded exact run recipe")
+        if recipe["digest"] != _auto_digest({k: v for k, v in recipe.items() if k != "digest"}):
+            raise ConsoleError("configured Auto run digest conflicts")
+        for key in ("run_id", "project_id", "ctrl_id", "goal_id", "flow_id", "assignment_id"):
+            _auto_id(recipe[key], key)
+        if any(type(recipe[k]) is not int or recipe[k] < 1 for k in
+               ("iterations", "operation_bound", "expires_at_ms", "flow_version", "assignment_version")):
+            raise ConsoleError("configured Auto bounds and versions require positive integers")
+        if (not isinstance(recipe["bindings"], list) or not recipe["bindings"]
+                or any(not isinstance(b, dict) or set(b) != binding_fields for b in recipe["bindings"])):
+            raise ConsoleError("configured Auto block binding fields conflict")
+        identities, blocks = set(), set()
+        for binding in recipe["bindings"]:
+            if (type(binding["iteration"]) is not int or not 1 <= binding["iteration"] <= recipe["iterations"]
+                    or type(binding["attempt"]) is not int or binding["attempt"] != 1):
+                raise ConsoleError("configured Auto iteration or attempt conflicts")
+            for key in ("node_id", "task_id", "block_id", "output_id"):
+                _auto_id(binding[key], key)
+            identity = (binding["iteration"], binding["node_id"])
+            if identity in identities or binding["block_id"] in blocks:
+                raise ConsoleError("configured Auto block and step identities must be distinct")
+            identities.add(identity); blocks.add(binding["block_id"])
+            path = binding["artifact_path"]
+            if (not isinstance(path, str) or not path or "\\" in path or ":" in path or path.startswith("/")
+                    or any(part in {"", ".", ".."} for part in path.split("/"))):
+                raise ConsoleError("configured Auto output path is not canonical and root confined")
+        if len(identities) != recipe["iterations"] * len({node for _, node in identities}) or len(identities) > recipe["operation_bound"]:
+            raise ConsoleError("configured Auto requires complete bindings within the shared operation bound")
+
+    def _configured_auto_completed(self, recipe, projection, accepted_events):
+        """Terminal audit facts do not depend on today's brief, goal or file bytes."""
+        self._configured_auto_recipe(recipe)
+        for binding in recipe["bindings"]:
+            operation, manifest, _, created, _ = ProgressLedger._bound_block_context(projection, recipe["project_id"],
+                binding["task_id"], binding["block_id"], binding["manifest_digest"])
+            work = manifest.get("work_assignment")
+            pinned_role = work["role_manifest_ref"] if work else projection["task_creation_bindings"][operation]["role_manifest_ref"]
+            if binding["role_manifest_ref"] != pinned_role:
+                raise ConsoleError("configured Auto historical Role binding conflicts")
+            identity = f"bound-accepted:{binding['task_id']}:{binding['block_id']}"
+            record = accepted_events.get(identity)
+            if record is None:
+                return False
+            event = record["event"]
+            if (projection["events"].get(identity) != record["event_digest"]
+                    or event["project_id"] != recipe["project_id"] or event["task_id"] != binding["task_id"]
+                    or event["block_id"] != binding["block_id"] or event["ctrl_id"] != recipe["ctrl_id"]
+                    or event["source"] != "swarm_runtime" or event["provenance"] != f"bound-task-lifecycle:{operation}"
+                    or event["custody"] != {"surface":"ledger:bound-task-lifecycle", "receipt_id":created}
+                    or event["rework"]["attempt"] != binding["attempt"]):
+                raise ConsoleError("configured Auto historical acceptance binding conflicts")
+            proofs = event["proof"]["receipt_ids"]
+            shas = [p.removeprefix("sha256:") for p in proofs if p.startswith("sha256:")]
+            if len(shas) != 1 or re.fullmatch(r"[0-9a-f]{64}", shas[0]) is None:
+                raise ConsoleError("configured Auto historical acceptance lacks exact SHA")
+            path = binding["artifact_path"]
+            artifact = ArtifactIdentity(f"{recipe['project_id']}:{binding['task_id']}", binding["manifest_digest"],
+                f"bound-block:{binding['block_id']}", observables=((path, "file:" + shas[0]),), observed_paths=(path,))
+            if f"runtime-artifact:{artifact.content_address()}" not in proofs:
+                raise ConsoleError("configured Auto historical acceptance lacks exact artifact identity")
+        return True
+
+    def _configured_auto_step(self, state: dict[str, Any], recipe: dict[str, Any], projection: dict[str, Any]):
+        """Resolve one explicit run against current source and admitted block evidence."""
+        self._configured_auto_recipe(recipe)
+        if any(recipe[key] != state[key] for key in ("project_id", "ctrl_id")):
+            raise ConsoleError("configured Auto run scope conflicts")
+        root = self._retained_accepting_root(recipe["project_id"], recipe["ctrl_id"], recipe["ctrl_manifest_digest"], projection)
+        if recipe["root_digest"] != _auto_digest({"project_id": recipe["project_id"], "canonical_root": _normalized_project_path(str(root))}):
+            raise ConsoleError("configured Auto root changed")
+        with closing(_readonly_connection(goals_database(self.codex_home))) as connection:
+            goals = connection.execute("SELECT goal_id,status FROM thread_goals WHERE thread_id=?", (recipe["ctrl_id"],)).fetchall()
+        if len(goals) != 1 or goals[0]["goal_id"] != recipe["goal_id"] or goals[0]["status"] != "active":
+            raise ConsoleError("configured Auto goal is not the exact active host goal")
+        path = root / "SWARM.md"
+        if _is_reparse_point(root) or _is_reparse_point(path) or not path.is_file() or path.stat().st_size > 512 * 1024:
+            raise ConsoleError("configured Auto brief is unavailable")
+        document, digest = parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=root)
+        if digest != recipe["brief_digest"] or document["project"]["id"] not in self._canonical_project_identities(recipe["project_id"]):
+            raise ConsoleError("configured Auto brief changed")
+        flow = next((d for d in document.get("flow_definitions", []) if
+                     (d["id"], d["version"], d["digest"]) == (recipe["flow_id"], recipe["flow_version"], recipe["flow_digest"])), None)
+        assignment = next((d for d in document.get("flow_assignments", []) if
+                           (d["id"], d["version"], d["digest"]) == (recipe["assignment_id"], recipe["assignment_version"], recipe["assignment_digest"])), None)
+        if flow is None or assignment is None:
+            raise ConsoleError("configured Auto Flow or assignment is missing")
+        validate_flow_definition(flow)
+        validate_flow_assignment(assignment, document.get("flow_definitions", []))
+        if ((assignment["flow_id"], assignment["flow_version"], assignment["flow_digest"]) != (flow["id"], flow["version"], flow["digest"])
+                or assignment["ctrl_id"] not in {None, recipe["ctrl_id"]} or recipe["iterations"] > assignment["repeat_count"]):
+            raise ConsoleError("configured Auto assignment or finite bound conflicts")
+        nodes = {node["id"]: node for node in flow["nodes"]}
+        bindings = recipe["bindings"]
+        if (not isinstance(bindings, list) or len(bindings) != recipe["iterations"] * len(nodes)
+                or len(bindings) > recipe["operation_bound"] or not bindings):
+            raise ConsoleError("configured Auto requires complete bindings within the shared operation bound")
+        indexed, accepted, roles, waiting = {}, {}, {}, set()
+        for binding in bindings:
+            iteration, node_id = binding["iteration"], binding["node_id"]
+            if node_id not in nodes:
+                raise ConsoleError("configured Auto node conflicts")
+            key = (iteration, node_id)
+            indexed[key] = binding
+            node = nodes[node_id]
+            if len(node["outputs"]) != 1 or binding["output_id"] != node["outputs"][0] or binding["task_id"] != node["owner_id"]:
+                raise ConsoleError("configured Auto requires exactly one named output and exact node owner")
+            _, manifest, _, _, block = ProgressLedger._bound_block_context(projection, recipe["project_id"],
+                binding["task_id"], binding["block_id"], binding["manifest_digest"])
+            if projection["task_manifests"][binding["task_id"]]["active_digest"] != binding["manifest_digest"]:
+                raise ConsoleError("configured Auto task work changed")
+            if manifest.get("work_assignment"):
+                if self._work_assignment_scope(recipe["project_id"], manifest, projection, accepting=True) != root:
+                    raise ConsoleError("configured Auto accepting root changed")
+                work = manifest["work_assignment"]
+                if (work["accepting_ctrl_id"], work["goal_id"], work["artifact_path"]) != (recipe["ctrl_id"], recipe["goal_id"], binding["artifact_path"]):
+                    raise ConsoleError("configured Auto work contract conflicts")
+            elif manifest["ctrl_id"] != recipe["ctrl_id"]:
+                raise ConsoleError("configured Auto task owner changed")
+            if self._observed_task_root(recipe["project_id"], binding["task_id"], allow_adopted=True, projection=projection) != root:
+                raise ConsoleError("configured Auto actor root changed")
+            role_ref = binding["role_manifest_ref"]
+            role_binding = projection["role_assignments"].get(binding["task_id"], {})
+            role = projection["role_manifests"].get(role_binding.get("role_id"), {}).get("versions", {}).get(role_binding.get("manifest_version"))
+            if not role or role_manifest_reference(role) != role_ref:
+                raise ConsoleError("configured Auto pinned Role changed")
+            roles[key] = role
+            if assignment["subject_kind"] == "ROLE":
+                if (assignment["subject_id"], assignment["subject_version"]) != (role["id"], role["version"]):
+                    raise ConsoleError("configured Auto assignment Role conflicts")
+            else:
+                self._require_flow_assignment_subject(recipe["project_id"], assignment, accepting_scope={
+                    "ctrl_id": recipe["ctrl_id"], "manifest_digest": recipe["ctrl_manifest_digest"]}, _projection=projection)
+            relative = binding["artifact_path"]
+            target = root
+            for part in relative.split("/"):
+                target = target / part
+                try:
+                    target.lstat()
+                except FileNotFoundError:
+                    continue  # A declared, not-yet-produced output is not accepted evidence.
+                if _is_reparse_point(target):
+                    raise ConsoleError("configured Auto output cannot traverse a link")
+            if target.exists() and not target.is_file():
+                raise ConsoleError("configured Auto output requires a file, never a directory")
+            if block is None:
+                continue
+            if block["attempt"] != 1:
+                raise ConsoleError("configured Auto block attempt changed")
+            event_id = f"bound-accepted:{binding['task_id']}:{binding['block_id']}"
+            if block["lifecycle_state"] != "ACCEPTED" or block["latest_event_id"] != event_id:
+                if block["lifecycle_state"] not in {"PLANNED", "READY"}:
+                    waiting.add(key)
+                continue
+            sha = _bound_evidence_digest(target)
+            artifact = ArtifactIdentity.capture(f"{recipe['project_id']}:{binding['task_id']}", binding["manifest_digest"],
+                f"bound-block:{binding['block_id']}", root=str(root), paths=(relative,))
+            proofs = block["proof_receipt_ids"]
+            if f"sha256:{sha}" not in proofs or f"runtime-artifact:{artifact.content_address()}" not in proofs:
+                raise ConsoleError("configured Auto output lacks exact accepted artifact identity")
+            if artifact.observables != ((relative, "file:" + sha),):
+                raise ConsoleError("configured Auto output changed during capture")
+            accepted[key] = {**binding, "accepted_event_id": event_id, "accepted_event_digest": block["latest_event_digest"],
+                             "sha256": sha, "artifact_digest": artifact.content_address()}
+        if len(accepted) == len(bindings):
+            return None, True
+        if int(time.time() * 1000) >= recipe["expires_at_ms"]:
+            raise ConsoleError("configured Auto run expired")
+        for key in sorted(indexed):
+            if key in accepted or key in waiting:
+                continue
+            iteration, node_id = key
+            node = nodes[node_id]
+            previous = [(i, n) for i, n in indexed if i < iteration]
+            required = previous + [(iteration, parent) for parent in node["dependencies"]]
+            if any(item not in accepted for item in required):
+                continue
+            # Every previous iteration output remains a pinned input; current DAG inputs are explicit.
+            input_keys = sorted(set(previous + [(iteration, ref["node_id"]) for ref in node["inputs"]]))
+            inputs = [accepted[item] for item in input_keys]
+            step = indexed[key]
+            meta = {"recipe": recipe, "step": step, "inputs": inputs, "selection_cursor": dict(projection["cursor"])}
+            decision = _auto_digest({"run_digest": recipe["digest"], "step": step, "inputs": inputs})
+            candidate = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"], "goal_id": recipe["goal_id"],
+                "task_id": step["task_id"], "owner_id": step["task_id"], "request_id": recipe["run_id"],
+                "observed_turn_id": f"flow:{iteration}:{node_id}", "decision_digest": decision,
+                "route_digest": _auto_digest([recipe["flow_digest"], node_id]), "configured": meta,
+                "disposition": {"disposition": "CONTINUE", "next_operation": f"FLOW:{iteration}:{node_id}",
+                    "next_owner": step["task_id"], "next_route": node["capability"], "release_condition": "", "responsible_authority": ""}}
+            candidate["instruction"] = self._configured_auto_instruction(meta, roles[key], node)
+            candidate["instruction_digest"] = hashlib.sha256(candidate["instruction"].encode("utf-8")).hexdigest()
+            return candidate, False
+        return None, False
+
     @staticmethod
-    def _auto_instruction(candidate: dict[str, Any]) -> str:
+    def _configured_auto_instruction(meta, role, node):
+        return "SWARM configured Flow step. Verify every input path and SHA before use; stop on mismatch. " + json.dumps({
+            "run_digest": meta["recipe"]["digest"], "step": meta["step"], "inputs": meta["inputs"],
+            "mission_reference": {"project_id": meta["recipe"]["project_id"], "brief_digest": meta["recipe"]["brief_digest"],
+                                  "pointer": "/project/purpose", "confirmation": "UNVERIFIED"},
+            "role": {key: role[key] for key in ("id", "version", "purpose", "owns", "default_skills", "instructions", "boundaries")},
+            "node": node, "claim_limit": "Resolve the Mission from the bound brief; absent purpose is UNKNOWN. Return material proof for independent acceptance. Host completion is not acceptance."},
+            ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    def _configured_auto_candidate(self, state, projection):
+        if not isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport):
+            return False, None
+        # Fold the existing preparation journal, never a second run queue or persisted counter.
+        with self.store._lock, closing(self.store._connect()) as connection:
+            rows = connection.execute("SELECT payload_json,payload_digest FROM execution_event_receipts "
+                "WHERE event_kind='AUTO_DECISION' AND identity LIKE 'connector:%' "
+                "AND json_extract(payload_json,'$.ctrl_id')=? AND json_extract(payload_json,'$.project_id')=?",
+                (state["ctrl_id"], state["project_id"])).fetchall()
+        recipes = {}
+        for row in rows:
+            packet = json.loads(row["payload_json"])
+            if self.store._auto_payload(packet)[1] != row["payload_digest"]:
+                raise ConsoleError("configured Auto retained packet conflicts")
+            recipe = packet.get("instruction_meta", {}).get("configured", {}).get("recipe")
+            if recipe is not None:
+                recipes[recipe["digest"]] = recipe
+        unfinished = []
+        def select_current(recipe):
+            # Only current run preconditions are scoped waits. Journal integrity
+            # and verified Ledger/history failures stay outside this boundary.
+            try:
+                return self._configured_auto_step(state, recipe, projection)
+            except (ConsoleError, ProgressEventError, ProjectModelError, OSError, sqlite3.Error) as error:
+                raise ConsoleConflict(str(error)) from error
+        accepted_events = {}
+        if recipes:
+            # The same verified Ledger replay exposes immutable acceptance records.
+            # Do not revalidate a terminal audit run against a later mutable brief.
+            with self.progress_ledger._state.locked():
+                retained, records = self.progress_ledger._replay_unlocked()
+            if retained["cursor"] != projection["cursor"]:
+                raise ConsoleError("configured Auto history cursor changed; revalidate selection")
+            accepted_events = {r["event"]["event_id"]: r for r in records
+                               if r["event"].get("event_kind") == "ACCEPTED" and r["event"].get("lifecycle_state") == "ACCEPTED"}
+        for recipe in recipes.values():
+            if any(recipe[key] != state[key] for key in ("project_id", "ctrl_id")):
+                raise ConsoleError("configured Auto retained run scope conflicts")
+            if self._configured_auto_completed(recipe, projection, accepted_events):
+                continue
+            candidate, complete = select_current(recipe)
+            if not complete:
+                unfinished.append((recipe, candidate))
+        provider = getattr(getattr(self, "auto_authorization", None), "configured_run", None)
+        requested = provider(dict(state)) if callable(provider) else None
+        if requested is not None:
+            try:
+                self._configured_auto_recipe(requested)
+            except ConsoleError as error:
+                raise ConsoleConflict(str(error)) from error
+            if any(r["run_id"] == requested.get("run_id") and r != requested for r in recipes.values()):
+                raise ConsoleConflict("configured Auto run identity conflicts")
+            if requested not in recipes.values():
+                candidate, complete = select_current(requested)
+                if not complete:
+                    unfinished.append((requested, candidate))
+        if len(unfinished) > 1:
+            raise ConsoleConflict("multiple unfinished configured Auto runs fail closed")
+        return (True, unfinished[0][1]) if unfinished else (False, None)
+
+    def _auto_instruction(self, candidate: dict[str, Any]) -> str:
+        if "configured" in candidate:
+            meta = candidate["configured"]
+            selected, _ = self._configured_auto_step(meta["recipe"], meta["recipe"], self.progress_ledger.replay())
+            if selected is None or selected["configured"] != meta:
+                raise ConsoleError("configured Auto selection changed before admission")
+            return selected["instruction"]
         return (
             "SWARM Auto continuation. Inspect the durable objective and admitted evidence for "
             f"goal {candidate['goal_id']} and task {candidate['task_id']}. Advance exactly one "
             f"retained operation {candidate['disposition']['next_operation']} through owner "
             f"{candidate['disposition']['next_owner']} and route {candidate['disposition']['next_route']}. "
+            "Resolve the project Mission separately from the objective at the bound root SWARM.md /project/purpose; "
+            "validate project identity and brief digest, and treat missing purpose as UNKNOWN. "
             "Preserve exact custody, user keep-out, and authority gates. Return only a material receipt "
             "or one exact safety, authority, or external release condition."
         )
@@ -11694,134 +12892,307 @@ class App:
                 "", "", changed_at_ms, f"config:{digest}", project_id, scope.get("task_id", ""), value is None))
         return tuple(observations)
 
+    def _native_auto_scope(self, ctrl_id: str, project_id: str) -> Path:
+        root = self._auto_project_root(project_id)
+        if self._observed_task_root(project_id, ctrl_id) != root:
+            raise ConsoleError("native Auto controller does not belong to the registered project root")
+        return root
+
+    def _cancel_native_auto_preparation(self, state: dict[str, Any], envelope: HQCommandEnvelope) -> dict[str, Any]:
+        with self.progress_ledger._state.locked():
+            projection, _ = self.progress_ledger._replay_unlocked()
+            if envelope.idempotency_key in projection["connector_receipts"]:
+                return {"dispatched": False, "reason": "NATIVE_RECONCILIATION_REQUIRED", "state": state}
+            current = self.store._cancel_auto_preparation(envelope.command_id, projection["cursor"], now_ms=int(time.time() * 1000))
+        return {"dispatched": False, "reason": "AUTO_OFF", "state": current, "work_completed": False}
+
+    def _native_auto_dispatch(self, state: dict[str, Any], candidate: dict[str, Any] | None) -> dict[str, Any]:
+        transport = getattr(self, "task_transport", None)
+        if not isinstance(transport, NativeCodexAppTaskTransport):
+            return {"dispatched": False, "reason": "NATIVE_AUTO_CAPABILITY_UNAVAILABLE", "state": state}
+        authority = getattr(self, "auto_authorization", None)
+        now = int(time.time() * 1000)
+        root = self._native_auto_scope(state["ctrl_id"], state["project_id"])
+        root_digest = _auto_digest({"project_id": state["project_id"], "canonical_root": _normalized_project_path(str(root))})
+        projection = self.progress_ledger.replay()
+        fresh = candidate is not None
+        if fresh:
+            if not callable(getattr(authority, "grant", None)) or not callable(getattr(authority, "verify", None)):
+                return {"dispatched": False, "reason": "AUTO_HOST_AUTHORIZATION_UNAVAILABLE", "state": state}
+            context = dict(state)
+            if "configured" in candidate:
+                context["configured_run_digest"] = candidate["configured"]["recipe"]["digest"]
+            grant = authority.grant(context, root_digest)
+            if not isinstance(grant, HQAutoGrant):
+                raise ConsoleError("native Auto requires a host-owned scoped AUTO grant")
+            identity = self.store.auto_dispatch_identity(candidate)
+            reservation_id = f"auto-{identity}"
+            envelope = HQCommandEnvelope(reservation_id, identity, HQCommandAction.AUTO,
+                state["project_id"], root_digest, state["ctrl_id"], HQTargetIntent.EXISTING_THREAD,
+                candidate["disposition"]["next_owner"], candidate["instruction_digest"],
+                candidate.get("configured", {}).get("selection_cursor", projection["cursor"])["event_seq"], now, grant.expires_at_ms)
+            meta = {key: candidate[key] for key in ("goal_id", "task_id", "disposition")}
+            if "configured" in candidate:
+                meta["configured"] = candidate["configured"]
+        else:
+            reservation_id = state["reservation_id"]
+            retained = projection["connector_receipts"].get(reservation_id.removeprefix("auto-"))
+            packet = self.store.auto_connector_packet(reservation_id,
+                "" if retained is None else retained["receipts"][0]["command_digest"])
+            if packet is None:
+                return {"dispatched": False, "reason": "LEGACY_AUTO_RECONCILIATION_REQUIRED", "state": state}
+            fields = dict(packet["envelope"])
+            fields["action"] = HQCommandAction(fields["action"])
+            fields["target_intent"] = HQTargetIntent(fields["target_intent"])
+            envelope = HQCommandEnvelope(**fields)
+            fields = dict(packet["grant"])
+            fields["actions"] = tuple(HQCommandAction(action) for action in fields["actions"])
+            grant = HQAutoGrant(**fields)
+            meta = packet["instruction_meta"]
+            binding = self.store._auto_binding(self.store.load_execution_ledger().reservation(reservation_id))
+            if (binding is None or envelope.command_id != reservation_id
+                    or any(packet[key] != state[key] for key in ("ctrl_id", "project_id"))
+                    or binding["decision_digest"] != packet["decision_digest"]):
+                raise ConsoleError("retained Auto packet conflicts with its execution reservation")
+        if (envelope.action is not HQCommandAction.AUTO or envelope.project_id != state["project_id"]
+                or envelope.ctrl_id != state["ctrl_id"] or envelope.root_digest != root_digest):
+            raise ConsoleError("native Auto command scope conflicts")
+        if self._observed_task_root(envelope.project_id, envelope.target_thread_id) != root:
+            raise ConsoleError("native Auto owner does not belong to the exact project root")
+        retained_command = envelope.idempotency_key in projection["connector_receipts"]
+        preparing = not retained_command
+        if preparing and (not state["enabled"] or state["stop_after_turn"]):
+            return self._cancel_native_auto_preparation(state, envelope)
+        if not fresh and preparing and (now >= envelope.expires_at_ms
+                or envelope.expected_ledger_revision != projection["cursor"]["event_seq"]):
+            # No COMMAND exists: renew preparation, never an admitted/submitted command.
+            if not callable(getattr(authority, "grant", None)) or not callable(getattr(authority, "verify", None)):
+                return {"dispatched": False, "reason": "AUTO_HOST_AUTHORIZATION_UNAVAILABLE", "state": state}
+            context = dict(state)
+            if "configured" in meta:
+                selected, _ = self._configured_auto_step(state, meta["configured"]["recipe"], projection)
+                if selected is None or self.store.auto_dispatch_identity(selected) != envelope.idempotency_key:
+                    raise ConsoleError("configured Auto preparation no longer selects the retained step")
+                meta = {key: selected[key] for key in ("goal_id", "task_id", "disposition", "configured")}
+                context["configured_run_digest"] = meta["configured"]["recipe"]["digest"]
+            grant = authority.grant(context, root_digest)
+            if not isinstance(grant, HQAutoGrant):
+                raise ConsoleError("native Auto requires a host-owned scoped AUTO grant")
+            envelope = replace(envelope, submitted_at_ms=now, expires_at_ms=grant.expires_at_ms,
+                expected_ledger_revision=projection["cursor"]["event_seq"])
+        material = None
+        if fresh or not retained_command:
+            material = HQDispatchMaterial(str(root), self._auto_instruction(meta).encode("utf-8"))
+            if material.digest != envelope.payload_digest:
+                raise ConsoleError("native Auto instruction no longer binds the retained operation")
+
+        def resolve_material(command):
+            if material is None:
+                raise ConsoleError("retained Auto reconciliation must not reconstruct transient input")
+            return material
+
+        def verify(receipt, command, observed_at):
+            current = self.store.auto_status(state["ctrl_id"], state["project_id"])
+            return (current["enabled"] and not current["stop_after_turn"]
+                and current["revision"] == state["revision"] and receipt == grant and command == envelope
+                and callable(getattr(authority, "verify", None))
+                and authority.verify(receipt, command, observed_at) is True)
+
+        def observe(cwd):
+            if Path(cwd).resolve(strict=True) != root or self._native_auto_scope(state["ctrl_id"], state["project_id"]) != root:
+                raise ConsoleError("native Auto observed root changed")
+            return HQRootObservation("native-auto-root", str(root), root_digest)
+
+        def admit():
+            # Deny-only local state check inside the Ledger lock; host capability
+            # verification already ran before admission, never call it under that lock.
+            current = self.store.auto_status(state["ctrl_id"], state["project_id"])
+            if "configured" in meta:
+                selected_projection, _ = self.progress_ledger._replay_unlocked()
+                selected, _ = self._configured_auto_step(state, meta["configured"]["recipe"], selected_projection)
+                if selected is None or selected["configured"] != meta["configured"]:
+                    return False
+            return (current["enabled"] and not current["stop_after_turn"]
+                and current["revision"] == state["revision"]
+                and current["reservation_id"] == envelope.command_id
+                and int(time.time() * 1000) < min(envelope.expires_at_ms, grant.expires_at_ms))
+
+        connector = UniversalHQConnector(CodexAppServerAdapter(task_transport=transport),
+            authorization_verifier=SimpleNamespace(verify=verify),
+            material_resolver=SimpleNamespace(resolve=resolve_material),
+            root_verifier=SimpleNamespace(observe=observe,
+                verify=lambda observation, command: observation.canonical_cwd == str(root) and observation.root_digest == command.root_digest),
+            admission_guard=admit,
+            admission_scope=(lambda: _brief_update_lock(root / "SWARM.md")) if "configured" in meta else None)
+        if fresh or preparing:
+            connector._validate_authorization(envelope, grant, now)
+            fields = {key: value for key, value in asdict(envelope).items() if key not in {"digest", "_task_creation_json"}}
+            prepared_packet = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
+                **_auto_writer_scope(root),
+                "reservation_id": reservation_id, "decision_digest": candidate["decision_digest"] if fresh else packet["decision_digest"],
+                "envelope": fields, "grant": asdict(grant), "instruction_meta": meta}
+        if fresh:
+            if "configured" in meta:
+                # Validate the original selection again before allocating a lease;
+                # the connector repeats this under brief -> Ledger admission locks.
+                with _brief_update_lock(root / "SWARM.md"):
+                    selected, _ = self._configured_auto_step(state, meta["configured"]["recipe"], self.progress_ledger.replay())
+                    if selected is None or selected["configured"] != meta["configured"]:
+                        raise ConsoleError("configured Auto selected cursor changed before lease")
+            decision = {key: candidate[key] for key in ("ctrl_id", "project_id", "goal_id", "task_id", "owner_id",
+                "request_id", "observed_turn_id", "decision_digest", "route_digest", "instruction_digest")}
+            decision.update(next_operation=candidate["disposition"]["next_operation"],
+                request_bytes=len(material.instruction.encode("utf-8")))
+            with self.write_lock:
+                claim = self.store.claim_auto_dispatch(decision, self._auto_generation(), now_ms=now,
+                    scoped_generations=self._auto_scoped_generations(state["project_id"], candidate["task_id"]),
+                    connector_packet=prepared_packet)
+            if not claim["claimed"]:
+                return {"dispatched": False, **claim}
+        elif preparing:
+            # Keep immutable preparation attempts in the existing journal. After
+            # admission, lookup selects the exact COMMAND digest, not the newest attempt.
+            self.store.retain_auto_control("AUTO_DECISION", f"connector:{reservation_id}:{envelope.digest}", prepared_packet, now_ms=now)
+        try:
+            result = connector.execute(envelope, grant, self.progress_ledger, now_ms=int(time.time() * 1000),
+                observed_project_id=state["project_id"], observed_root_digest=root_digest)
+        except ValueError:
+            current = self.store.auto_status(state["ctrl_id"], state["project_id"])
+            if not current["enabled"] or current["stop_after_turn"]:
+                return self._cancel_native_auto_preparation(current, envelope)
+            raise
+        if result.thread_id:
+            retained = self.store.auto_status(state["ctrl_id"], state["project_id"])
+            if (retained["thread_id"], retained["turn_id"]) != (result.thread_id, result.turn_id):
+                self.store.retain_auto_host_ids(reservation_id, result.thread_id, result.turn_id,
+                    bool(result.turn_id) or result.attention == "APP_TASK_DELIVERY_UNCERTAIN", now_ms=int(time.time() * 1000))
+        if result.status not in {"RESULT", "REPLAY"} or not result.turn_id:
+            if result.native_send_issue is not None:
+                issue = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
+                         "reservation_id": reservation_id, "reason": "NATIVE_SEND_RESPONSE_UNCERTAIN",
+                         "native_send_issue": dict(result.native_send_issue), "material_progress": False}
+                self.store.retain_auto_control("AUTO_RECONCILE", f"native-send-issue:{reservation_id}", issue,
+                    now_ms=int(time.time() * 1000))
+            pending = {"dispatched": False, "reason": result.attention or "NATIVE_OUTCOME_PENDING",
+                       "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "work_completed": False}
+            if result.native_send_issue is not None:
+                pending["native_send_issue"] = dict(result.native_send_issue)
+            return pending
+        try:
+            observed = transport.observe_turn(result.thread_id, result.turn_id)
+        except Exception:
+            observed = None  # Transport failure is not evidence that the native turn is absent.
+        if observed is None or Path(observed["cwd"]).resolve(strict=True) != root:
+            return {"dispatched": preparing, "reason": "NATIVE_TERMINAL_UNKNOWN",
+                    "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "work_completed": False}
+        if observed["status"] == "inProgress":
+            return {"dispatched": preparing, "reason": "IN_FLIGHT",
+                    "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "work_completed": False}
+        ok = observed["status"] == "completed"
+        disposition = None if ok else {"disposition": "WAIT_USER", "next_operation": "ADMIT_TERMINAL_FAILURE_BEFORE_RETRY",
+            "next_owner": state["ctrl_id"], "next_route": "",
+            "release_condition": "admit the exact native terminal failure into Ledger",
+            "responsible_authority": state["ctrl_id"]}
+        completed = self.store.finish_auto_dispatch(reservation_id, result=AutoBridgeResult(
+            ok, result.thread_id, result.turn_id, failure_kind="" if ok else "NATIVE_TURN_FAILED",
+            turn_started=True, terminal=True, reachable=True), disposition=disposition, now_ms=int(time.time() * 1000),
+            collection={key: str(observed.get(key) or "") for key in ("result_observation", "result_digest")})
+        return {"dispatched": preparing, "reason": "NATIVE_DELIVERED" if preparing else "RECONCILED",
+                "state": completed, "work_completed": False, "bridge_ok": ok}
+
     def evaluate_auto_once(self, overview: dict[str, Any] | None = None) -> dict[str, Any]:
-        states = self.store.enabled_auto_states()
+        states = sorted(self.store.enabled_auto_states(), key=lambda state: not state["in_flight"])
         if not states:
             return {"dispatched": False, "reason": "AUTO_CLOSED"}
         overview = overview or self._host_overview()
         projection = self.progress_ledger.replay()
         waiting = None
+        dispatched = None
+        rejections = []
+        native = isinstance(getattr(self, "task_transport", None), NativeCodexAppTaskTransport)
+        def observed(result):
+            return {**result, "scope_rejections": list(rejections)} if rejections else result
         for state in states:
-            self._auto_scope(state["ctrl_id"], state["project_id"])
             if state["in_flight"]:
-                speed_error = ""
+                # Isolate each admitted lease: its failure is traced and its lease retained,
+                # while disjoint lanes keep reconciling. Claims still refuse shared writers.
                 try:
-                    with self.write_lock:
-                        self.store.refresh_auto_speed(state["reservation_id"], self._auto_generation(),
-                            self._auto_scoped_generations(state["project_id"], state["task_id"]), now_ms=int(time.time() * 1000))
-                except ConsoleError as exc:
-                    speed_error = str(exc)[:256]
-                if not state["thread_id"]:
-                    return {"dispatched": False, "reason": "UNREACHABLE_IN_FLIGHT", "state": state, "speed_settings_error": speed_error or None}
-                result = self.auto_bridge.reconcile(
-                    cwd=self._auto_project_root(state["project_id"]),
-                    thread_id=state["thread_id"], turn_id=state["turn_id"],
-                )
-                if result.turn_id and not state["turn_id"]:
-                    self.store.retain_auto_host_ids(
-                        state["reservation_id"], result.thread_id, result.turn_id, True,
-                        now_ms=int(time.time() * 1000),
-                    )
-                if not result.terminal:
-                    payload = {
-                        "ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
-                        "reservation_id": state["reservation_id"], "thread_id": result.thread_id,
-                        "turn_id": result.turn_id, "failure_kind": result.failure_kind,
-                        "reachable": result.reachable, "turn_started": result.turn_started,
-                        "material_progress": False,
-                    }
-                    self.store.retain_auto_control(
-                        "AUTO_RECONCILE", f"{state['reservation_id']}:{_auto_digest(payload)}",
-                        payload, now_ms=int(time.time() * 1000),
-                    )
-                    reason = "IN_FLIGHT" if result.failure_kind == "TURN_ACTIVE" else "UNREACHABLE_IN_FLIGHT"
-                    return {"dispatched": False, "reason": reason, "state": self.store.auto_status(state["ctrl_id"], state["project_id"]), "speed_settings_error": speed_error or None}
-                disposition = None if result.ok else {
-                    "disposition": "WAIT_USER", "next_operation": "ADMIT_TERMINAL_FAILURE_BEFORE_RETRY",
-                    "next_owner": state["ctrl_id"], "next_route": "",
-                    "release_condition": "admit the retained terminal host failure into Ledger",
-                    "responsible_authority": state["ctrl_id"],
-                }
-                completed = self.store.finish_auto_dispatch(
-                    state["reservation_id"], result=result, disposition=disposition, now_ms=int(time.time() * 1000),
-                )
-                return {"dispatched": False, "reason": "RECONCILED", "state": completed, "speed_settings_error": speed_error or None}
+                    if native:
+                        self._native_auto_scope(state["ctrl_id"], state["project_id"])
+                    else:
+                        self._auto_scope(state["ctrl_id"], state["project_id"])
+                    result = self._native_auto_dispatch(state, None)
+                except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError) as error:
+                    if isinstance(error, ConsoleError) and any(marker in str(error) for marker in AUTO_INTEGRITY_MARKERS):
+                        raise  # Journal integrity failure is never a scoped wait.
+                    failure = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
+                        "reservation_id": state.get("reservation_id", ""), "reason": AUTO_LANE_FAILURE,
+                        "failure_kind": type(error).__name__, "material_progress": False}
+                    self.store.retain_auto_control("AUTO_RECONCILE", _auto_digest(failure), failure,
+                        now_ms=int(time.time() * 1000))
+                    rejections.append(failure)
+                    waiting = waiting or {"dispatched": False, "reason": AUTO_LANE_FAILURE, "work_completed": False}
+                    continue
+                if result.get("reason") == "RECONCILED":
+                    waiting = result
+                else:
+                    waiting = waiting or result
+                continue
+            if native:
+                try:
+                    root = self._native_auto_scope(state["ctrl_id"], state["project_id"])
+                except ConsoleError as error:
+                    rejections.append({"ctrl_id": state["ctrl_id"], "project_id": state["project_id"], "reason": str(error)})
+                    waiting = waiting or {"dispatched": False, "reason": "AUTO_SCOPE_REJECTED", "work_completed": False}
+                    continue
+            else:
+                try:
+                    self._auto_scope(state["ctrl_id"], state["project_id"])
+                except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError) as error:
+                    if isinstance(error, ConsoleError) and any(marker in str(error) for marker in AUTO_INTEGRITY_MARKERS):
+                        raise
+                    failure = {"ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
+                        "reservation_id": "", "reason": AUTO_LANE_FAILURE,
+                        "failure_kind": type(error).__name__, "material_progress": False}
+                    self.store.retain_auto_control("AUTO_RECONCILE", _auto_digest(failure), failure,
+                        now_ms=int(time.time() * 1000))
+                    rejections.append(failure)
+                    waiting = waiting or {"dispatched": False, "reason": AUTO_LANE_FAILURE, "work_completed": False}
+                    continue
             if not state["enabled"] or state["stop_after_turn"]:
                 continue
-            candidate = self._auto_candidate(state, overview, projection)
+            if native and self.store.auto_writer_busy(_auto_writer_scope(root)):
+                # Refuse a shared or nested writer before selection or any host grant.
+                waiting = waiting or {"dispatched": False, "reason": "IN_FLIGHT", "work_completed": False,
+                                      "state": self.store.auto_status(state["ctrl_id"], state["project_id"])}
+                continue
+            try:
+                configured, candidate = self._configured_auto_candidate(state, projection)
+            except ConsoleConflict as error:
+                rejections.append({"ctrl_id": state["ctrl_id"], "project_id": state["project_id"], "reason": str(error)})
+                waiting = waiting or {"dispatched": False, "reason": "CONFIGURED_SCOPE_REJECTED", "work_completed": False}
+                continue  # No ordinary fallback for this rejected configured scope.
+            if not configured:
+                candidate = self._auto_candidate(state, overview, projection)
             if candidate is None:
+                if configured:
+                    waiting = waiting or {"dispatched": False, "reason": "CONFIGURED_ACCEPTANCE_OR_BOUND", "work_completed": False}
                 continue
             if candidate["disposition"]["disposition"] in {"WAIT_USER", "TERMINAL_BLOCKED"}:
-                payload = {
-                    "ctrl_id": candidate["ctrl_id"], "project_id": candidate["project_id"],
-                    "decision_digest": candidate["decision_digest"],
-                    "disposition": candidate["disposition"], "rubric": candidate["rubric"],
-                    "material_progress": False,
-                }
-                fresh = self.store.retain_auto_control(
-                    "AUTO_DECISION", candidate["decision_digest"], payload,
-                    now_ms=int(time.time() * 1000),
-                )
-                retained = {**self.store.auto_status(state["ctrl_id"], state["project_id"]), "replayed": not fresh}
-                if waiting is None:
-                    waiting = {"dispatched": False, "reason": candidate["disposition"]["disposition"], "state": retained}
+                payload = {"ctrl_id": candidate["ctrl_id"], "project_id": candidate["project_id"],
+                    "decision_digest": candidate["decision_digest"], "disposition": candidate["disposition"],
+                    "rubric": candidate["rubric"], "material_progress": False}
+                fresh = self.store.retain_auto_control("AUTO_DECISION", candidate["decision_digest"], payload,
+                    now_ms=int(time.time() * 1000))
+                waiting = waiting or {"dispatched": False, "reason": candidate["disposition"]["disposition"],
+                    "state": {**self.store.auto_status(state["ctrl_id"], state["project_id"]), "replayed": not fresh}}
                 continue
-            project_root = self._auto_project_root(state["project_id"])
-            decision = {key: candidate[key] for key in (
-                "ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "request_id",
-                "observed_turn_id", "decision_digest", "route_digest", "instruction_digest",
-            )}
-            decision["next_operation"] = candidate["disposition"]["next_operation"]
-            decision["request_bytes"] = len(candidate["instruction"].encode("utf-8"))
-            with self.write_lock:
-                claim = self.store.claim_auto_dispatch(decision, self._auto_generation(), now_ms=int(time.time() * 1000),
-                    scoped_generations=self._auto_scoped_generations(state["project_id"], candidate["task_id"]))
-            if not claim["claimed"]:
-                if claim.get("reason") == "REPLAY":
-                    if waiting is None:
-                        waiting = {"dispatched": False, **claim}
-                    continue
-                return {"dispatched": False, **claim}
-            result = AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True)
-            retained_thread_id = ""
-            for attempt in range(3):
-                try:
-                    result = self.auto_bridge.run(
-                        cwd=project_root, instruction=candidate["instruction"],
-                        service_tier=claim["speed_control"]["requested_service_tier"],
-                        thread_id=retained_thread_id,
-                        retain_ids=lambda thread_id, turn_id, submission_started: self.store.retain_auto_host_ids(
-                            claim["reservation_id"], thread_id, turn_id, submission_started,
-                            now_ms=int(time.time() * 1000),
-                        ),
-                    )
-                except (ConsoleError, OSError, RuntimeError):
-                    result = AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True)
-                retained_thread_id = result.thread_id or retained_thread_id
-                if result.ok or result.turn_started or not result.transient:
-                    break
-                if attempt < 2:
-                    jitter = int(candidate["decision_digest"][:4], 16) % 100 / 1000
-                    time.sleep(0.25 * (2**attempt) + jitter)
-            disposition = None
-            if not result.ok:
-                if result.turn_started:
-                    disposition = {
-                        "disposition": "WAIT_USER", "next_operation": "RECONCILE_RETAINED_HOST_TURN",
-                        "next_owner": state["ctrl_id"], "next_route": "",
-                        "release_condition": "confirm the retained host turn outcome before another turn/start",
-                        "responsible_authority": state["ctrl_id"],
-                    }
-                else:
-                    disposition = {
-                        "disposition": "WAIT_USER", "next_operation": "RESTORE_APP_SERVER_TRANSPORT",
-                        "next_owner": state["ctrl_id"], "next_route": "",
-                        "release_condition": "restore the private Codex App Server transport",
-                        "responsible_authority": state["ctrl_id"],
-                    }
-            completed = self.store.finish_auto_dispatch(claim["reservation_id"], result=result, disposition=disposition, now_ms=int(time.time() * 1000))
-            return {"dispatched": True, "bridge_ok": result.ok, "state": completed}
-        return waiting or {"dispatched": False, "reason": "NO_DUE_DECISION"}
+            result = self._native_auto_dispatch(state, candidate)
+            if result["dispatched"]:
+                dispatched = dispatched or result  # Keep evaluating disjoint lanes in the same pass.
+            else:
+                waiting = waiting or result
+        return observed(dispatched or waiting or {"dispatched": False, "reason": "NO_DUE_DECISION"})
 
     def _host_overview(self, *, refresh: bool = False) -> dict[str, Any]:
         with self.overview_lock:
@@ -12281,6 +13652,22 @@ class App:
             scope_id=selected_ctrl_id if ctrl_scope else selected_project_id,
             scope_type="ctrl" if ctrl_scope else "project",
         )
+        if not ctrl_scope:
+            windows = {}
+            ledger_project_id = None
+            try:
+                as_of_ms = int(time.time() * 1000)
+                binding = self._saved_project_binding(selected_project_id)
+                ledger_project_id = binding["project_id"]
+                windows = self.progress_ledger.project_velocity_windows(ledger_project_id, as_of_ms=as_of_ms)
+                if any(item["cursor"] != windows["7"]["cursor"] for item in windows.values()):
+                    raise ProgressEventError("Ledger changed during Velocity comparison")
+                if self._saved_project_binding(selected_project_id) != binding:
+                    raise ProgressEventError("project identity changed during Velocity comparison")
+            except (ConsoleError, OSError, ProgressEventError, AttributeError, sqlite3.Error, KeyError, TypeError, ValueError):
+                windows = {}
+                ledger_project_id = None
+            view["overview_metrics"]["velocity"] = {"schema_version": 1, "unit": "blk / h", "ledger_project_id": ledger_project_id, "windows": windows}
         view["project_view"] = None if ctrl_scope else self._project_view_projection(
             selected_project_id,
             view.get("project_briefs"),
@@ -14471,10 +15858,24 @@ class App:
         )
         self._ingest_proof_events_if_changed(observed)
         try:
-            self.evaluate_auto_once(observed)
-        except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError):
-            # Auto is opt-in and fail-closed; host observation must stay available.
-            pass
+            auto_result = self.evaluate_auto_once(observed)
+            self._auto_observer_failure = None
+            self._auto_lane_failures = {
+                (item["ctrl_id"], item["project_id"]): {
+                    "reason": item.get("reason") if item.get("reason") == AUTO_LANE_FAILURE else "AUTO_SCOPE_REJECTED",
+                    "failure_kind": item.get("failure_kind", "SCOPE_REJECTED"), "material_progress": False}
+                for item in auto_result.get("scope_rejections", [])
+                if isinstance(item, dict) and isinstance(item.get("ctrl_id"), str) and isinstance(item.get("project_id"), str)
+            }
+        except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError) as error:
+            # Preserve host observation while exposing a metadata-only, deduplicated Auto failure.
+            failure = {"reason": "AUTO_OBSERVER_FAILED", "failure_kind": type(error).__name__, "material_progress": False}
+            self._auto_observer_failure = failure
+            self._auto_lane_failures = {}
+            try:
+                self.store.retain_auto_control("AUTO_RECONCILE", "observer:" + _auto_digest(failure), failure, now_ms=now_ms)
+            except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError):
+                print("SWARM Auto observer failed; failure journal unavailable", file=sys.stderr)
         try:
             sample = self.diagnostics_collector.collect()
             if trigger != "proof":  # Quota follows the existing heartbeat, not proof submissions.
@@ -14606,10 +16007,11 @@ class App:
         self,
         record: dict[str, Any],
         root_owners: dict[str, set[str]],
+        *, native_bindings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         root_binding = self._project_root_binding(record, root_owners)
         try:
-            return self._project_manifest_projection(record, root_binding)
+            return self._project_manifest_projection(record, root_binding, native_bindings=native_bindings)
         except (AttributeError, ConsoleError, OSError, UnicodeError, sqlite3.Error, TypeError, ValueError):
             return self._project_identity_unavailable(record)
 
@@ -14628,9 +16030,13 @@ class App:
             return unavailable
         if state == "UNKNOWN" or cursor is None:
             return unavailable
+        try:
+            native_bindings = self._native_project_map()
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            native_bindings = None  # Preserve each identity's existing unavailable handling.
         projects = []
         for record in records:
-            identity = self._project_identity(record, root_owners)
+            identity = self._project_identity(record, root_owners, native_bindings=native_bindings)
             manifest = identity.get("manifest") if isinstance(identity.get("manifest"), dict) else {}
             projects.append({
                 "project_id": record["id"],
@@ -14728,11 +16134,15 @@ class App:
         }
         projects: list[dict[str, Any]] = []
         records_by_id = {record["id"]: record for record in records}
+        try:
+            native_bindings = self._native_project_map()
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            native_bindings = None  # Preserve each identity's existing unavailable handling.
         for record in records:
             project = copy.deepcopy(
                 navigation_by_id.get(record["id"], self._project_navigation_fallback(record))
             )
-            identity = self._project_identity(record, root_owners)
+            identity = self._project_identity(record, root_owners, native_bindings=native_bindings)
             project.update({
                 "id": record["id"],
                 "name": record["display_name"],
@@ -16107,8 +17517,10 @@ class App:
                 draft = payload["assignment"]
                 required = {"version", "subject_kind", "subject_id", "subject_version", "ctrl_id",
                             "flow_id", "flow_version", "flow_digest", "label", "notes", "repeat_count"}
-                if not isinstance(draft, dict) or set(draft) != required:
+                if not isinstance(draft, dict) or set(draft) not in (required, required | {"decision"}):
                     raise ConsoleError("Flow assignment draft fields are invalid")
+                if isinstance(draft.get("decision"), dict) and draft["decision"].get("action") == "ADAPT" and "lesson" not in draft["decision"]:
+                    raise ConsoleError("new ADAPT decisions require cost and core planning evidence")
                 identity = {key: draft[key] for key in ("subject_kind", "subject_id", "ctrl_id")}
                 record = {**draft, "id": "assignment-" + _auto_digest(identity)}
                 record = validate_flow_assignment({**record, "digest": "sha256:" + _auto_digest(record)}, document.get("flow_definitions", []))
@@ -16142,6 +17554,7 @@ class App:
                     raise ConsoleConflict("Flow changed after saving; reload to reconcile")
             result = {"ok": True, "project_id": project_id, "source_digest": digest,
                 "definitions": document.get("flow_definitions", []), "assignments": document.get("flow_assignments", []),
+                "hive_lessons": flow_hive_lessons(document.get("flow_assignments", [])),
                 "starter": create_flow_draft(), "claim_limit": "Saved project definitions, scoped preferences and previews only. Assignment history pins source versions; it does not prove current runtime binding. Repetition is manual planning metadata, never a trigger or task dispatch."}
             if operation == "preview":
                 definition = next((item for item in result["definitions"] if item["id"] == payload["flow_id"] and type(payload["version"]) is int and item["version"] == payload["version"]), None)
@@ -16154,7 +17567,7 @@ class App:
                 _, agents, _, _ = self._observed_scope(project_id=project_id)
                 owner = next((agent for agent in agents if agent.get("id") == node["owner_id"] and agent.get("project_id") == project_id and agent.get("archived") is not True), None)
                 external = bool(set(node["proof_classes"]) & {"HUMAN", "AUTH", "PROVIDER", "PAYMENT", "DEPLOYED", "DEVICE", "BROWSER_AUTHENTICATED"})
-                ready = owner is not None and not external
+                ready = owner is not None and not external and bool(document["authority"].get("ctrl_id"))
                 labels = {key: unicodedata.normalize("NFC", " ".join(node[key].split()))[:160].rstrip() for key in ("objective", "completion")}
                 result["preview"] = {"status": "PREVIEW", "readiness": "READY" if ready else "WAITING", "node_id": node["id"],
                     "flow_digest": definition["digest"], "node_digest": "sha256:" + _auto_digest(node), "source_digest": digest, "dispatch_available": False,
@@ -16163,7 +17576,7 @@ class App:
                     "waiting_node_ids": [item["id"] for item in definition["nodes"] if item["dependencies"]],
                     "instruction": "\n".join((definition["objective"], node["objective"], "Required capability: " + node["capability"], "Completion: " + node["completion"], "Proof: " + ", ".join(node["proof_classes"]))),
                     "task_manifest_draft": build_task_manifest(manifest_id="flow-preview", task_id="draft-only", task_name=labels["objective"],
-                        project_id=project_id, ctrl_id=document["authority"].get("ctrl_id") or node["owner_id"], role_scope="DOER_SINGLE",
+                        project_id=project_id, ctrl_id=document["authority"]["ctrl_id"], role_scope="DOER_SINGLE",
                         milestones=[{"milestone_id": node["id"], "order": 0, "title": labels["objective"], "verification_policy": "flow-required-proof", "supersedes_milestone_id": None}],
                         blocks=[{"block_id": "flow-output", "milestone_id": node["id"], "order": 0, "title": labels["completion"], "verification_policy": "flow-required-proof", "estimate_minutes": None, "weight": None, "supersedes_block_id": None}]) if ready else None}
                 if parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=root)[1] != digest:
@@ -16172,7 +17585,7 @@ class App:
         except ProjectModelError as exc:
             raise ConsoleError(str(exc)) from exc
 
-    def _require_flow_assignment_subject(self, project_id: str, assignment: dict[str, Any], *, accepting_scope=None) -> None:
+    def _require_flow_assignment_subject(self, project_id: str, assignment: dict[str, Any], *, accepting_scope=None, _projection=None) -> None:
         """Validate scope without editing shared roles, task identities or dispatching."""
         ctrl_id = assignment["ctrl_id"]
         if accepting_scope is not None and (assignment["subject_kind"] not in {"LAB", "FACTORY"}
@@ -16186,7 +17599,7 @@ class App:
                          if item["id"] == assignment["subject_id"] and item["id"].casefold() != "critic"), None)
             version = role["active_version"] if role else None
         else:
-            projection = self.progress_ledger.replay()
+            projection = self.progress_ledger.replay() if _projection is None else _projection
             task_id = assignment["subject_id"]
             state = projection["task_manifests"].get(task_id)
             manifest = state["versions"][state["active_version"]] if state else None
@@ -16259,7 +17672,12 @@ class App:
         starting_flow = (f"Starting Flow: {template['name']}. Suggested outcome: {template['outcome']}\n"
             + "\n".join(f"- {step}" for step in template["guide"])
             + f"\nSuggested professions, not a fixed crew: {', '.join(template['suggested_roles'])}.\n") if template else "Custom unit: choose a Flow for this objective.\n"
+        root = self._canonical_project_root(project_id)
+        mission = self._project_mission(project_id, root)
         instruction = (f"Use SWARM. You are the LEAD coordinator of the {kind} work unit {name}. Its objective is: {objective}\n"
+            "Project Mission is distinct from that objective; verify the bound root and brief digest before relying on stated text. "
+            "Missing purpose is UNKNOWN and text is not evidence of user confirmation: "
+            + json.dumps(mission, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
             "Consume this exact selected profession manifest; LEAD is your structural responsibility, not a profession or model setting:\n"
             + json.dumps(role, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
             + f"Owning CTRL: {ctrl_id}. Parent goal: {parent_goal or 'pending binding; reconcile with CTRL'}. "
@@ -16269,7 +17687,6 @@ class App:
             + starting_flow +
             "Decompose the next useful outcome into bounded child tasks, with exact owners, custody, evidence, stopping conditions and independent review. "
             "Do not assign the whole unit goal to one producer. Coordinate those tasks and return results through the owning CTRL.")
-        root = self._canonical_project_root(project_id)
         now = int(time.time() * 1000)
         contract = {"role_manifest": role, "task_manifest_draft": {key: value for key, value in manifest.items() if key not in {"task_id", "manifest_digest"}},
             "parent_task_id": ctrl_id, "topology_manifest_receipt_id": identity + "-topology", "task_receipt_id": identity + "-task",
@@ -16394,6 +17811,16 @@ class App:
 
         candidates: list[dict[str, Any]] = []
         identities: dict[str, str] = {}
+        try:
+            reservations = self.store.load_execution_ledger().reservations
+            observation_unavailable = False
+        except (ConsoleError, InvariantError, OSError, sqlite3.Error, ValueError):
+            reservations = ()
+            observation_unavailable = True
+        reservations_by_receipt: dict[str, list[ExecutionReservation]] = {}
+        for reservation in reservations:
+            if reservation.material_receipt_id:
+                reservations_by_receipt.setdefault(reservation.material_receipt_id, []).append(reservation)
         for record in records:
             event = record.get("_event")
             if event is None or event.ctrl_id != ctrl_id:
@@ -16425,6 +17852,22 @@ class App:
                 *event.cost_receipt_ids,
                 *event.release_receipt_ids,
             ]))[:12]
+            matching = [reservation for reservation in reservations_by_receipt.get(event.completion_receipt_id, ())
+                        if reservation.task_id == event.task_id and reservation.project_id == resolved_project_id
+                        and reservation.owner_id == event.owner_id
+                        and reservation.material_receipt_id == event.completion_receipt_id
+                        and reservation.material_receipt_id and reservation.host_completed]
+            observation = {"state": "UNKNOWN", "model": None, "effort": None,
+                           "reason": "EXECUTION_STORE_UNAVAILABLE" if observation_unavailable else "NO_RUN_BOUND_PROVIDER_RECEIPT"}
+            if len(matching) == 1:
+                reservation = matching[0]
+                observed = reservation.provider_model_observation
+                observation = {"state": "PROVIDER_REPORTED" if observed else "UNKNOWN",
+                               "model": observed["model"] if observed else None, "effort": None,
+                               "requested_model": reservation.requested_model or None,
+                               "requested_effort": reservation.requested_effort or None,
+                               "evidence_digest": observed["evidence_digest"] if observed else None,
+                               "reason": "OBSERVED_EFFORT_UNSUPPORTED" if observed else "NO_RUN_BOUND_PROVIDER_RECEIPT"}
             candidates.append({
                 "event_id": event.event_id,
                 "event_digest": event_digest,
@@ -16439,6 +17882,7 @@ class App:
                 "agent_id": event.task_id,
                 "structural_role": node.get("role"),
                 "profession": node.get("worker_role"),
+                "model_observation": observation,
                 "summary": summary,
                 "evidence_refs": evidence_refs,
                 "action_target": {
@@ -16743,7 +18187,34 @@ class App:
             evidence_id,
             digest,
             allowed_root=self.codex_home / PROOF_MEDIA_ROOT,
+            codex_home=self.codex_home,
         )
+
+    def authorize_original_proof(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Accept one explicitly selected original through the authenticated local endpoint."""
+        if event.get("acknowledge") is not True:
+            raise ConsoleError("original proof requires explicit source acknowledgement")
+        locator = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=4096))
+        if not locator.is_absolute():
+            raise ConsoleError("original proof path must be absolute")
+        task_id = _safe_metadata_text(event.get("task_id"), "task_id", maximum=256)
+        overview = self._host_overview()
+        nodes = [node for node in overview.get("nodes", []) if str(node.get("id")) == task_id
+                 and not node.get("virtual") and node.get("project_id")]
+        if len(nodes) != 1:
+            raise ConsoleError("proof media requires an observed task")
+        project_id = str(nodes[0]["project_id"])
+        if "project_id" in event and _safe_metadata_text(event["project_id"], "project_id", maximum=256) != project_id:
+            raise ConsoleError("proof media project does not match the observed task")
+        path = locator.resolve(strict=True)
+        payload = {**event, "source": "CtrlEvidence", "task_id": task_id, "project_id": project_id,
+                   "locator": str(path), "disposition": "PENDING",
+                   "receipt": f"ctrl-original:{task_id}", "surface_kind": "available_media"}
+        result = self.store.record_proof_media(payload, now_ms=int(time.time() * 1000), allowed_root=path.parent,
+                                               check_event_receipts=True)
+        with self.overview_lock:
+            self._store_generation += 1
+        return result
 
     def proof_cursor(self) -> dict[str, Any]:
         self._ingest_proof_events_if_changed()
@@ -16775,6 +18246,7 @@ class App:
             safe_payload,
             now_ms=int(time.time() * 1000),
             allowed_root=self.codex_home / PROOF_MEDIA_ROOT,
+            check_event_receipts=True,
         )
         try:
             self.observe_once("proof")
@@ -18179,6 +19651,7 @@ class Handler(BaseHTTPRequestHandler):
             "ok": True,
             "token": self.server.app.token if local else "",
             "config_path": str(self.server.app.config_path) if local else "",
+            "codex_home": str(self.server.app.codex_home) if local else "",
             "local_only": local,
             "read_only": not local,
             "capabilities": {"task_message": {"contract": "swarm.hq_task_message.v1", "method": "POST",
@@ -18900,6 +20373,10 @@ class Handler(BaseHTTPRequestHandler):
                     payload.get("scope_type"), payload.get("scope_id"), payload.get("expected_revision"),
                 )
                 self._json(HTTPStatus.OK, {"ok": True, "reset": result})
+                return
+            if path == "/api/evidence/original":
+                result = self.server.app.authorize_original_proof(self._payload())
+                self._json(HTTPStatus.OK, {"ok": True, "proof": result})
                 return
             if path == "/api/evidence":
                 result = self.server.app.register_proof(self._payload())

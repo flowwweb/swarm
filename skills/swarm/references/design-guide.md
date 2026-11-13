@@ -43,3 +43,18 @@ view derived from an evidence-backed design constitution.
 For each material issue, show the observed state, why it matters in this
 context, a concrete correction, and a good/counterexample when useful. Embed the
 rendered evidence. Separate standards, observed behavior, and reviewer taste.
+
+## Visual ownership and ImageGen
+
+Design, mockup, image-generation and image-editing work goes to a typed visual
+owner even when small: Designer owns product experience, interaction and design
+systems; Artist owns expressive media. With no eligible visual owner, keep the
+gap; CTRL never produces. An explicit request for a mockup, UI mockup, screen
+option, or design option means built-in ImageGen bitmap output: Designer
+generates one separate full-frame bitmap for every requested frame or option, and
+CTRL only routes the request and surfaces the artifacts. A composite, collage,
+contact sheet, stitched screenshot, HTML/CSS/canvas rendering, or other
+code-native substitute is permitted only when the user explicitly asks for that
+artifact class or explicitly approves an exception, and never replaces a
+requested frame. Bind self-review to the exact delivered artifact, not previews
+or transformation receipts.

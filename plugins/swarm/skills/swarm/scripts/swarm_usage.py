@@ -172,7 +172,8 @@ def verify_candidate(manifest_path):
             "unexpected": sorted(str(p.relative_to(root)) for p in unexpected)}
 
 
-def build_report(sessions, expected_model="gpt-6.1-sol", expected_effort="xhigh"):
+def build_report(sessions, expected_model="gpt-6.1-sol", expected_effort="xhigh", *,
+                 participant_ids=None, outcome_start=None, outcome_end=None):
     identities = [s["thread_id"] for s in sessions]
     if not all(identities) or len(set(identities)) != len(identities):
         raise ValueError("sessions require unique observed thread identities")
@@ -182,11 +183,24 @@ def build_report(sessions, expected_model="gpt-6.1-sol", expected_effort="xhigh"
         row["model"] == expected_model and row["effort"] == expected_effort for row in rows)
     costs = [row["standard_api_equivalent_usd"] for row in rows]
     complete = bool(sessions) and all(s["accounting_status"] == "SNAPSHOT" for s in sessions)
+    if (outcome_start is None) != (outcome_end is None):
+        raise ValueError("outcome elapsed time requires both boundaries")
+    elapsed = (utc(outcome_end) - utc(outcome_start)).total_seconds() if outcome_start else None
+    if elapsed is not None and elapsed <= 0:
+        raise ValueError("outcome end must be later than start")
+    if participant_ids is not None and (not isinstance(participant_ids, list) or
+            any(not isinstance(item, str) or not item.strip() for item in participant_ids) or
+            len(set(participant_ids)) != len(participant_ids)):
+        raise ValueError("participant roster requires unique nonempty identities")
+    missing = sorted(set(participant_ids) - set(identities)) if participant_ids is not None else None
+    outcome_coverage = "INCOMPLETE" if missing else "UNVERIFIED"
     return {"schema_version": 1, "rate_source": RATE_SOURCE, "rates_verified_on": "2026-10-01",
             "expected_model": expected_model, "expected_effort": expected_effort,
             "model_lock_status": "PASS" if lock_ok else "FAIL",
             "token_coverage": "SUPPLIED_SESSIONS_ONLY" if complete else "UNVERIFIED",
             "participant_roster_status": "REQUIRES_HOST_RECONCILIATION",
+            "missing_participants": missing, "outcome_token_coverage": outcome_coverage,
+            "outcome_tokens": None, "elapsed_seconds": elapsed,
             "tokens": totals if complete else None,
             "observed_partial_tokens": totals,
             "standard_api_equivalent_usd": str(sum(map(Decimal, costs))) if complete and costs and all(c is not None for c in costs) else None,
@@ -203,6 +217,9 @@ def main():
     report.add_argument("sessions", type=Path, nargs="+")
     report.add_argument("--after")
     report.add_argument("--before")
+    report.add_argument("--participant", action="append", dest="participants")
+    report.add_argument("--outcome-start")
+    report.add_argument("--outcome-end")
     report.add_argument("--model", default="gpt-6.1-sol")
     report.add_argument("--effort", default="xhigh")
     report.add_argument("--output", type=Path)
@@ -211,7 +228,9 @@ def main():
         if args.command == "verify-candidate":
             result = verify_candidate(args.manifest)
         else:
-            result = build_report([read_session(p, args.after, args.before) for p in args.sessions], args.model, args.effort)
+            result = build_report([read_session(p, args.after, args.before) for p in args.sessions], args.model, args.effort,
+                                  participant_ids=args.participants, outcome_start=args.outcome_start,
+                                  outcome_end=args.outcome_end)
             if args.output:
                 args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(result, indent=2))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -60,12 +61,13 @@ _LIFECYCLE_FIELDS = frozenset({
 })
 _UPDATE_LOCK = threading.Lock()
 _MAX_BRIEF_BYTES = 512 * 1024
+TICKET_DESCRIPTION_MAX_BYTES = 16 * 1024
 # Planning tickets: Goal(root) -> Milestone -> Task -> Block(terminal), all inside one project brief.
 _TICKET_KINDS = {"goals": "goal", "milestones": "milestone", "tasks": "task", "blocks": "block"}
 _TICKET_PARENT_KINDS = {"goal": None, "milestone": "goal", "task": "milestone", "block": "task"}
 _TICKET_PARENT_FIELDS = {"milestone": "goal_id", "task": "milestone_id", "block": "task_id"}
 _TICKET_PRIORITIES = ("critical", "high", "medium", "low")
-_TICKET_FIELDS = frozenset({"label", "description", "rank", "priority", "parent_id", "assignment"})
+_TICKET_FIELDS = frozenset({"label", "description", "rank", "priority", "parent_id", "assignment", "ownership"})
 _TICKET_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _TICKET_CLAIM_LIMIT = (
     "Project brief planning metadata only. Priority, parent and assignment never grant execution, "
@@ -75,6 +77,14 @@ _TICKET_CLAIM_LIMIT = (
 
 class ProjectModelError(ValueError):
     pass
+
+
+class ProjectBriefMissing(ProjectModelError):
+    """The saved project has no brief at its canonical location."""
+
+
+class ProjectBriefPathRejected(ProjectModelError):
+    """The existing brief path did not pass the link/reparse guard."""
 
 
 def create_flow_draft() -> dict[str, Any]:
@@ -98,8 +108,36 @@ def validate_flow_assignment(value: Any, definitions: list[dict[str, Any]]) -> d
     """Project-scoped preferences only; repetition never grants dispatch authority."""
     fields = {"id", "version", "subject_kind", "subject_id", "subject_version", "ctrl_id",
               "flow_id", "flow_version", "flow_digest", "label", "notes", "repeat_count", "digest"}
-    if not isinstance(value, dict) or set(value) != fields:
+    if not isinstance(value, dict) or set(value) not in (fields, fields | {"decision"}):
         raise ProjectModelError("Flow assignment fields are invalid")
+    if "decision" in value:
+        decision = value["decision"]
+        fields = {"action", "outcome", "reason", "cost_basis"}
+        if (not isinstance(decision, dict) or set(decision) not in (fields, fields | {"lesson"})
+                or not isinstance(decision["action"], str) or decision["action"] not in {"KEEP", "ADAPT"}
+                or any(not isinstance(decision[key], str) or not decision[key].strip()
+                       or len(decision[key]) > 2048 or not _flow_text(decision[key])
+                       for key in ("outcome", "reason", "cost_basis"))):
+            raise ProjectModelError("Flow decision requires KEEP or ADAPT, outcome, reason and cost basis")
+        if "lesson" in decision:
+            lesson = decision["lesson"]
+            if (not isinstance(lesson, dict) or set(lesson) != {"artifact_digest", "inputs_digest", "expected_gain", "change_cost", "core_before", "core_after"}
+                    or any(not isinstance(lesson[key], str) or re.fullmatch(r"sha256:[0-9a-f]{64}", lesson[key]) is None for key in ("artifact_digest", "inputs_digest"))
+                    or any(type(lesson[key]) is not int or not 0 <= lesson[key] <= 2**53 - 1 for key in ("expected_gain", "change_cost"))):
+                raise ProjectModelError("Flow lesson requires exact evidence digests and bounded comparable cost estimates")
+            for core in (lesson["core_before"], lesson["core_after"]):
+                if (not isinstance(core, dict) or set(core) != {"ctrl_id", "unit_ids"}
+                        or not isinstance(core["ctrl_id"], str) or _TICKET_TOKEN.fullmatch(core["ctrl_id"]) is None
+                        or not isinstance(core["unit_ids"], list) or not core["unit_ids"]
+                        or any(not isinstance(item, str) or _TICKET_TOKEN.fullmatch(item) is None for item in core["unit_ids"])
+                        or len(set(core["unit_ids"])) != len(core["unit_ids"])):
+                    raise ProjectModelError("Flow lesson requires a CTRL and distinct Unit identities")
+            if (lesson["core_before"]["ctrl_id"] != lesson["core_after"]["ctrl_id"]
+                    or set(lesson["core_before"]["unit_ids"]) != set(lesson["core_after"]["unit_ids"])):
+                raise ProjectModelError("ordinary Flow adaptation cannot alter core CTRL or Units")
+            expected = "ADAPT" if lesson["expected_gain"] > lesson["change_cost"] else "KEEP"
+            if decision["action"] != expected:
+                raise ProjectModelError("Flow decision must reflect expected gain and change cost")
     if not isinstance(value["subject_kind"], str) or value["subject_kind"] not in {"ROLE", "LAB", "FACTORY"}:
         raise ProjectModelError("Flow assignment subject kind is invalid")
     for key in ("subject_id", "subject_version", "flow_id"):
@@ -126,6 +164,16 @@ def validate_flow_assignment(value: Any, definitions: list[dict[str, Any]]) -> d
     if value["digest"] != "sha256:" + _digest({k: v for k, v in value.items() if k != "digest"}):
         raise ProjectModelError("Flow assignment digest mismatch")
     return value
+
+
+def flow_hive_lessons(assignments: list[dict[str, Any]], *, inputs_digest: str | None = None) -> list[dict[str, Any]]:
+    """Project useful Flow evidence without creating a second decision authority."""
+    return [{"assignment_id": item["id"], "assignment_version": item["version"],
+             "assignment_digest": item["digest"], "flow_digest": item["flow_digest"],
+             "decision": item["decision"], "requires_reassessment": True}
+            for item in assignments if "decision" in item and "lesson" in item["decision"]
+            and (inputs_digest is None or item["decision"]["lesson"]["inputs_digest"] == inputs_digest)]
+
 
 
 def validate_flow_definition(value: Any) -> dict[str, Any]:
@@ -223,7 +271,7 @@ def _brief_regular_path(path: Path):
     for item in (*reversed(path.parents), path):
         info = item.lstat()
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-            raise ProjectModelError("brief content links/reparse points are not admissible")
+            raise ProjectBriefPathRejected("brief content links/reparse points are not admissible")
         if not (stat.S_ISREG(info.st_mode) if item == path else stat.S_ISDIR(info.st_mode)):
             raise ProjectModelError("brief content path is not regular")
     return path.stat()
@@ -410,6 +458,25 @@ def parse_project_brief_markdown(text: str, *, project_id: str | None = None,
     return document, f"sha256:{_digest(document)}"
 
 
+def project_mission_from_brief(text: str, *, project_id: str, identities: frozenset[str],
+                               root: Path | None = None, expected_digest: str | None = None) -> dict[str, Any]:
+    """Resolve one stated Mission under an already established project/root binding."""
+    if not isinstance(project_id, str) or not project_id or not identities:
+        raise ProjectModelError("Mission requires an established project binding")
+    document, digest = parse_project_brief_markdown(text, root=root)
+    actual = document["project"]["id"]
+    if actual.casefold() not in {item.casefold() for item in identities if isinstance(item, str)}:
+        raise ProjectModelError("Mission brief belongs to another project")
+    if expected_digest is not None and digest != expected_digest:
+        raise ProjectModelError("Mission brief digest changed")
+    purpose = document["project"].get("purpose")
+    known = (isinstance(purpose, str) and bool(purpose.strip()) and len(purpose) <= 4096
+             and re.match(r"^unknown(?:\s*:|\s*$)", purpose.strip(), re.IGNORECASE) is None)
+    return {"project_id": project_id, "brief_project_id": actual, "brief_digest": digest,
+            "pointer": "/project/purpose", "state": "KNOWN" if known else "UNKNOWN",
+            "confirmation": "UNVERIFIED", "text": purpose if known else None}
+
+
 def render_project_brief_markdown(text: str, document: Mapping[str, Any], *, root: Path | None = None) -> str:
     current, _ = parse_project_brief_markdown(text, root=root)
     replacement = dict(document)
@@ -469,6 +536,33 @@ def mutate_project_brief(
             updated_at=updated_at,
             verify_current_scope=verify_current_scope,
         )
+
+
+def set_explicit_project_alias(path: Path, *, expected_digest: str, selection: Mapping[str, Any],
+                               updated_at: str, verify_current_scope: Callable[[], Any], clear: bool = False) -> str:
+    """CAS one explicit local project mapping; this never grants execution authority."""
+    fields = {"native_project_id", "host_project_id", "ledger_project_id", "controller_id"}
+    if not isinstance(selection, Mapping) or set(selection) != fields or any(
+            not isinstance(selection[key], str) or not selection[key].strip() or len(selection[key]) > 128
+            or any(ord(char) < 33 for char in selection[key]) for key in fields):
+        raise ProjectModelError("project alias requires exact bounded identities")
+    if selection["host_project_id"] == selection["ledger_project_id"]:
+        raise ProjectModelError("project alias requires distinct host and Ledger identities")
+    if not callable(verify_current_scope):
+        raise ProjectModelError("project alias requires fresh host scope verification")
+    with _brief_update_lock(path):
+        text, document, _ = _read_brief_for_edit(path, expected_digest)
+        old = document.get("explicit_project_alias")
+        if old is not None and old != dict(selection):
+            raise ProjectModelError("existing project alias must be explicitly reconciled")
+        if clear:
+            if old != dict(selection):
+                raise ProjectModelError("clear requires the exact retained project alias")
+            del document["explicit_project_alias"]
+        else:
+            document["explicit_project_alias"] = dict(selection)
+        verify_current_scope()
+        return _write_project_brief(path, text, document, updated_at)
 
 
 def _mutate_project_brief(
@@ -570,7 +664,15 @@ def _mutate_project_brief(
 
 
 def _read_brief_for_edit(path: Path, expected_digest: str, *, compare: bool = True) -> tuple[str, dict[str, Any], str]:
-    if path.name != "SWARM.md" or path.is_symlink() or not path.is_file():
+    if path.name != "SWARM.md" or path.is_symlink():
+        raise ProjectModelError("project brief path must be an existing regular SWARM.md")
+    try:
+        path.lstat()
+    except FileNotFoundError as exc:
+        raise ProjectBriefMissing("project brief path must be an existing regular SWARM.md") from exc
+    except OSError as exc:
+        raise ProjectModelError("project brief path must be an existing regular SWARM.md") from exc
+    if not path.is_file():
         raise ProjectModelError("project brief path must be an existing regular SWARM.md")
     try:
         text = path.read_bytes().decode("utf-8")
@@ -658,6 +760,22 @@ def _ticket_assignment(value: Any) -> dict[str, str]:
     return dict(value)
 
 
+def _milestone_ownership(value: Any) -> dict[str, Any]:
+    def unit(item: Any) -> bool:
+        return (isinstance(item, dict) and set(item) == {"kind", "id"}
+                and isinstance(item["kind"], str) and item["kind"] in {"LAB", "FACTORY"} and isinstance(item["id"], str)
+                and _TICKET_TOKEN.fullmatch(item["id"]) is not None)
+    if (not isinstance(value, dict) or set(value) != {"owner", "contributors"}
+            or not unit(value["owner"]) or not isinstance(value["contributors"], list)
+            or len(value["contributors"]) > 64 or not all(unit(item) for item in value["contributors"])):
+        raise ProjectModelError("milestone ownership requires one Unit owner and distinct Unit contributors")
+    units = [item["id"] for item in [value["owner"], *value["contributors"]]]
+    if len(set(units)) != len(units):
+        raise ProjectModelError("milestone ownership requires distinct Units")
+    return value
+
+
+
 def _ticket_record(kind: str, record: Mapping[str, Any], groups: Mapping[str, list[dict[str, Any]]],
                    index: Mapping[str, tuple[str, dict[str, Any]]], order: int) -> dict[str, Any]:
     identity = record["id"].strip()
@@ -668,6 +786,10 @@ def _ticket_record(kind: str, record: Mapping[str, Any], groups: Mapping[str, li
         assignment = _ticket_assignment(record.get("assignment"))
     except ProjectModelError:
         assignment = None
+    try:
+        ownership = _milestone_ownership(record["ownership"]) if kind == "milestone" and "ownership" in record else None
+    except ProjectModelError:
+        ownership = None
     return {
         "id": identity,
         "kind": kind,
@@ -676,6 +798,7 @@ def _ticket_record(kind: str, record: Mapping[str, Any], groups: Mapping[str, li
         "rank": rank if isinstance(rank, (int, float)) and not isinstance(rank, bool) and math.isfinite(rank) else None,
         "priority": record.get("priority") if record.get("priority") in _TICKET_PRIORITIES else None,
         "parent": parent, "parent_status": status, "assignment": assignment,
+        "ownership": ownership,
         "declared_state": state.strip() if isinstance(state, str) and state.strip() else None,
         "order": order,
     }
@@ -688,6 +811,42 @@ def _ticket_result(document: Mapping[str, Any], digest: str) -> dict[str, Any]:
                for kind, items in groups.items() for order, record in enumerate(items)]
     records.sort(key=lambda item: (kinds.index(item["kind"]), item["rank"] is None, item["rank"] or 0, item["order"], item["id"]))
     return {"source_digest": digest, "hierarchy": kinds, "records": records, "claim_limit": _TICKET_CLAIM_LIMIT}
+
+
+
+def prepare_ticket_sync_snapshot(path: Path, *, project_ids: Any, project_id: str, root_digest: str,
+                                 cloud_project_id: str, registry: Any) -> dict[str, Any]:
+    """Prepare exact planning records only; the caller must verify both project bindings.
+
+    This read-only candidate does not persist an intent, submit a cloud operation,
+    or turn the cloud copy into an authority for the local brief.
+    """
+    if (not isinstance(project_id, str) or not project_id or
+            not isinstance(root_digest, str) or re.fullmatch(r"[0-9a-f]{64}", root_digest) is None or
+            not isinstance(cloud_project_id, str) or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", cloud_project_id) is None):
+        raise ProjectModelError("ticket sync binding is invalid")
+    with _brief_update_lock(path):
+        _, document, source_digest = _read_brief_for_edit(path, "", compare=False)
+        _require_ticket_project(document, project_ids)
+        groups, index = _ticket_index(document)
+        projected = _ticket_result(document, source_digest)
+        if any(row["parent_status"] in {"DANGLING", "CONFLICT"} for row in projected["records"]):
+            raise ProjectModelError("ticket sync hierarchy is unresolved")
+        ledger = registry.replay()
+        identities = registry.brief_ticket_display_ids(ledger, project_id, root_digest)
+        for record_id, (kind, _) in index.items():
+            binding = identities.get(record_id)
+            if not binding or binding.get("kind") != kind or not binding.get("display_id") or not binding.get("request_digest"):
+                raise ProjectModelError("ticket sync requires retained identities for every record")
+        payload = {"schema_version": 1, "local_project_id": project_id, "root_digest": root_digest,
+                   "cloud_project_id": cloud_project_id, "source_digest": source_digest,
+                   "records": {kind: [{"identity": identities[row["id"].strip()]["display_id"], "record": {key: value for key, value in row.items() if key not in {"comments", "attachments"}}}
+                                      for row in rows] for kind, rows in groups.items()}}
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode("utf-8")) > 32000:
+            raise ProjectModelError("ticket sync snapshot exceeds cloud value limit")
+        _read_brief_for_edit(path, source_digest)  # Detect non-cooperating writes before returning.
+        return {"value": encoded, "source_digest": source_digest, "ledger_cursor": ledger["cursor"]}
 
 
 def _ticket_depth(identity: str, groups: Mapping[str, list[dict[str, Any]]],
@@ -769,7 +928,9 @@ def _apply_ticket_changes(groups: Mapping[str, list[dict[str, Any]]], index: Map
             remove_or(key, value, isinstance(value, str) and 0 < len(value.strip()) <= 160 and _flow_text(value)
                       and "\n" not in value and "\t" not in value, "ticket label must be bounded single-line text")
         elif key == "description":
-            remove_or(key, value, isinstance(value, str) and len(value) <= 4096 and _flow_text(value),
+            if isinstance(value, str) and _flow_text(value) and len(value.encode("utf-8")) > TICKET_DESCRIPTION_MAX_BYTES:
+                raise ProjectModelError("TICKET_DESCRIPTION_TOO_LONG: description must be at most 16384 UTF-8 bytes")
+            remove_or(key, value, isinstance(value, str) and _flow_text(value),
                       "ticket description must be bounded text")
         elif key == "rank":
             remove_or(key, value, type(value) is int and 0 <= value <= 1_000_000, "ticket rank must be an integer from 0 to 1000000")
@@ -778,6 +939,10 @@ def _apply_ticket_changes(groups: Mapping[str, list[dict[str, Any]]], index: Map
                       "ticket priority must be critical, high, medium or low")
         elif key == "assignment":
             remove_or(key, None if value is None else _ticket_assignment(value), True, "")
+        elif key == "ownership":
+            if kind != "milestone":
+                raise ProjectModelError("Unit ownership is supported only for milestones")
+            remove_or(key, None if value is None else _milestone_ownership(value), True, "")
     if "parent_id" in patch:
         _reparent_ticket(groups, index, kind, record, patch["parent_id"], creating=creating)
 
@@ -786,6 +951,77 @@ def read_project_tickets(path: Path, *, project_ids: Any) -> dict[str, Any]:
     _, document, digest = _read_brief_for_edit(path, "", compare=False)
     _require_ticket_project(document, project_ids)
     return _ticket_result(document, digest)
+
+
+def ticket_discussion(path: Path, *, project_ids: Any, record_id: str, operation: str,
+                      expected_digest: str = "", item: Any = None,
+                      updated_at: str = "") -> dict[str, Any]:
+    """Local-only discussion stored with the ticket; no caller path or cloud identity is trusted."""
+    if operation not in {"read_discussion", "add_comment", "add_attachment"}:
+        raise ProjectModelError("unsupported ticket discussion operation")
+    with _brief_update_lock(path):
+        text, document, current = _read_brief_for_edit(path, "", compare=False)
+        _require_ticket_project(document, project_ids)
+        _, index = _ticket_index(document)
+        if not isinstance(record_id, str) or record_id not in index:
+            raise ProjectModelError("ticket discussion requires an existing local ticket")
+        record = index[record_id][1]
+        comments = record.get("comments", [])
+        attachments = record.get("attachments", [])
+        if not isinstance(comments, list) or not isinstance(attachments, list):
+            raise ProjectModelError("ticket discussion has invalid retained data")
+        for retained in attachments:
+            try:
+                raw = base64.b64decode(retained["data"], validate=True)
+                if (not raw or len(raw) > 65536 or retained["size"] != len(raw)
+                        or retained["sha256"] != hashlib.sha256(raw).hexdigest()
+                        or base64.b64encode(raw).decode("ascii") != retained["data"]):
+                    raise ValueError("attachment integrity mismatch")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ProjectModelError("retained attachment integrity mismatch") from exc
+        if operation == "read_discussion":
+            return {"source_digest": current, "comments": comments, "attachments": attachments,
+                    "provenance": "LOCAL_UNVERIFIED"}
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or _TICKET_TOKEN.fullmatch(item["id"]) is None:
+            raise ProjectModelError("ticket discussion item id is invalid")
+        if operation == "add_comment":
+            if set(item) != {"id", "body", "reply_to"} or not isinstance(item["body"], str) or not item["body"].strip() or len(item["body"].encode("utf-8")) > 8192 or not _flow_text(item["body"]):
+                raise ProjectModelError("comment requires bounded text and reply identity")
+            if item["reply_to"] is not None and not any(isinstance(row, dict) and row.get("id") == item["reply_to"] for row in comments):
+                raise ProjectModelError("reply references a missing comment")
+            values, data = comments, dict(item)
+        else:
+            if set(item) != {"id", "name", "type", "data"} or not isinstance(item["name"], str) or not item["name"].strip() or len(item["name"]) > 160 or any(ch in item["name"] for ch in "/\\\x00") or not _flow_text(item["name"]):
+                raise ProjectModelError("attachment name is invalid")
+            if not isinstance(item["type"], str) or item["type"] not in {"text/plain", "application/pdf", "image/png", "image/jpeg", "image/webp"} or not isinstance(item["data"], str) or len(item["data"]) > 87384:
+                raise ProjectModelError("attachment type or size is invalid")
+            try:
+                raw = base64.b64decode(item["data"], validate=True)
+            except ValueError as exc:
+                raise ProjectModelError("attachment data is invalid") from exc
+            if not raw or len(raw) > 65536 or base64.b64encode(raw).decode("ascii") != item["data"]:
+                raise ProjectModelError("attachment data is invalid")
+            values = attachments
+            data = {**item, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        matches = [row for row in values if isinstance(row, dict) and row.get("id") == item["id"]]
+        if matches:
+            existing = matches[0]
+            if len(matches) != 1 or any(existing.get(key) != value for key, value in data.items()):
+                raise ProjectModelError("ticket discussion item id already exists")
+            return {"source_digest": current, "item": existing, "replayed": True, "provenance": "LOCAL_UNVERIFIED"}
+        if current != expected_digest:
+            raise ProjectModelError("project brief digest conflict")
+        saved = {**data, "author_provenance": "LOCAL_UNVERIFIED", "created_at": updated_at}
+        values.append(saved)
+        record["comments" if operation == "add_comment" else "attachments"] = values
+        envelope = json.loads(next(_BRIEF_FENCE.finditer(text)).group("payload"))
+        source = read_brief_content(path.parent, envelope["brief_content"]).decode("utf-8") if "brief_content" in envelope else text
+        prospective = render_project_brief_markdown(source, document).encode("utf-8")
+        if len(prospective) > _MAX_BRIEF_BYTES - 65536:
+            raise ProjectModelError("DISCUSSION_CAPACITY: project brief capacity reserved for planning")
+        new_digest = _write_project_brief(path, text, document, updated_at)
+        return {"source_digest": new_digest, "item": saved, "replayed": False, "provenance": "LOCAL_UNVERIFIED"}
+
 
 
 def allocate_project_ticket_ids(path: Path, *, expected_digest: str, project_ids: Any,
@@ -1045,8 +1281,9 @@ def _replace_compact_brief(path: Path, original: bytes, full: bytes) -> dict[str
                      if isinstance(item.get(key), str) and item[key].strip()), "Untitled record")
 
     # Human index only; no shortened field is parsed as current authority.
-    lines = [f"# {document['project']['id']}", "", "## Current outcome", "",
-             str(document["objective"].get("current", document["project"].get("purpose", ""))), ""]
+    lines = [f"# {document['project']['id']}", "", "## Mission", "",
+             str(document["project"].get("purpose") or "UNKNOWN"), "", "## Current outcome", "",
+             str(document["objective"].get("current") or "UNKNOWN"), ""]
     for heading, field in (("Milestones", "milestones"), ("Work", "tasks"), ("Risks and blockers", "risks_blockers")):
         lines += [f"## {heading}", ""]
         for item in document.get(field, []):

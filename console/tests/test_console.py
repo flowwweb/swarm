@@ -7,6 +7,7 @@ import http.client
 import io
 import os
 import json
+import queue
 import sqlite3
 import subprocess
 import sys
@@ -46,7 +47,555 @@ from runtime import (  # noqa: E402
 )
 
 
+_PROOF_RACE_SCANNER = r"""
+import json, sys
+from pathlib import Path
+from console import server as console
+
+home, database, boundary = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+store = console.ConsoleStore(database)
+
+def rendezvous():
+    print('SCANNER_READY', flush=True)
+    if sys.stdin.readline().strip() != 'continue':
+        raise RuntimeError('scanner barrier was not released')
+
+if boundary == 'selected':
+    original = console._media_metadata
+    def pause_after_selection(*args, **kwargs):
+        console._media_metadata = original
+        rendezvous()
+        return original(*args, **kwargs)
+    console._media_metadata = pause_after_selection
+elif boundary == 'validated':
+    original = console._media_metadata
+    def pause_after_validation(*args, **kwargs):
+        console._media_metadata = original
+        metadata = original(*args, **kwargs)
+        rendezvous()
+        return metadata
+    console._media_metadata = pause_after_validation
+elif boundary == 'unapproved':
+    original = console._proof_original_root
+    def pause_before_root_decision(*args, **kwargs):
+        console._proof_original_root = original
+        rendezvous()
+        return original(*args, **kwargs)
+    console._proof_original_root = pause_before_root_decision
+elif boundary in ('receipt', 'before_begin'):
+    original = store._connect
+    signaled = False
+    def connect_with_barrier():
+        connection = original()
+        def trace(statement):
+            global signaled
+            sql = statement.lstrip().upper()
+            if not signaled and ((boundary == 'receipt' and sql.startswith('INSERT INTO PROOF_EVENT_RECEIPTS'))
+                                 or (boundary == 'before_begin' and sql.startswith('BEGIN IMMEDIATE'))):
+                signaled = True
+                rendezvous()
+        connection.set_trace_callback(trace)
+        return connection
+    store._connect = connect_with_barrier
+elif boundary == 'writer':
+    connection = store._connect()
+    connection.execute('BEGIN IMMEDIATE')
+    rendezvous()
+    connection.rollback()
+    connection.close()
+    print(json.dumps({'released': True}), flush=True)
+    sys.exit(0)
+else:
+    raise ValueError('unknown scanner boundary')
+
+overview = {'nodes': [{'id': 'task-1', 'project_id': 'project:alpha', 'virtual': False}]}
+print(json.dumps(store.reconcile_proof_events(home, overview, now_ms=123)), flush=True)
+"""
+
+
 class SwarmConsoleTests(unittest.TestCase):
+    # --- Collection, lane isolation and writer-scope contracts (public callers) ---
+
+    def _lane_case(self, lanes, *, results=None):
+        """Real App/Store/Ledger with a native host stub serving several roots.
+
+        lanes: (ctrl_id, project_id, owner_thread_id, root). Only host reads,
+        sends and due Ledger facts are controlled; Store and connector are real.
+        """
+        self._confirm_root_ctrl()
+        roots = {}
+        with closing(sqlite3.connect(self.database)) as db:
+            for ctrl, project, owner, root in lanes:
+                Path(root).mkdir(parents=True, exist_ok=True)
+                if db.execute("SELECT 1 FROM projects WHERE id=?", (project,)).fetchone() is None:
+                    db.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", (project, project.split(":")[-1], "{}", 0, 0, 0))
+                    db.execute("INSERT INTO project_roots VALUES (?,?,?)", (project, 0, str(root)))
+                for thread, role in ((ctrl, "ctrl"), (owner, "")):
+                    roots[thread] = Path(root)
+                    if db.execute("SELECT 1 FROM threads WHERE id=?", (thread,)).fetchone() is None:
+                        db.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (thread, thread, str(root), 2_000_000_000, 2_000_000_000, 2_000_000_000_000,
+                             2_000_000_000_000, "gpt", "high", 1, 0, "", "main", "", "", role, 0))
+            db.commit()
+        host = {"sent": [], "grants": [], "due": set(),
+                "turns": {owner: [{"id": f"{owner}-before", "status": "completed", "items": []}] for _, _, owner, _ in lanes}}
+        def request(method, params):
+            if method == "wait_threads":
+                return {"timedOut": True}
+            thread = params["threadId"]
+            if method == "read_thread":
+                return {"thread": {"id": thread, "cwd": str(roots[thread])}, "page": {"order": "newest_first"},
+                        "turns": copy.deepcopy(host["turns"][thread][:2])}
+            self.assertEqual(method, "send_message_to_thread")
+            host["sent"].append(thread)
+            host["turns"][thread].insert(0, {"id": f"{thread}-turn-{len(host['sent'])}", "status": "inProgress",
+                "items": [{"type": "userMessage", "content": [{"type": "text", "text": params["prompt"]}]}]})
+            return {"threadId": thread}
+        def grant(state, digest):
+            host["grants"].append(state["ctrl_id"])
+            return console.HQAutoGrant("grant-" + state["ctrl_id"], state["project_id"], digest, state["ctrl_id"],
+                                       (console.HQCommandAction.AUTO,), int(time.time() * 1000) + 60000)
+        authority = SimpleNamespace(grant=grant, verify=lambda receipt, envelope, now: True)
+        transport = console.NativeCodexAppTaskTransport(request, clock_ms=lambda: int(time.time() * 1000))
+        app = console.App(self.codex_home, self.config, task_transport=transport, auto_authorization=authority)
+        app.auto_bridge = SimpleNamespace(run=mock.Mock(side_effect=AssertionError("private process fallback")),
+            reconcile=mock.Mock(side_effect=AssertionError("private read fallback")))
+        retained = app.progress_ledger
+        lifecycle = [self._auto_lifecycle()]
+        def receipts():
+            out = {}
+            for ctrl, _, owner, _ in lanes:
+                if ctrl in host["due"]:
+                    item = copy.deepcopy(self._auto_projection(event_id=host.get("event", {}).get(ctrl, "lifecycle-3"))["expected_receipts"]["expected-auto"])
+                    item["receipt"].update(receipt_id="expected-" + ctrl, task_id=owner, owner_id=owner)
+                    out["expected-" + ctrl] = item
+            return out
+        class LedgerFixture:
+            def __init__(self, ledger): self.ledger = ledger
+            def __getattr__(self, name): return getattr(self.ledger, name)
+            def replay(self):
+                projection = self.ledger.replay()
+                projection["expected_receipts"] = receipts()
+                return projection
+            def _bounded_tail_records(self): return lifecycle, False
+        app.progress_ledger = LedgerFixture(retained)
+        host["lifecycle"] = lifecycle
+        for ctrl, project, _, _ in lanes:
+            app.auto_command({"command": "ENABLE", "ctrl_id": ctrl, "project_id": project, "request_id": "enable-" + ctrl})
+        overview = {"nodes": [{"id": owner, "project_id": project, "controller_ids": [ctrl]} for ctrl, project, owner, _ in lanes]}
+        return app, host, overview
+
+    @staticmethod
+    def _finish_turn(host, owner, *, items=(), status="completed"):
+        host["turns"][owner][0]["status"] = status
+        host["turns"][owner][0]["items"].extend(copy.deepcopy(list(items)))
+
+    def _auto_rows(self, app, kind):
+        with closing(sqlite3.connect(app.store.path)) as db:
+            return db.execute("SELECT COUNT(*) FROM execution_event_receipts WHERE event_kind=?", (kind,)).fetchone()[0]
+
+    def test_enabled_auto_surfaces_missing_native_transport(self):
+        app = console.App(self.codex_home, self.config)
+        app.store.set_auto("root", "project:alpha", enabled=True, request_id="enable-visible", now_ms=1)
+        with mock.patch.object(app, "_auto_scope"):
+            status = app.auto_status("root", "project:alpha")
+        self.assertEqual(status["attention"]["kind"], "NATIVE_AUTO_CAPABILITY_UNAVAILABLE")
+        self.assertEqual(status["attention"]["capability_unavailable"], "NATIVE_AUTO_CAPABILITY_UNAVAILABLE")
+        self.assertFalse(status["in_flight"])
+
+    def test_observer_records_auto_integrity_failure_without_exposing_text_and_clears_on_recovery(self):
+        app = console.App(self.codex_home, self.config)
+        app.store.set_auto("root", "project:alpha", enabled=True, request_id="enable-observer", now_ms=1)
+        overview = {"heartbeat_minutes": 30, "nodes": []}
+        failure = console.ConsoleError("retained Auto packet conflicts PRIVATE_DETAIL")
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app, "_ingest_progress_pulses_if_changed", return_value={"eta_reports": {}}), \
+             mock.patch.object(app, "_ingest_proof_events_if_changed"), \
+             mock.patch.object(app.store, "observe_overview"), \
+             mock.patch.object(app.store, "record_diagnostics"), \
+             mock.patch.object(app.diagnostics_collector, "collect", return_value={"sampled_at_ms": 10}), \
+             mock.patch.object(app.auto_bridge, "read_account_limits", return_value={"status": "UNKNOWN", "windows": []}), \
+             mock.patch.object(app, "_auto_health_enabled", return_value=False), \
+             mock.patch.object(console, "observation_fingerprint", return_value=()), \
+             mock.patch.object(app, "_auto_scope"), \
+             mock.patch.object(app, "evaluate_auto_once", side_effect=[failure, failure, {"reason": "NO_DUE_DECISION"}]):
+            app.observe_once()
+            app.observe_once()
+            status = app.auto_status("root", "project:alpha")
+            self.assertEqual(status["attention"]["observer_failure"]["reason"], "AUTO_OBSERVER_FAILED")
+            self.assertEqual(self._auto_rows(app, "AUTO_RECONCILE"), 1)
+            self.assertNotIn("PRIVATE_DETAIL", json.dumps(status))
+            with closing(sqlite3.connect(app.store.path)) as db:
+                payload = db.execute("SELECT payload_json FROM execution_event_receipts WHERE event_kind='AUTO_RECONCILE'").fetchone()[0]
+            self.assertNotIn("PRIVATE_DETAIL", payload)
+            app.observe_once()
+            self.assertNotIn("observer_failure", app.auto_status("root", "project:alpha")["attention"])
+
+    def test_non_native_scope_failure_does_not_prevent_next_lane_observation(self):
+        app = console.App(self.codex_home, self.config)
+        states = [dict(ctrl_id="bad", project_id="project:bad", in_flight=False, enabled=True, stop_after_turn=False),
+                  dict(ctrl_id="good", project_id="project:good", in_flight=False, enabled=True, stop_after_turn=False)]
+        with mock.patch.object(app.store, "enabled_auto_states", return_value=states), \
+             mock.patch.object(app.progress_ledger, "replay", return_value={}), \
+             mock.patch.object(app, "_auto_scope", side_effect=[console.ConsoleError("PRIVATE_SCOPE"), {}]), \
+             mock.patch.object(app, "_auto_candidate", return_value=None) as candidate:
+            result = app.evaluate_auto_once({"nodes": []})
+        self.assertEqual(result["reason"], "LANE_RECONCILE_FAILED")
+        self.assertEqual(result["scope_rejections"][0]["ctrl_id"], "bad")
+        self.assertNotIn("PRIVATE_SCOPE", json.dumps(result))
+        self.assertEqual(candidate.call_count, 1)
+        self.assertEqual(self._auto_rows(app, "AUTO_RECONCILE"), 1)
+
+    def test_native_auto_collection_binds_observed_result_digest_not_terminal_status(self):
+        app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
+        host["due"] = {"root"}
+        first = app.evaluate_auto_once(overview)
+        self.assertTrue(first["dispatched"], first)
+        state = app.store.auto_status("root", "project:alpha")
+        reservation_id = state["reservation_id"]
+        self.assertEqual([item["phase"] for item in state["collection"]["pending"]], ["AWAITING_TERMINAL"])
+        # Pause during flight: the running turn is still reconciled and collected.
+        app.auto_command({"command": "DISABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "pause-root"})
+        self.assertTrue(app.store.auto_status("root", "project:alpha")["stop_after_turn"])
+        self._finish_turn(host, "task", items=[{"type": "agentMessage", "phase": "analysis", "text": "private reasoning"},
+                                               {"type": "agentMessage", "text": "Readable bounded result."}])
+        app.store = console.ConsoleStore(app.store.path)  # Parent yields; retained state is rehydrated.
+        done = app.evaluate_auto_once(overview)
+        self.assertEqual(done["reason"], "RECONCILED")
+        item = app.store.load_execution_ledger().reservation(reservation_id)
+        expected = hashlib.sha256(json.dumps(["Readable bounded result."], ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual((item.result_observation, item.result_digest), ("READABLE", expected))
+        self.assertTrue(item.host_completed)
+        self.assertEqual(item.state, console.ExecutionDispatchState.ACTIVE, "collection is not acceptance")
+        self.assertFalse(item.material_receipt_id)
+        status = app.store.auto_status("root", "project:alpha")
+        self.assertEqual((status["collection"]["pending_count"], status["collection"]["collected_count"]), (0, 1))
+        self.assertFalse(status["enabled"])
+        self.assertIn("not verification or acceptance", status["collection"]["claim_limit"])
+        self.assertNotIn("Readable bounded result", json.dumps(item.snapshot()))
+        # Duplicate observation, restart and stale replays add no event, send or collection.
+        before = (self._auto_rows(app, "AUTO_OUTCOME"), item.snapshot())
+        app.store = console.ConsoleStore(app.store.path)
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "resume-root"})
+        self.assertEqual(app.evaluate_auto_once(overview)["reason"], "REPLAY")
+        self.assertEqual(before, (self._auto_rows(app, "AUTO_OUTCOME"),
+                                  app.store.load_execution_ledger().reservation(reservation_id).snapshot()))
+        self.assertEqual(host["sent"], ["task"])
+
+    def test_interrupted_auto_turn_with_only_commentary_keeps_collection_pending(self):
+        app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
+        host["due"] = {"root"}
+        self.assertTrue(app.evaluate_auto_once(overview)["dispatched"])
+        self._finish_turn(host, "task", status="interrupted", items=[
+            {"type": "agentMessage", "phase": "commentary", "text": "Still working on the assessment"}])
+        app.evaluate_auto_once(overview)
+        collection = console.ConsoleStore(app.store.path).auto_status("root", "project:alpha")["collection"]
+        self.assertEqual((collection["pending_count"], collection["collected_count"]), (1, 0))
+        self.assertEqual(collection["yield_status"], "UNREAD_RESULTS")
+        self.assertEqual(collection["pending"][0]["phase"], "TERMINAL_RESULT_MISSING")
+
+    def test_auto_turn_with_commentary_then_final_digests_only_the_answer(self):
+        app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
+        host["due"] = {"root"}
+        self.assertTrue(app.evaluate_auto_once(overview)["dispatched"])
+        reservation_id = app.store.auto_status("root", "project:alpha")["reservation_id"]
+        self._finish_turn(host, "task", items=[
+            {"type": "agentMessage", "phase": "commentary", "text": "Still working on the assessment"},
+            {"type": "agentMessage", "phase": "final_answer", "text": "Assessment complete."}])
+        app.evaluate_auto_once(overview)
+        stored = console.ConsoleStore(app.store.path)
+        item = stored.load_execution_ledger().reservation(reservation_id)
+        expected = hashlib.sha256(b'["Assessment complete."]').hexdigest()
+        self.assertEqual((item.result_observation, item.result_digest), ("READABLE", expected))
+        collection = stored.auto_status("root", "project:alpha")["collection"]
+        self.assertEqual((collection["pending_count"], collection["collected_count"]), (0, 1))
+
+    def test_native_auto_missing_or_unreadable_results_remain_every_unread_duty(self):
+        app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
+        host["due"] = {"root"}
+        self.assertTrue(app.evaluate_auto_once(overview)["dispatched"])
+        self._finish_turn(host, "task")  # Completed with no readable agent result.
+        self.assertEqual(app.evaluate_auto_once(overview)["reason"], "RECONCILED")
+        host["event"] = {"root": "lifecycle-4"}
+        host["lifecycle"].append(self._auto_lifecycle(sequence=4))
+        self.assertTrue(app.evaluate_auto_once(overview)["dispatched"])
+        self._finish_turn(host, "task", items=[{"type": "agentMessage", "text": 7}])
+        self.assertEqual(app.evaluate_auto_once(overview)["reason"], "RECONCILED")
+        restarted = console.ConsoleStore(app.store.path)
+        collection = restarted.auto_status("root", "project:alpha")["collection"]
+        self.assertEqual(collection["pending_count"], 2, "older unread duty must survive a newer turn")
+        self.assertEqual(sorted(item["phase"] for item in collection["pending"]),
+                         ["TERMINAL_RESULT_MISSING", "TERMINAL_RESULT_UNREADABLE"])
+        self.assertEqual(collection["yield_status"], "UNREAD_RESULTS")
+        with mock.patch.object(console, "COLLECTION_DISPLAY_LIMIT", 1):
+            bounded = restarted.auto_status("root", "project:alpha")["collection"]
+        self.assertEqual((len(bounded["pending"]), bounded["omitted"], bounded["pending_count"]), (1, 1, 2))
+        retained = [item for item in restarted.load_execution_ledger().reservations if item.collecting_owner_id == "root"]
+        self.assertEqual(len(retained), 2)
+        self.assertTrue(all(item.host_completed and not item.result_digest for item in retained))
+        self.assertEqual(host["sent"], ["task", "task"])
+
+    def test_collection_digest_is_idempotent_conflicts_fail_closed_and_material_receipt_stays_separate(self):
+        from runtime import DelegatedReturnReceipt, DelegatedReceiptVerdict
+        path = self.root / "collection.sqlite3"
+        store = console.ConsoleStore(path)
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("config", False, "model", "high", 1, "config-receipt"))
+        artifact = ArtifactIdentity("source", "revision", "result")
+        ledger.reserve("run", "task", "worker", artifact, observed_at_ms=2, collecting_owner_id="parent")
+        ledger.dispatch("run", "a" * 64, 100, observed_at_ms=3)
+        with self.assertRaisesRegex(InvariantError, "terminal"):
+            ledger.collect_result("run", "parent", observation="READABLE", result_digest="1" * 64, observed_at_ms=4)
+        adapter = console.CodexAppServerAdapter()
+        ledger.observe_event("run", adapter.translate_event({"method": "turn/completed",
+            "params": {"threadId": "thread", "turnId": "turn", "status": "completed"}}), observed_at_ms=5)
+        with self.assertRaisesRegex(InvariantError, "retained run"):
+            ledger.observe_event("run", adapter.translate_event({"method": "turn/completed",
+                "params": {"threadId": "thread", "turnId": "other", "status": "completed"}}), observed_at_ms=6)
+        with self.assertRaisesRegex(InvariantError, "collector"):
+            ledger.collect_result("run", "other", observation="READABLE", result_digest="1" * 64, observed_at_ms=6)
+        with self.assertRaisesRegex(InvariantError, "digest"):
+            ledger.collect_result("run", "parent", observation="READABLE", result_digest="", observed_at_ms=6)
+        self.assertTrue(ledger.collect_result("run", "parent", observation="MISSING", result_digest="", observed_at_ms=6))
+        self.assertEqual(ledger.collection_status("parent")["pending"][0]["phase"], "TERMINAL_RESULT_MISSING")
+        self.assertTrue(ledger.collect_result("run", "parent", observation="READABLE", result_digest="1" * 64, observed_at_ms=7))
+        self.assertFalse(ledger.collect_result("run", "parent", observation="READABLE", result_digest="1" * 64, observed_at_ms=8))
+        with self.assertRaisesRegex(InvariantError, "conflicts"):
+            ledger.collect_result("run", "parent", observation="READABLE", result_digest="2" * 64, observed_at_ms=8)
+        with self.assertRaisesRegex(InvariantError, "conflicts"):
+            ledger.collect_result("run", "parent", observation="MISSING", result_digest="", observed_at_ms=8)
+        store.persist_execution_ledger(ledger, now_ms=8)
+        # Collection X followed by material receipt Y: both edges are retained, neither replaces the other.
+        receipt = DelegatedReturnReceipt("material-y", "task", "worker", DelegatedReceiptVerdict.ACCEPT,
+            artifact, "Bounded result returned for independent verification.", observed_at=9)
+        ledger.record_material_receipt("run", receipt, observed_at_ms=9)
+        store.persist_execution_ledger(ledger, now_ms=9)
+        final = console.ConsoleStore(path).load_execution_ledger().reservation("run")
+        self.assertEqual((final.result_digest, final.material_receipt_id, final.state.value),
+                         ("1" * 64, "material-y", "material_receipt"))
+        # A material receipt before any terminal read is not collection.
+        early = console.ExecutionDispatchLedger(generations=ledger.generations)
+        early.reserve("early", "task-2", "worker", artifact, observed_at_ms=2, collecting_owner_id="parent")
+        early.dispatch("early", "b" * 64, 100, observed_at_ms=3)
+        early.record_material_receipt("early", DelegatedReturnReceipt("material-early", "task-2", "worker",
+            DelegatedReceiptVerdict.ACCEPT, artifact, "Bounded early receipt.", observed_at=4), observed_at_ms=4)
+        self.assertEqual(early.collection_status("parent")["pending"][0]["phase"], "AWAITING_TERMINAL")
+        # Persisted collection cannot regress or change.
+        regressed = console.ConsoleStore(path).load_execution_ledger()
+        regressed.reservation("run").result_digest = "3" * 64
+        regressed.reservation("run").updated_at_ms = 10
+        with self.assertRaisesRegex(console.ConsoleError, "collected result"):
+            console.ConsoleStore(path).persist_execution_ledger(regressed, now_ms=10)
+
+    def test_auto_three_lanes_refuse_busy_root_before_grant_and_dispatch_disjoint_root_same_pass(self):
+        beta = Path(self.temp.name) / "beta"
+        app, host, overview = self._lane_case([
+            ("root", "project:alpha", "task", self.alpha_root),
+            ("root-b", "project:alpha", "task-b", self.alpha_root),
+            ("root-c", "project:gamma", "task-c", beta)])
+        host["due"] = {"root"}
+        self.assertTrue(app.evaluate_auto_once(overview)["dispatched"])
+        self.assertEqual(host["grants"], ["root"])
+        host["due"] = {"root", "root-b", "root-c"}
+        result = app.evaluate_auto_once(overview)
+        self.assertTrue(result["dispatched"], result)
+        self.assertEqual(host["sent"], ["task", "task-c"], "disjoint root dispatches in the same pass")
+        self.assertEqual(host["grants"], ["root", "root-c"], "busy shared root is refused before any host grant")
+        self.assertTrue(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertFalse(app.store.auto_status("root-b", "project:alpha")["in_flight"])
+        self.assertTrue(app.store.auto_status("root-c", "project:gamma")["in_flight"])
+        # Both ready results reconcile in one pass; the shared root frees B only after A is terminal.
+        self._finish_turn(host, "task", items=[{"type": "agentMessage", "text": "A"}])
+        self._finish_turn(host, "task-c", items=[{"type": "agentMessage", "text": "C"}])
+        app.evaluate_auto_once(overview)
+        for ctrl, project in (("root", "project:alpha"), ("root-c", "project:gamma")):
+            self.assertEqual(app.store.auto_status(ctrl, project)["collection"]["collected_count"], 1)
+        self.assertEqual(host["sent"], ["task", "task-c", "task-b"])
+        self.assertTrue(app.store.auto_status("root-b", "project:alpha")["in_flight"])
+
+    def test_auto_archived_in_flight_lane_keeps_lease_and_trace_without_blocking_other_lanes(self):
+        beta = Path(self.temp.name) / "beta"
+        app, host, overview = self._lane_case([
+            ("root", "project:alpha", "task", self.alpha_root),
+            ("root-c", "project:gamma", "task-c", beta)])
+        host["due"] = {"root", "root-c"}
+        app.evaluate_auto_once(overview)
+        self.assertEqual(host["sent"], ["task", "task-c"])
+        lease = app.store.auto_status("root", "project:alpha")["reservation_id"]
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("UPDATE threads SET archived=1 WHERE id='root'"); db.commit()
+        self._finish_turn(host, "task-c", items=[{"type": "agentMessage", "text": "C"}])
+        result = app.evaluate_auto_once(overview)
+        self.assertEqual(result["reason"], "RECONCILED")
+        self.assertEqual([(item["ctrl_id"], item["reason"], item["reservation_id"]) for item in result["scope_rejections"]],
+                         [("root", "LANE_RECONCILE_FAILED", lease)])
+        self.assertNotIn("membership", json.dumps(result["scope_rejections"]), "failure trace stays metadata-only")
+        self.assertEqual(app.store.auto_status("root-c", "project:gamma")["collection"]["collected_count"], 1)
+        self.assertTrue(app.store.auto_status("root", "project:alpha")["in_flight"], "bad lane retains its lease")
+        failures = self._auto_rows(app, "AUTO_RECONCILE")
+        app.evaluate_auto_once(overview)
+        self.assertEqual(self._auto_rows(app, "AUTO_RECONCILE"), failures, "unchanged failure is deduplicated")
+        app.store.set_auto("other", "project:alpha", enabled=True, request_id="enable-other", now_ms=int(time.time() * 1000))
+        decision = self._auto_decision("other")
+        self.assertEqual(app.store.claim_auto_dispatch(decision, app._auto_generation(), now_ms=int(time.time() * 1000))["reason"],
+                         "IN_FLIGHT", "a retained bad lease still refuses unknown or shared writers")
+        self.assertEqual(host["sent"], ["task", "task-c"])
+
+    def test_auto_lane_failure_receipt_does_not_shadow_unreachable_release_evidence(self):
+        app, host, overview = self._lane_case([("root", "project:alpha", "task", self.alpha_root)])
+        host["due"] = {"root"}
+        app.evaluate_auto_once(overview)
+        lease = app.store.auto_status("root", "project:alpha")["reservation_id"]
+        app.store.retain_auto_control("AUTO_RECONCILE", "independent-host-absence",
+            {"ctrl_id": "root", "project_id": "project:alpha", "reservation_id": lease,
+             "failure_kind": "TURN_UNREACHABLE", "turn_started": True, "reachable": False}, now_ms=int(time.time() * 1000))
+        app.store.retain_auto_control("AUTO_RECONCILE", f"native-send-issue:{lease}",
+            {"ctrl_id": "root", "project_id": "project:alpha", "reservation_id": lease,
+             "reason": "NATIVE_SEND_RESPONSE_UNCERTAIN", "native_send_issue": {"kind": "TOOL_ERROR"}},
+            now_ms=int(time.time() * 1000) + 1)
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("UPDATE threads SET archived=1 WHERE id='root'"); db.commit()
+        time.sleep(0.002)
+        self.assertEqual(app.evaluate_auto_once(overview)["scope_rejections"][0]["reason"], "LANE_RECONCILE_FAILED")
+        released = app.store.release_auto_dispatch("root", "project:alpha", lease, request_id="release-root",
+            recovery_authority="root", release_condition="independently confirmed host absence", now_ms=int(time.time() * 1000) + 5)
+        self.assertFalse(released["in_flight"])
+
+    def test_auto_status_latest_disposition_survives_other_lane_receipt_volume(self):
+        store = console.ConsoleStore(self.root / "console" / "auto-latest.sqlite3")
+        store.set_auto("root", "project:alpha", enabled=True, request_id="enable-root", now_ms=1)
+        store.retain_auto_control("AUTO_DECISION", "root-wait", {"ctrl_id": "root", "project_id": "project:alpha",
+            "decision_digest": "a" * 64, "disposition": {"disposition": "WAIT_USER", "release_condition": "user release"},
+            "material_progress": False}, now_ms=2)
+        for index in range(140):
+            store.retain_auto_control("AUTO_DECISION", f"other-{index}", {"ctrl_id": "other", "project_id": "project:beta",
+                "decision_digest": f"{index:064x}", "disposition": {"disposition": "RETRY_SAME"}, "material_progress": False},
+                now_ms=3 + index)
+        status = store.auto_status("root", "project:alpha")
+        self.assertEqual((status["last_disposition"], status["attention"]["kind"]), ("WAIT_USER", "WAIT_USER"))
+
+    def test_rotation_cli_blocks_retirement_on_retained_lease_or_unread_result(self):
+        store = console.ConsoleStore(self.root / "console" / "rotation.sqlite3")
+        store.set_auto("p2-old", "project:alpha", enabled=True, request_id="enable-old", now_ms=1)
+        claim = store.claim_auto_dispatch(self._auto_decision("p2-old"), self._auto_generation(), now_ms=2)
+        script = console.PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "swarm_contract.py"
+        envelope = dict(predecessor_id="p2-old", successor_id="p2-new", authorized=True,
+                        baseline_pinned=["p1", "p2-old"], pinned=["p1", "p2-new", "p2-old"], successor_ack=True,
+                        expected_title="Project 2", successor_title="Project 2", predecessor_archived=False,
+                        predecessor_in_flight=False, user_keep_pinned=False,
+                        capabilities=["title", "pin", "reorder", "unpin", "archive"])
+        def rotate():
+            run = subprocess.run([sys.executable, str(script), "rotate", "--console-state", str(store.path)],
+                                 input=json.dumps(envelope), capture_output=True, text=True, check=True)
+            return json.loads(run.stdout)
+        leased = rotate()
+        self.assertEqual((leased["status"], leased["step"], leased["journal"]),
+                         ("BLOCKED", "UNPIN", {"active_leases": 1, "unread_results": 1}))
+        result = console.AutoBridgeResult(True, "thread-1", "turn-1", "d" * 64, terminal=True, turn_started=True, reachable=True)
+        store.finish_auto_dispatch(claim["reservation_id"], result=result, disposition=None, now_ms=3,
+                                   collection={"result_observation": "MISSING", "result_digest": ""})
+        unread = rotate()
+        self.assertEqual((unread["status"], unread["journal"]), ("BLOCKED", {"active_leases": 0, "unread_results": 1}),
+                         "a terminal turn with no readable result is still an unread duty")
+        envelope.update(pinned=["p1", "p2-new"], predecessor_archived=True)
+        already_archived = rotate()
+        self.assertEqual((already_archived["status"], already_archived["step"]), ("BLOCKED", "ARCHIVE"),
+                         "archived readback cannot hide an unread retained result")
+        envelope.update(pinned=["p1", "p2-new", "p2-old"], predecessor_archived=False)
+        ledger = store.load_execution_ledger()
+        ledger.collect_result(claim["reservation_id"], "p2-old", observation="READABLE", result_digest="e" * 64, observed_at_ms=4)
+        store.persist_execution_ledger(ledger, now_ms=4)
+        ready = rotate()
+        self.assertEqual((ready["status"], ready["step"], ready["journal"]),
+                         ("UNVERIFIED", "RETIREMENT", {"active_leases": 0, "unread_results": 0}))
+
+    def test_auto_writer_scopes_serialize_shared_nested_and_legacy_roots(self):
+        store = console.ConsoleStore(self.root / "console" / "auto-scopes.sqlite3")
+        parent = self.alpha_root
+        nested = parent / "packages" / "inner"
+        sibling = Path(self.temp.name) / "sibling"
+        for path in (nested, sibling):
+            path.mkdir(parents=True)
+        def claim(ctrl, root, digest):
+            store.set_auto(ctrl, "project:" + ctrl, enabled=True, request_id="enable-" + ctrl, now_ms=1)
+            decision = self._auto_decision(ctrl, "project:" + ctrl)
+            decision["decision_digest"] = digest * 64
+            identity = store.auto_dispatch_identity(decision)
+            packet = None
+            if root is not None:
+                envelope = console.HQCommandEnvelope("auto-" + identity, identity, console.HQCommandAction.AUTO,
+                    "project:" + ctrl, "0" * 64, ctrl, console.HQTargetIntent.EXISTING_THREAD, "task", "c" * 64, 0,
+                    int(time.time() * 1000), int(time.time() * 1000) + 60000)
+                fields = {key: value for key, value in console.asdict(envelope).items() if key not in {"digest", "_task_creation_json"}}
+                packet = {"ctrl_id": ctrl, "project_id": "project:" + ctrl, "reservation_id": "auto-" + identity,
+                          "decision_digest": decision["decision_digest"], "envelope": fields, "grant": {}, "instruction_meta": {},
+                          **console._auto_writer_scope(root)}
+            return store.claim_auto_dispatch(decision, self._auto_generation(), now_ms=2, connector_packet=packet)
+        self.assertTrue(claim("a", parent, "1")["claimed"])
+        self.assertEqual(claim("b", nested, "2")["reason"], "IN_FLIGHT", "nested root overlaps its parent writer")
+        self.assertEqual(claim("c", parent, "3")["reason"], "IN_FLIGHT", "shared root serializes")
+        self.assertEqual(claim("d", None, "4")["reason"], "IN_FLIGHT", "unknown legacy scope serializes")
+        self.assertTrue(claim("e", sibling, "5")["claimed"], "disjoint sibling root may run concurrently")
+        self.assertEqual(len(store._auto_active()), 2)
+
+    def test_mcp_read_serializes_many_long_tickets_without_truncation(self):
+        from console import server
+        from skills.swarm.scripts import swarm_mcp
+        tasks=[{'id':f'ticket-{i}','label':f'Ticket {i}','description':str(i%10)*16384} for i in range(18)]
+        self._write_project_brief(self.alpha_root,'project:alpha',extra={'tasks':tasks})
+        app=server.App(self.codex_home,self.config)
+        wire={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'swarm_project_tickets',
+              'arguments':{'operation':'read','project_id':'project:alpha'}}}
+        with mock.patch.object(swarm_mcp.SwarmProjection,'_load_app',return_value=app), \
+             mock.patch.object(sys,'stdin',io.StringIO(json.dumps(wire))), \
+             mock.patch.object(sys,'stdout',new_callable=io.StringIO) as output:
+            self.assertEqual(swarm_mcp.serve(telemetry_path=self.root/'ticket-wire.jsonl'),0)
+        response=json.loads(output.getvalue())
+        self.assertNotIn('error',response)
+        rows=response['result']['structuredContent']['records']
+        self.assertEqual({r['id']:r['description'] for r in rows},{r['id']:r['description'] for r in tasks})
+
+    def test_mcp_description_boundary_and_rejected_draft_preservation(self):
+        from console import server
+        from skills.swarm.scripts import swarm_mcp
+        app = server.App(self.codex_home, self.config)
+        self._write_project_brief(self.alpha_root, 'project:alpha')
+        adapter = swarm_mcp.SwarmProjection()
+        adapter._app = app
+        read = adapter.call('swarm_project_tickets', {'operation':'read','project_id':'project:alpha'})
+        create = {'operation':'create','project_id':'project:alpha','expected_digest':read['source_digest'],
+                  'acknowledge':True,'collection':'tasks','record_id':'long-ticket','project_code':'SWRM',
+                  'changes':{'label':'Long ticket','description':'😀'*4096}}
+        encoded = json.dumps(create, ensure_ascii=True).encode('utf-8')
+        self.assertLessEqual(len(encoded),server.MAX_BODY_BYTES)
+        handler = self._handler('127.0.0.1','127.0.0.1:4788',token=app.token)
+        handler.headers['Content-Length'] = str(len(encoded))
+        handler.rfile = io.BytesIO(encoded)
+        self.assertEqual(handler._payload(),create)
+        saved = adapter.call('swarm_project_tickets',create)
+        self.assertTrue(saved['ok'],saved)
+        path = self.alpha_root / 'SWARM.md'
+        before = path.read_bytes()
+        oversized = {'operation':'update','project_id':'project:alpha','expected_digest':saved['source_digest'],
+                     'acknowledge':True,'collection':'tasks','record_id':'long-ticket',
+                     'changes':{'description':'😀'*4097}}
+        rejected = adapter.call('swarm_project_tickets',oversized)
+        self.assertEqual(rejected['code'],'TICKET_DESCRIPTION_TOO_LONG')
+        self.assertIn('16,384 UTF-8 bytes',rejected['message'])
+        self.assertEqual(path.read_bytes(),before)
+        wire={'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'swarm_project_tickets','arguments':oversized}}
+        with mock.patch.object(swarm_mcp.SwarmProjection,'_load_app',return_value=app), \
+             mock.patch.object(sys,'stdin',io.StringIO(json.dumps(wire))), \
+             mock.patch.object(sys,'stdout',new_callable=io.StringIO) as output:
+            self.assertEqual(swarm_mcp.serve(telemetry_path=self.root/'ticket-wire.jsonl'),0)
+        rejection=json.loads(output.getvalue())['result']
+        self.assertTrue(rejection['isError'])
+        self.assertEqual(rejection['structuredContent']['code'],'TICKET_DESCRIPTION_TOO_LONG')
+        self.assertEqual(path.read_bytes(),before)
+        restarted = server.App(self.codex_home,self.config)
+        row = next(r for r in restarted.project_ticket_command({'operation':'read','project_id':'project:alpha'})['records'] if r['id']=='long-ticket')
+        self.assertEqual(row['description'],'😀'*4096)
+
     def test_naming_descriptors_follow_canonical_config_and_scoped_validation(self):
         module = console.load_config_module()
         effective = module.merge({"role_icons": {"enabled": False}})
@@ -69,9 +618,10 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertIn("{created:MMM D}", template["help"])
         self.assertEqual(by_key["task_titles.unit_template"]["source"], "project_override")
         self.assertEqual(by_key["task_titles.controller_template"]["default"], "{project}")
-        self.assertEqual(by_key["task_titles.unit_template"]["default"], "{project} · {unit} · {responsibility}")
+        self.assertEqual(by_key["task_titles.unit_template"]["default"], "{project} • {unit} • {responsibility} • {created:MMM D}")
+        self.assertEqual(by_key["task_titles.separator"]["default"], " • ")
         result = module.resolve_task_presentation(scoped, "unit", project="Garden", unit="Studio")
-        self.assertEqual(result["title"], "Garden · Studio")
+        self.assertEqual(result["title"], "Garden • Studio")
         self.assertFalse(result["host_mutation_authorized"])
         with self.assertRaises(module.ConfigError):
             module.validate({"task_titles": {"unit_template": "{private.path}"}}, partial=True)
@@ -182,7 +732,7 @@ class SwarmConsoleTests(unittest.TestCase):
                 self.assertTrue(sample.call_args.kwargs["tokens_only"])
             self.assertEqual(app.auto_bridge.mock_calls, [])
 
-    def _existing_work_fixture(self, *, physical=False, unit=False):
+    def _existing_work_fixture(self, *, physical=False, unit=False, configured=False):
         app = console.App(self.codex_home, self.config, auto_bridge=mock.Mock())
         root_digest = console._auto_digest({"project_id":"project:alpha", "canonical_root":console._normalized_project_path(str(self.alpha_root))})
         def seed(task_id, ctrl_id, role_scope):
@@ -196,8 +746,10 @@ class SwarmConsoleTests(unittest.TestCase):
                 **({"work_unit": dict(kind="LAB", goal_id=None, parent_goal_id=None, parent_unit_task_id=None)}
                    if unit and task_id != ctrl_id else {}),
                 milestones=[dict(milestone_id=task_id + "-milestone", order=0, title="Retained milestone", verification_policy="source", supersedes_milestone_id=None)],
-                blocks=[dict(block_id=task_id + "-old", milestone_id=task_id + "-milestone", order=0, title="Historical work",
-                    verification_policy="source", estimate_minutes=1, weight=None, supersedes_block_id=None)])
+                blocks=[dict(block_id=block, milestone_id=task_id + "-milestone", order=i, title="Historical work",
+                    verification_policy="source", estimate_minutes=1, weight=None, supersedes_block_id=None)
+                    for i, block in enumerate(([f"flow-{i}-{n}" for i in range(1, (configured if type(configured) is int else 2) + 1) for n in ("draft", "check")]
+                        if configured and task_id == "task" else [task_id + "-old"]))])
             base = dict(schema_version=1, record_type="CONNECTOR", command_id=operation, idempotency_key=operation,
                 command_digest=hashlib.sha256(operation.encode()).hexdigest(), project_id="project:alpha", root_digest=creation_root,
                 action="MANUAL_AGENT", thread_id=None, turn_id=None, observed_root_digest=None)
@@ -237,7 +789,7 @@ class SwarmConsoleTests(unittest.TestCase):
                 ctrl_id=ctrl_id, task_id=task_id, role_manifest=role, task_manifest=manifest, parent_task_id=None if task_id == ctrl_id else ctrl_id,
                 topology_manifest_receipt_id=operation + "-topology", task_receipt_id=operation + "-task",
                 milestone_receipts=[dict(id=manifest["milestones"][0]["milestone_id"],receipt_id=operation + "-milestone")],
-                block_receipts=[dict(id=manifest["blocks"][0]["block_id"],receipt_id=operation + "-block")],
+                block_receipts=[dict(id=b["block_id"],receipt_id=operation + "-block" + ("-" + str(i) if configured else "")) for i,b in enumerate(manifest["blocks"])],
                 explicit_empty_work_receipt_id=None,host_result_receipt_id=result["receipt_id"],observed_at_ms=4)
             if legacy:
                 app.progress_ledger.append(event)
@@ -245,8 +797,8 @@ class SwarmConsoleTests(unittest.TestCase):
                 app.progress_ledger.append_connector_result_with_task_creation(result,event)
             return manifest, role_manifest_reference(role)
         ctrl,_ = seed("root","root","CTRL_BOUNDED")
-        original,role = seed("task","historical-ctrl","LEAD_SINGLE" if unit else "DOER_SINGLE")
-        if unit:
+        original,role = seed("task","root" if configured else "historical-ctrl","LEAD_SINGLE" if unit else "DOER_SINGLE")
+        if unit or configured:
             return app, {"ctrl_id": "root", "manifest_digest": ctrl["manifest_digest"]}, original
         with closing(sqlite3.connect(console.goals_database(self.codex_home))) as connection:
             connection.execute("CREATE TABLE thread_goals(thread_id TEXT PRIMARY KEY,goal_id TEXT,status TEXT)")
@@ -654,7 +1206,9 @@ class SwarmConsoleTests(unittest.TestCase):
         invalid = [dict(repeat_count=x) for x in (True, 0, 2**53, 1.5)] + [
             dict(subject_version="stale"), dict(subject_id="not-a-role"), dict(ctrl_id="foreign-ctrl"),
             dict(flow_digest="sha256:" + "0" * 64), dict(flow_version=99), dict(version=1),
-            dict(version=3), dict(subject_kind="TASK"), dict(subject_kind=[]), dict(authority="execute"), dict(notes="bad\x00text")]
+            dict(version=3), dict(subject_kind="TASK"), dict(subject_kind=[]), dict(authority="execute"), dict(notes="bad\x00text"),
+            dict(decision={"action":"KEEP", "outcome":"accepted", "reason":"unchanged", "cost_basis":""}),
+            dict(decision={"action":[], "outcome":"accepted", "reason":"unchanged", "cost_basis":"observed time"})]
         for changes in invalid:
             with self.subTest(changes=changes), self.assertRaises(console.ConsoleError):
                 restarted.project_flow_command({**request, "expected_digest":result["source_digest"],
@@ -665,11 +1219,37 @@ class SwarmConsoleTests(unittest.TestCase):
             restarted.project_flow_command({**request, "project_id":"project:missing"})
         with self.assertRaises(console.ConsoleError):
             restarted.project_flow_command({**request, "expected_digest":result["source_digest"], "acknowledge":False})
+        core = {"ctrl_id":"ctrl-a", "unit_ids":["lab-a", "factory-b"]}
+        lesson = {"artifact_digest":"sha256:"+"a"*64, "inputs_digest":"sha256:"+"b"*64,
+                  "expected_gain":5, "change_cost":3, "core_before":core, "core_after":copy.deepcopy(core)}
+        decision = {"action":"ADAPT", "outcome":"Accepted result", "reason":"Use the shorter path", "cost_basis":"Observed time and participant coverage", "lesson":lesson}
         revised = restarted.project_flow_command({**request, "expected_digest":result["source_digest"],
-            "assignment":{**draft, "version":2, "repeat_count":101, "label":"Revised project label"}})
+            "assignment":{**draft, "version":2, "repeat_count":101, "label":"Revised project label", "decision":decision}})
         self.assertEqual(revised["assignments"][0], first)
-        self.assertEqual([item["version"] for item in revised["assignments"]], [1, 2])
-        self.assertEqual(read(console.App(self.codex_home, self.config)), revised)
+        self.assertEqual(revised["assignments"][1]["decision"], decision)
+        self.assertEqual(revised["hive_lessons"][0]["assignment_digest"], revised["assignments"][1]["digest"])
+        self.assertTrue(revised["hive_lessons"][0]["requires_reassessment"])
+        self.assertEqual(len(console.flow_hive_lessons(revised["assignments"], inputs_digest=lesson["inputs_digest"])), 1)
+        self.assertEqual(console.flow_hive_lessons(revised["assignments"], inputs_digest="sha256:"+"c"*64), [])
+        hive = console.Swarm()
+        matches = hive.hydrate_hive("flow:", {}, 4, 1, flow_lessons=tuple(revised["hive_lessons"]), inputs_digest=lesson["inputs_digest"])
+        self.assertEqual([item.reference for item in matches], ["flow:"+revised["assignments"][1]["digest"]])
+        self.assertEqual(matches[0].provenance["reassessment"], "required")
+        self.assertEqual(hive.hydrate_hive("flow:", {}, 4, 1, flow_lessons=tuple(revised["hive_lessons"]), inputs_digest="sha256:"+"c"*64), [])
+        self.assertEqual(read(console.App(self.codex_home, self.config))["hive_lessons"], revised["hive_lessons"])
+        for bad in ({**lesson, "expected_gain":3}, {**lesson, "core_after":{"ctrl_id":"ctrl-a", "unit_ids":["lab-a"]}}):
+            with self.assertRaises(console.ConsoleError):
+                restarted.project_flow_command({**request, "expected_digest":revised["source_digest"],
+                    "assignment":{**draft, "version":3, "decision":{**decision, "lesson":bad}}})
+        with self.assertRaises(console.ConsoleError):
+            restarted.project_flow_command({**request, "expected_digest":revised["source_digest"],
+                "assignment":{**draft, "version":3, "decision":{k:v for k,v in decision.items() if k != "lesson"}}})
+        keep = {**decision, "action":"KEEP", "lesson":{**lesson, "expected_gain":3}}
+        kept = restarted.project_flow_command({**request, "expected_digest":revised["source_digest"],
+            "assignment":{**draft, "version":3, "decision":keep}})
+        self.assertEqual(kept["hive_lessons"][-1]["decision"]["action"], "KEEP")
+        self.assertEqual([item["version"] for item in kept["assignments"]], [1, 2, 3])
+        self.assertEqual(read(console.App(self.codex_home, self.config)), kept)
         self.assertEqual(restarted.progress_ledger.replay(), ledger_before)
         self.assertEqual(app.auto_bridge.mock_calls, [])
         self.assertEqual(restarted.auto_bridge.mock_calls, [])
@@ -1702,6 +2282,11 @@ class SwarmConsoleTests(unittest.TestCase):
         refused({**request(), "reviewer": "independent"})
         refused(request(reviewer="host-new"), pattern="independent reviewer")
         refused(request(reviewer="ctrl-a"), pattern="independent reviewer")
+        lead_owned = copy.deepcopy(app.progress_ledger.replay())
+        creation_binding = next(iter(lead_owned["task_creation_bindings"].values()))
+        creation_binding["parent_edge"] = {"state": "BOUND", "parent_task_id": "reviewer-host"}
+        with mock.patch.object(app.progress_ledger, "replay", return_value=lead_owned):
+            refused(request(), pattern="independent reviewer")
         refused(request(reviewer="reviewer-foreign"), pattern="HOST_REVIEW_UNVERIFIED")  # Returned cwd conflicts with that host thread.
         refused(request(reviewer="reviewer-absent"), pattern="HOST_REVIEW_UNVERIFIED")
         for invalid_cwd in ("", "relative-reviewer"):
@@ -1798,6 +2383,14 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.commit()
         pending = request()
         retained_review = copy.deepcopy(reviews["reviewer-host"])
+        day_ms = 24 * 60 * 60 * 1000
+        with mock.patch("runtime.progress_events.time.time", return_value=(now - 2 * day_ms) / 1000):
+            app.progress_ledger.start_velocity_instrumentation(project_id="project:alpha",
+                expected_event_seq=pending["expected_ledger_revision"])
+        metadata = app.progress_ledger._state.path.with_name("velocity-metadata.json")
+        damaged_metadata = getattr(self, "velocity_metadata_fixture", None)
+        if damaged_metadata is not None:
+            metadata.write_bytes(damaged_metadata)
         # A durable evidence prefix survives a crash without requiring another reviewer turn.
         app.progress_ledger.append_bound_block_evidence(
             project_id="project:alpha", task_id="host-new", block_id="b", manifest_digest=manifest_digest,
@@ -1805,6 +2398,11 @@ class SwarmConsoleTests(unittest.TestCase):
         refused(pending, pattern="ledger changed")
         pending["expected_ledger_revision"] = app.progress_ledger.replay()["cursor"]["event_seq"]
         self.assertEqual(reviews["reviewer-host"], retained_review)
+        if damaged_metadata is not None:
+            with mock.patch.object(app.progress_ledger, "start_velocity_instrumentation",
+                                   side_effect=console.ProgressEventError("progress ledger changed; reload before completing")):
+                refused(pending, pattern="ledger changed")
+            self.assertEqual(metadata.read_bytes(), damaged_metadata)
         accepted = post("/api/tasks/complete", pending)
         accepted._error.assert_not_called()
         result = accepted._json.call_args.args[1]
@@ -1895,6 +2493,77 @@ class SwarmConsoleTests(unittest.TestCase):
         (root / "deliverable.md").write_bytes(b"# Acceptance report\ndifferent accepted bytes\n")
         artifact_sha = hashlib.sha256(b"# Acceptance report\ndifferent accepted bytes\n").hexdigest()
         refused({**replay_body, "artifact_sha256": artifact_sha}, restarted, "different bytes")
+        records = [json.loads(line)["event"] for line in restarted.progress_ledger._state.path.read_text().splitlines()]
+        accepted_event = next(row for row in records if row.get("event_id") == "bound-accepted:host-new:b")
+        restarted.progress_ledger.append({**accepted_event, "event_id": "console-rework-b", "dedupe_key": "console-rework-b",
+            "event_kind": "REWORK_REQUESTED", "lifecycle_state": "INVALIDATED_REWORK",
+            "parent_event_id": accepted_event["event_id"], "observed_at_ms": int(time.time() * 1000)})
+        reworked = post("/api/tasks/complete", request(turn="review-turn-rework"), restarted)
+        reworked._error.assert_not_called()
+        self.assertEqual(reworked._json.call_args.args[1]["event_id"], "bound-accepted:host-new:b:attempt:2")
+        self.assertEqual(post("/api/tasks/complete", request(turn="review-turn-rework"), restarted)._json.call_args.args[1]["status"], "REPLAY")
+        end = (int(time.time() * 1000) // day_ms + 1) * day_ms
+        velocity = restarted.progress_ledger.project_velocity("project:alpha", days=7, as_of_ms=end)
+        if damaged_metadata is None:
+            self.assertEqual(velocity["current"][-1]["rate"], 2 / 24)
+        else:
+            self.assertEqual(velocity["diagnostic"], "VELOCITY_METADATA_CORRUPT_OR_INCOMPATIBLE")
+            self.assertTrue(all(point["rate"] is None for point in velocity["current"] + velocity["previous"]))
+            self.assertEqual(metadata.read_bytes(), damaged_metadata)
+
+        from skills.swarm.scripts import swarm_mcp
+        projection = swarm_mcp.SwarmProjection(telemetry_path=self.root / "velocity-status-telemetry.jsonl")
+        projection._app = restarted
+        accepted_again = projection.call("swarm_task_accept", {"request": request(turn="review-turn-rework"), "acknowledge": True})
+        self.assertEqual(accepted_again["status"], "REPLAY")
+        with mock.patch.object(restarted, "refresh_native_observation"), mock.patch("console.server.time.time", return_value=end / 1000), mock.patch.object(swarm_mcp, "_device_status", return_value={}):
+            scoped = projection.call("swarm_status", {"project_id": "project:alpha"})
+        chart = scoped["overview_metrics"]["velocity"]
+        self.assertEqual(set(chart["windows"]), {"7", "30", "90"})
+        self.assertTrue(all(window["project_id"] == "project:alpha" for window in chart["windows"].values()))
+        self.assertTrue(all(window["cursor"] == chart["windows"]["7"]["cursor"] for window in chart["windows"].values()))
+        self.assertEqual(chart["windows"]["7"]["current"][-1]["rate"], None if damaged_metadata else 2 / 24)
+        binding = restarted._saved_project_binding("project:alpha")
+        real_binding = restarted._saved_project_binding
+        def resolve_alias(project_id, *args, **kwargs):
+            return binding if project_id == "native:alpha" else real_binding(project_id, *args, **kwargs)
+        with mock.patch.object(restarted, "_saved_project_binding", side_effect=resolve_alias), \
+             mock.patch.object(restarted, "refresh_native_observation"), \
+             mock.patch("console.server.time.time", return_value=end / 1000), \
+             mock.patch.object(swarm_mcp, "_device_status", return_value={}):
+            alias_status = projection.call("swarm_status", {"project_id": "native:alpha"})
+        self.assertEqual(alias_status["overview_metrics"]["velocity"]["windows"]["7"]["project_id"], "project:alpha")
+        self.assertEqual(alias_status["overview_metrics"]["velocity"]["ledger_project_id"], "project:alpha")
+        live_as_of = int(time.time() * 1000) + 1000
+        with mock.patch.object(restarted, "refresh_native_observation"), \
+             mock.patch("console.server.time.time", return_value=live_as_of / 1000), \
+             mock.patch.object(swarm_mcp, "_device_status", return_value={}):
+            current_status = projection.call("swarm_status", {"project_id": "project:alpha"})
+        today_point = current_status["overview_metrics"]["velocity"]["windows"]["7"]["current"][-1]
+        self.assertTrue(today_point["partial"])
+        if damaged_metadata is None:
+            elapsed = today_point["observed_end_ms"] - today_point["observed_start_ms"]
+            self.assertAlmostEqual(today_point["rate"], 2 * 3_600_000 / elapsed)
+        else:
+            self.assertIsNone(today_point["rate"])
+        with mock.patch.object(restarted, "refresh_native_observation"), \
+             mock.patch.object(restarted.progress_ledger, "project_velocity", side_effect=sqlite3.OperationalError("read failed")), \
+             mock.patch.object(swarm_mcp, "_device_status", return_value={}):
+            failed_velocity = projection.call("swarm_status", {"project_id": "project:alpha"})
+        self.assertEqual(failed_velocity["overview_metrics"]["velocity"]["windows"], {})
+        self.assertIsNone(failed_velocity["overview_metrics"]["velocity"]["ledger_project_id"])
+
+    def test_console_completion_preserves_damaged_velocity_metadata(self) -> None:
+        for damaged in (b"{broken", b"{", b'{"schema_version":2,"projects":{}}'):
+            with self.subTest(metadata=damaged):
+                case = type(self)("test_bound_task_completion_composes_creation_runtime_review_and_ledger_acceptance")
+                case.velocity_metadata_fixture = damaged
+                case.setUp()
+                try:
+                    case.test_bound_task_completion_composes_creation_runtime_review_and_ledger_acceptance()
+                finally:
+                    case.tearDown()
+                    case.doCleanups()
 
     def test_project_ticket_api_edits_canonical_brief_without_runtime_writes(self) -> None:
         self._confirm_root_ctrl()
@@ -1990,6 +2659,144 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(console, "_is_reparse_point", return_value=True):
             with self.assertRaises(console.ConsoleError):
                 app._native_project_map()
+
+    def test_archived_alias_can_be_cleared_with_exact_revision_then_replaced(self) -> None:
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture, views
+        native = "native-project"
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        _, digest = views.parse_project_brief_markdown(brief.read_text(encoding="utf-8"))
+        old = {"native_project_id": native, "host_project_id": "project:new", "ledger_project_id": "project:alpha", "controller_id": "root"}
+        replacement = {**old, "controller_id": "lead"}
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", ("project:new", "alpha", "{}", 1, 0, 0))
+            connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:new", 0, str(self.alpha_root)))
+            connection.commit()
+        host_file = self.codex_home / console.HOST_STATE_FILENAME
+        host_key = "local:" + str(self.codex_home.resolve())
+        state = {console.HOST_STATE_PROJECTS_KEY: {native: {"id": native, "rootPaths": [str(self.alpha_root)]}},
+                 console.HOST_STATE_PROJECT_MAP_KEY: {host_key: {native: "project:new"}},
+                 "thread-project-assignments": {key: {"projectKind": "local", "projectId": native} for key in ("root", "lead")}}
+        host_file.write_text(json.dumps(state), encoding="utf-8")
+        app = console.App(self.codex_home, self.config)
+        with mock.patch.object(app.progress_ledger, "replay", return_value={"ticket_identities": {"project:alpha": {}}}):
+            saved = app.project_alias_command({"operation": "select", "selection": old, "expected_digest": digest, "acknowledge": True})
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE threads SET archived=1 WHERE id='root'")
+                connection.commit()
+            with self.assertRaises(console.ConsoleError): app._saved_project_binding(native)
+            preview = app.project_alias_command({"operation": "read", "selection": old})
+            self.assertEqual(preview["source_digest"], saved["source_digest"])
+            with self.assertRaises(console.ConsoleConflict):
+                app.project_alias_command({"operation": "clear", "selection": old, "expected_digest": digest, "acknowledge": True})
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "clear", "selection": replacement, "expected_digest": saved["source_digest"], "acknowledge": True})
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "clear", "selection": old, "expected_digest": saved["source_digest"], "acknowledge": False})
+            state["thread-project-assignments"]["root"]["projectId"] = "wrong"
+            host_file.write_text(json.dumps(state), encoding="utf-8")
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "clear", "selection": old, "expected_digest": saved["source_digest"], "acknowledge": True})
+            state["thread-project-assignments"]["root"]["projectId"] = native
+            host_file.write_text(json.dumps(state), encoding="utf-8")
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:third", 0, str(self.alpha_root)))
+                connection.commit()
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "clear", "selection": old, "expected_digest": saved["source_digest"], "acknowledge": True})
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("DELETE FROM project_roots WHERE project_id='project:third'")
+                connection.commit()
+            cleared = app.project_alias_command({"operation": "clear", "selection": old, "expected_digest": saved["source_digest"], "acknowledge": True})
+            self.assertEqual(cleared["provenance"], "LOCAL_CLEARED")
+            replaced = app.project_alias_command({"operation": "select", "selection": replacement, "expected_digest": cleared["source_digest"], "acknowledge": True})
+            self.assertFalse(replaced["admitted"])
+            self.assertEqual(app._saved_project_binding(native)["project_id"], "project:alpha")
+
+    def test_explicit_project_alias_rechecks_host_and_preserves_ledger_identity(self) -> None:
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture, views
+        native = "native-project"
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        _, digest = views.parse_project_brief_markdown(brief.read_text(encoding="utf-8"))
+        selection = {"native_project_id": native, "host_project_id": "project:new",
+                     "ledger_project_id": "project:alpha", "controller_id": "root"}
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", ("project:new", "alpha", "{}", 1, 0, 0))
+            connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:new", 0, str(self.alpha_root)))
+            connection.commit()
+        host_file = self.codex_home / console.HOST_STATE_FILENAME
+        host_key = "local:" + str(self.codex_home.resolve())
+        state = {console.HOST_STATE_PROJECTS_KEY: {native: {"id": native, "rootPaths": [str(self.alpha_root)]}},
+                 console.HOST_STATE_PROJECT_MAP_KEY: {host_key: {native: "project:new"}},
+                 "thread-project-assignments": {"root": {"projectKind": "local", "projectId": native}}}
+        host_file.write_text(json.dumps(state), encoding="utf-8")
+        app = console.App(self.codex_home, self.config)
+        with self.assertRaises(console.ConsoleError):
+            app._saved_project_binding(native)
+        with mock.patch.object(app.progress_ledger, "replay", return_value={"ticket_identities": {"project:alpha": {}}}):
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "select", "selection": selection, "expected_digest": digest, "acknowledge": False})
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "select", "selection": {**selection, "host_project_id": "wrong"}, "expected_digest": digest, "acknowledge": True})
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:missing", 0, str(self.root / "not-present")))
+                connection.commit()
+            preview = app.project_alias_command({"operation": "read", "selection": selection})
+            self.assertEqual(preview["source_digest"], digest)
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:new'", (str(self.root / "not-present"),))
+                connection.commit()
+            with self.assertRaises(console.ConsoleError):
+                app.project_alias_command({"operation": "read", "selection": selection})
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:new'", (str(self.alpha_root),))
+                connection.execute("DELETE FROM project_roots WHERE project_id='project:missing'")
+                connection.commit()
+            before = brief.read_bytes()
+            original = app._explicit_project_alias
+            calls = []
+            def changing_host(*args, **kwargs):
+                calls.append(True)
+                if len(calls) == 2:
+                    raise console.ConsoleError("host changed before commit")
+                return original(*args, **kwargs)
+            with mock.patch.object(app, "_explicit_project_alias", side_effect=changing_host):
+                with self.assertRaises(console.ConsoleError):
+                    app.project_alias_command({"operation": "select", "selection": selection, "expected_digest": digest, "acknowledge": True})
+            self.assertEqual(brief.read_bytes(), before)
+            saved = app.project_alias_command({"operation": "select", "selection": selection, "expected_digest": digest, "acknowledge": True})
+            self.assertEqual((saved["project_id"], saved["admitted"]), ("project:alpha", False))
+            with self.assertRaises(console.ConsoleConflict):
+                app.project_alias_command({"operation": "select", "selection": selection, "expected_digest": digest, "acknowledge": True})
+            binding = app._saved_project_binding(native)
+            self.assertEqual(binding["project_id"], "project:alpha")
+            self.assertIn(native, binding["identities"])
+            state["thread-project-assignments"]["root"]["projectId"] = "other"
+            host_file.write_text(json.dumps(state), encoding="utf-8")
+            with self.assertRaises(console.ConsoleError):
+                app._saved_project_binding(native)
+            state["thread-project-assignments"]["root"]["projectId"] = native
+            host_file.write_text(json.dumps(state), encoding="utf-8")
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE threads SET archived=1 WHERE id='root'")
+                connection.commit()
+            with self.assertRaises(console.ConsoleError):
+                app._saved_project_binding(native)
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("UPDATE threads SET archived=0 WHERE id='root'")
+                connection.execute("INSERT INTO project_roots VALUES (?,?,?)", ("project:third", 0, str(self.alpha_root)))
+                connection.commit()
+            with self.assertRaises(console.ConsoleError):
+                app._saved_project_binding(native)
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("DELETE FROM project_roots WHERE project_id='project:third'")
+                connection.commit()
+        with mock.patch.object(app.progress_ledger, "replay", return_value={"ticket_identities": {}}):
+            with self.assertRaises(console.ConsoleError):
+                app._saved_project_binding(native)
+        with self.assertRaises(views.ProjectModelError):
+            views.set_explicit_project_alias(brief, expected_digest=digest, selection=selection, updated_at="now", verify_current_scope=lambda: None)
 
     def test_native_saved_project_binding_is_read_only_alias_for_tickets_and_brief_identity(self) -> None:
         from console.tests.test_project_model_views import project_fixture, markdown_fixture, views
@@ -2253,6 +3060,86 @@ class SwarmConsoleTests(unittest.TestCase):
         with self.assertRaises(console.ConsoleError):
             restarted._observed_task_root("project:alpha", "task", allow_adopted=True)
         self.assertEqual(self.config.read_bytes(), config)
+
+    def test_adopted_projectless_owner_message_uses_retained_host_cwd(self) -> None:
+        from contextlib import contextmanager
+        app, request, _, _, _ = self._existing_owner_admission_fixture()
+        app.adopt_existing_task(request)
+        before = app.progress_ledger.replay()
+        context = app.task_message_context({"project_id":"project:alpha", "thread_id":"task"})
+        self.assertEqual(context["expected_ledger_revision"], before["cursor"]["event_seq"])
+        self.assertEqual(app.progress_ledger.replay(), before)
+        instruction = "Bounded adopted-owner probe"
+        envelope = {key: context[key] for key in ("project_id", "root_digest", "ctrl_id", "target_intent",
+            "target_thread_id", "expected_ledger_revision", "submitted_at_ms", "expires_at_ms", "action")}
+        envelope.update(command_id="adopted-message", idempotency_key="adopted-message",
+                        payload_digest=hashlib.sha256(instruction.encode()).hexdigest())
+        calls = []
+        @contextmanager
+        def session(cwd, **kwargs):
+            def send(message): calls.append(message)
+            def receive(predicate):
+                response = {"thread":{"id":"task", "cwd":str(self.root), "status":{"type":"idle"}}} if calls[-1]["method"] == "thread/resume" else {"turn":{"id":"turn-new"}}
+                return {"id":calls[-1]["id"], "result":response}
+            yield send, receive
+        app.auto_bridge.command_session = session
+        payload = {"acknowledge":True, "instruction":instruction, "envelope":envelope}
+        result = app.message_task(payload)
+        self.assertEqual((result["status"],result["thread_id"]), ("RESULT","task"))
+        self.assertEqual([item["method"] for item in calls], ["thread/resume","turn/start"])
+        self.assertEqual(app.message_task(payload)["status"], "REPLAY")
+        self.assertEqual(len(calls),2)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root/'moved'),)); connection.commit()
+        with self.assertRaises(console.ConsoleError): app.task_message_context({"project_id":"project:alpha", "thread_id":"task"})
+        with self.assertRaises(console.ConsoleError): app.message_task(payload)
+        self.assertEqual(len(calls),2)
+
+    def test_adopted_owner_rejects_wrong_observed_host_cwd_without_turn(self) -> None:
+        from contextlib import contextmanager
+        app, request, _, _, _ = self._existing_owner_admission_fixture()
+        with self.assertRaises(console.ConsoleError):
+            app.task_message_context({"project_id":"project:alpha", "thread_id":"task"})
+        app.adopt_existing_task(request)
+        context=app.task_message_context({"project_id":"project:alpha", "thread_id":"task"})
+        instruction="Host identity check"
+        envelope={key:context[key] for key in ("project_id","root_digest","ctrl_id","target_intent","target_thread_id",
+            "expected_ledger_revision","submitted_at_ms","expires_at_ms","action")}
+        envelope.update(command_id="wrong-cwd",idempotency_key="wrong-cwd",payload_digest=hashlib.sha256(instruction.encode()).hexdigest())
+        sent=[]
+        @contextmanager
+        def session(cwd, **kwargs):
+            def send(message): sent.append(message)
+            def receive(predicate): return {"id":sent[-1]["id"],"result":{"thread":{"id":"task","cwd":str(self.codex_home),"status":{"type":"idle"}}}}
+            yield send,receive
+        app.auto_bridge.command_session=session
+        result=app.message_task({"acknowledge":True,"instruction":instruction,"envelope":envelope})
+        self.assertEqual(result["status"],"PENDING")
+        self.assertEqual([item["method"] for item in sent],["thread/resume"])
+        self.assertFalse(result["work_completed"])
+
+    def test_adopted_owner_app_transport_uses_retained_cwd_and_replays(self) -> None:
+        from runtime.execution_adapters import HQAppTaskObservation
+        app, request, _, _, _ = self._existing_owner_admission_fixture()
+        app.adopt_existing_task(request)
+        context=app.task_message_context({"project_id":"project:alpha", "thread_id":"task"})
+        instruction="Native adopted task"
+        envelope={key:context[key] for key in ("project_id","root_digest","ctrl_id","target_intent","target_thread_id",
+            "expected_ledger_revision","submitted_at_ms","expires_at_ms","action")}
+        envelope.update(command_id="native-adopted",idempotency_key="native-adopted",payload_digest=hashlib.sha256(instruction.encode()).hexdigest())
+        sent=[]
+        def observe(command):
+            return HQAppTaskObservation("a"*64,command.digest,command.payload_digest,"task","old-turn","new-turn",str(self.root),command.submitted_at_ms)
+        app.task_transport=SimpleNamespace(send_message_to_thread=lambda **kw: sent.append(kw),observe_command=observe,
+            verify_observation=lambda observation,command:True)
+        app.auto_bridge.command_session=mock.Mock(side_effect=AssertionError("stdio fallback forbidden"))
+        payload={"acknowledge":True,"instruction":instruction,"envelope":envelope}
+        result=app.message_task(payload)
+        self.assertEqual((result["status"],result["thread_id"],result["turn_id"]),("RESULT","task","new-turn"))
+        self.assertEqual(len(sent),1)
+        self.assertEqual(app.message_task(payload)["status"],"REPLAY")
+        self.assertEqual(len(sent),1)
+        app.auto_bridge.command_session.assert_not_called()
 
     def test_existing_owner_admission_rejects_scope_and_host_conflicts_without_write(self) -> None:
         app, request, sent, controls, session = self._existing_owner_admission_fixture()
@@ -3079,6 +3966,48 @@ class SwarmConsoleTests(unittest.TestCase):
             app.prepare_work_unit(request)
         self.assertEqual(app.unit_catalog_projection("FACTORY")["instances"], [])
         self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
+
+    def test_work_unit_carries_bound_mission_and_keeps_legacy_unknown(self) -> None:
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        role = next(item for item in app.builtin_role_manifests if item["id"] == "manager")
+        request = dict(kind="FACTORY", template_id="software", name="Factory", objective="Refactor the UI",
+            project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="mission-unit",
+            coordinator_role={"id": "manager", "version": role["version"]})
+        document = project_fixture("alpha")
+        document["project"]["purpose"] = "Help people plan with confidence."
+        path = self.root / "SWARM.md"
+        path.write_text(markdown_fixture(document), encoding="utf-8")
+        _, digest = console.parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=self.root)
+        with mock.patch.object(app, "_auto_scope"):
+            first = app.prepare_work_unit(request)["submission"]["instruction"]
+            request["objective"] = "Improve onboarding"
+            second = app.prepare_work_unit(request)["submission"]["instruction"]
+        self.assertIn("Its objective is: Refactor the UI", first)
+        self.assertIn("Its objective is: Improve onboarding", second)
+        for instruction in (first, second):
+            self.assertIn("Help people plan with confidence.", instruction)
+            self.assertIn(digest, instruction)
+            self.assertIn('"confirmation":"UNVERIFIED"', instruction)
+        document["project"] = {"id": "other", "purpose": "A different project's private purpose"}
+        path.write_text(markdown_fixture(document), encoding="utf-8")
+        with mock.patch.object(app, "_auto_scope"):
+            other = app.prepare_work_unit(request)["submission"]["instruction"]
+        self.assertNotIn("A different project's private purpose", other)
+        self.assertIn('"state":"UNKNOWN"', other)
+        document["project"] = {"id": "alpha"}
+        path.write_text(markdown_fixture(document), encoding="utf-8")
+        with mock.patch.object(app, "_auto_scope"):
+            legacy = app.prepare_work_unit(request)["submission"]["instruction"]
+        self.assertIn('"state":"UNKNOWN"', legacy)
+        status, legacy_digest, _ = app._project_brief_from_text(path.read_text(encoding="utf-8"),
+            project_id="project:alpha", display_name="alpha", root=self.root)
+        self.assertEqual(status, "KNOWN")
+        self.assertIsNotNone(legacy_digest)
+        self.assertEqual(app.project_flow_command({"operation": "read", "project_id": "project:alpha"})["source_digest"], legacy_digest)
 
     def test_factory_starting_flows_reach_bounded_coordinator_instructions(self) -> None:
         with closing(sqlite3.connect(self.database)) as connection:
@@ -4834,6 +5763,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(task_view["items"], owner_view["items"])
         self.assertEqual(unknown["items"], [])
         item = first["items"][0]
+        self.assertEqual(item["model_observation"], {"state": "UNKNOWN", "model": None,
+            "effort": None, "reason": "NO_RUN_BOUND_PROVIDER_RECEIPT"})
         self.assertEqual(
             (item["project_id"], item["ctrl_id"], item["agent_id"], item["summary"]),
             ("project:alpha", "root", "task", "Work was added."),
@@ -4848,6 +5779,65 @@ class SwarmConsoleTests(unittest.TestCase):
             app.run_log("root", project_id="project:missing")
         with self.assertRaisesRegex(console.ConsoleError, "observed host CTRL|host-confirmed"):
             app.run_log("lead", project_id="project:alpha")
+
+    def test_provider_result_receipt_persists_and_projects_only_exact_run(self) -> None:
+        from runtime import DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, ProofClass
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        artifact = ArtifactIdentity("run-artifact", "revision", "accepted result")
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("gen", False, "requested-model", "high", 1, "host-config"))
+        ledger.reserve("reservation", "task", "owner-task", artifact, observed_at_ms=2, project_id="project:alpha")
+        ledger.dispatch("reservation", "a" * 64, 100, observed_at_ms=3)
+        event = CodexAppServerAdapter().translate_event({"method":"turn/completed", "params":{"threadId":"thread", "turnId":"turn", "status":"completed"}})
+        ledger.observe_event("reservation", event, observed_at_ms=4)
+        app.store.persist_execution_ledger(ledger, now_ms=4)
+        provider = json.dumps({"session_id":"provider-session", "modelUsage":{"observed-model":{"canonicalModel":"observed-model"}}}).encode()
+        evidence = DelegatedEvidence("provider-result:provider-session", ProofClass.PROVIDER, artifact.key(), hashlib.sha256(provider).hexdigest(), "Provider result metadata.")
+        receipt = DelegatedReturnReceipt("material-receipt", "task", "owner-task", DelegatedReceiptVerdict.ACCEPT, artifact, "Accepted result.", evidence=(evidence,))
+        args = dict(receipt=receipt, provider_session_id="provider-session", thread_id="thread", turn_id="turn", now_ms=5)
+        with self.assertRaises(console.ConsoleError):
+            app.store.ingest_execution_provider_result("unknown-reservation", provider, **args)
+        from dataclasses import replace
+        with self.assertRaisesRegex(console.ConsoleConflict, "material receipt is not recorded"):
+            app.store.ingest_execution_provider_result("reservation", provider, **args)
+        retained = app.store.load_execution_ledger()
+        self.assertEqual(retained.reservation("reservation").state, ExecutionDispatchState.ACTIVE)
+        retained.record_material_receipt("reservation", receipt, observed_at_ms=5)
+        app.store.persist_execution_ledger(retained, now_ms=5)
+        args["now_ms"] = 6
+        with self.assertRaisesRegex(console.ConsoleError, "provider evidence"):
+            app.store.ingest_execution_provider_result("reservation", provider, **{**args, "receipt":replace(receipt, evidence=())})
+        self.assertIsNone(app.store.load_execution_ledger().reservation("reservation").provider_model_observation)
+        saved = app.store.ingest_execution_provider_result("reservation", provider, **args)
+        self.assertEqual(saved["provider_model_observation"]["model"], "observed-model")
+        self.assertEqual(app.store.ingest_execution_provider_result("reservation", provider, **args), saved)
+        restarted = console.ConsoleStore(app.store.path).load_execution_ledger()
+        self.assertEqual(restarted.reservation("reservation").provider_model_observation["model"], "observed-model")
+        altered = copy.deepcopy(restarted.reservation("reservation").snapshot())
+        altered["provider_model_observation"]["model"] = "tampered-model"
+        altered["updated_at_ms"] = 7
+        with self.assertRaisesRegex(console.ConsoleError, "observation is immutable"):
+            app.store.persist_execution_ledger(console.ExecutionDispatchLedger(reservations=(console.ExecutionReservation.from_snapshot(altered),)), now_ms=7)
+        with self.assertRaises(console.ConsoleError):
+            app.store.ingest_execution_provider_result("reservation", provider + b" ", **{**args, "now_ms":7})
+        material = self._notification_event("run-known", "run-known-block", "BLOCK_CREATED", "ACTIVE", 10)
+        material["schema_version"] = 2
+        material["topology"] = {"node_kind":"BLOCK", "input_receipt_ids":[], "dispatch_receipt_id":None,
+            "completion_receipt_id":"material-receipt", "cost_receipt_ids":[], "release_receipt_ids":[]}
+        self.assertEqual(app.progress_ledger.append(material)["status"], "appended")
+        historical = self._notification_event("run-unknown", "run-unknown-block", "BLOCK_CREATED", "ACTIVE", 11)
+        self.assertEqual(app.progress_ledger.append(historical)["status"], "appended")
+        logs = app.run_log("root", project_id="project:alpha")
+        rows = {item["event_id"]:item for item in logs["items"]}
+        self.assertEqual(rows["run-known"]["model_observation"]["model"], "observed-model")
+        self.assertEqual(rows["run-known"]["model_observation"]["requested_effort"], "high")
+        self.assertIsNone(rows["run-known"]["model_observation"]["effort"])
+        self.assertEqual(rows["run-unknown"]["model_observation"]["state"], "UNKNOWN")
+        self.assertIsNone(rows["run-unknown"]["model_observation"]["model"])
+        with mock.patch.object(app.store, "load_execution_ledger", side_effect=console.ConsoleError("unavailable")):
+            unavailable = app.run_log("root", project_id="project:alpha")
+        self.assertEqual({item["model_observation"]["reason"] for item in unavailable["items"]}, {"EXECUTION_STORE_UNAVAILABLE"})
 
     def test_run_log_cursor_is_monotonic_bounded_and_reports_truncation(self) -> None:
         self._confirm_root_ctrl()
@@ -5799,7 +6789,7 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_extended_windows_project_path_binds_structural_host_ctrl(self) -> None:
         now = 2_000_000_000_000
         self._add_host_project(
-            "project:swarm", "swarm", r"C:\Users\peikg\Documents\Codex\Projects\flowwweb\swarm",
+            "project:swarm", "swarm", r"C:\Users\example\Documents\Codex\Projects\flowwweb\swarm",
         )
         connection = sqlite3.connect(self.database)
         connection.execute("ALTER TABLE threads ADD COLUMN project_id TEXT")
@@ -5811,8 +6801,8 @@ class SwarmConsoleTests(unittest.TestCase):
         connection.executemany(
             f"INSERT INTO threads ({columns}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                ("structural-root", "private objective", r"\\?\C:\Users\peikg\Documents\Codex\Projects\flowwweb\swarm", now // 1000, now // 1000, now, now, "gpt-5.6-sol", "high", 1, 0, "", "main", "", "", "", 0, None),
-                ("structural-child", "private delegation", r"\\?\C:\Users\peikg\Documents\Codex\Projects\flowwweb\swarm", now // 1000, now // 1000, now, now, "gpt-5.6-terra", "high", 1, 0, "", "main", "subagent", "Ada", "", 0, None),
+                ("structural-root", "private objective", r"\\?\C:\Users\example\Documents\Codex\Projects\flowwweb\swarm", now // 1000, now // 1000, now, now, "gpt-5.6-sol", "high", 1, 0, "", "main", "", "", "", 0, None),
+                ("structural-child", "private delegation", r"\\?\C:\Users\example\Documents\Codex\Projects\flowwweb\swarm", now // 1000, now // 1000, now, now, "gpt-5.6-terra", "high", 1, 0, "", "main", "subagent", "Ada", "", 0, None),
             ],
         )
         connection.execute(
@@ -6226,7 +7216,7 @@ class SwarmConsoleTests(unittest.TestCase):
             handler.headers["Origin"] = origin
         if token:
             handler.headers["X-Swarm-Token"] = token
-        handler.server = SimpleNamespace(app=SimpleNamespace(token="secret", config_path=self.config))
+        handler.server = SimpleNamespace(app=SimpleNamespace(token="secret", config_path=self.config, codex_home=self.codex_home))
         return handler
 
     def _storage_handler(self, *, result: dict | None = None, error: Exception | None = None):
@@ -8350,6 +9340,17 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("task", {project["id"] for project in navigation["projects"]})
         self.assertNotIn(str(self.alpha_root), json.dumps(navigation["projects"]))
 
+    def test_roster_native_bindings_are_one_fresh_snapshot_per_read(self) -> None:
+        app = console.App(self.codex_home, self.config, self.root / "console" / "roster-snapshot.sqlite3")
+        with mock.patch.object(app, "_native_project_map", side_effect=[{}, {"project:alpha": {"valid": False}}]) as read_map:
+            first = app.project_roster()
+            second = app.project_roster()
+        self.assertEqual(read_map.call_count, 2)
+        first_alpha = next(item for item in first["projects"] if item["id"] == "project:alpha")
+        second_alpha = next(item for item in second["projects"] if item["id"] == "project:alpha")
+        self.assertNotEqual(first_alpha["manifest"]["status"], "INVALID")
+        self.assertEqual(second_alpha["manifest"]["status"], "INVALID")
+
     def test_project_roster_enumerates_saved_projects_and_keeps_current_work_separate(self) -> None:
         self._confirm_root_ctrl()
         inactive_root = self.root / "inactive-project"
@@ -9637,6 +10638,1091 @@ class SwarmConsoleTests(unittest.TestCase):
         with self.assertRaises(console.ConsoleError):
             store.proof_media_item("evidence-delivery", registered["digest"])
 
+    def test_proof_cli_registers_original_through_local_console(self) -> None:
+        source = self.root / "actual-temp-original.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        app = console.App(self.codex_home, self.config, self.root / "console" / "cli.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        server = console.SwarmHTTPServer(("127.0.0.1", 0), console.Handler, app)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with mock.patch.object(app, "_host_overview", return_value=overview):
+                command = [sys.executable, "-B", str(Path(__file__).resolve().parents[2] / "skills/swarm/scripts/swarm_proof.py"),
+                           str(source), "--codex-home", str(self.codex_home), "--console-url",
+                           f"http://127.0.0.1:{server.server_address[1]}", "--evidence-id", "cli-proof",
+                           "--task-id", "task-1", "--kind", "screenshot", "--caption", "Original"]
+                result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            event = json.loads(result.stdout)
+            self.assertEqual(app.proof_media_item("cli-proof", event["digest"])["path"], source.resolve())
+            self.assertFalse((self.codex_home / "swarm" / "proof-media").exists())
+            scan = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=10)
+            self.assertEqual(scan["rejected"], 0, scan)
+            self.assertEqual(scan["imported"], 1, scan)
+            scan = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=11)
+            self.assertEqual(scan["duplicates"], 1, scan)
+            source.write_bytes(b"\x89PNG\r\n\x1a\nother")
+            with self.assertRaises(console.ConsoleError):
+                app.proof_media_item("cli-proof", event["digest"])
+            source.unlink()
+            with self.assertRaisesRegex(console.ConsoleError, "unavailable"):
+                app.proof_media_item("cli-proof", event["digest"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_proof_cli_fails_closed_on_mismatched_console_home(self) -> None:
+        source = self.root / "other-home.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        app = console.App(self.codex_home, self.config, self.root / "console" / "home.sqlite3")
+        server = console.SwarmHTTPServer(("127.0.0.1", 0), console.Handler, app)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            other_home = self.root / "other-home"
+            command = [sys.executable, "-B", str(Path(__file__).resolve().parents[2] / "skills/swarm/scripts/swarm_proof.py"),
+                       str(source), "--codex-home", str(other_home), "--console-url", f"http://127.0.0.1:{server.server_address[1]}",
+                       "--evidence-id", "wrong-home", "--task-id", "task-1", "--kind", "screenshot", "--caption", "Original"]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("console does not match", result.stderr)
+            self.assertEqual(app.store.proof_feed(), [])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_explicit_original_authorization_and_changed_content(self) -> None:
+        source = self.root / "outside-original.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        app = console.App(self.codex_home, self.config, self.root / "console" / "explicit.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        event = {"acknowledge": True, "evidence_id": "explicit-proof", "task_id": "task-1",
+                 "kind": "screenshot", "locator": str(source), "caption": "Explicit source"}
+        for nodes in ([], [{"id": "task-1", "project_id": "project:alpha", "virtual": True}],
+                      overview["nodes"] * 2):
+            with mock.patch.object(app, "_host_overview", return_value={"nodes": nodes}), \
+                 self.assertRaisesRegex(console.ConsoleError, "observed task"):
+                app.authorize_original_proof(event)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            with self.assertRaisesRegex(console.ConsoleError, "acknowledgement"):
+                app.authorize_original_proof({**event, "acknowledge": False})
+            with self.assertRaisesRegex(console.ConsoleError, "project does not match"):
+                app.authorize_original_proof({**event, "project_id": "project:other"})
+            self.assertEqual(app.store.proof_feed(), [])
+            row = app.authorize_original_proof({**event, "project_id": "project:alpha"})
+            self.assertEqual(app.authorize_original_proof({**event, "project_id": "project:alpha"}), row)
+            with closing(sqlite3.connect(app.store.path)) as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM proof_media").fetchone()[0], 1)
+        self.assertEqual(app.proof_media_item("explicit-proof", row["digest"])["path"], source.resolve())
+        self.assertFalse((self.codex_home / "swarm" / "proof-media").exists())
+        source.unlink()
+        with self.assertRaisesRegex(console.ConsoleError, "unavailable"):
+            app.proof_media_item("explicit-proof", row["digest"])
+        source.write_bytes(b"\x89PNG\r\n\x1a\nother")
+        with self.assertRaises(console.ConsoleError):
+            app.proof_media_item("explicit-proof", row["digest"])
+
+    def test_explicit_original_respects_retained_event_receipts(self) -> None:
+        source = self.root / "receipt-original.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "receipt-check.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        def event(identity):
+            return {"acknowledge": True, "evidence_id": identity, "task_id": "task-1", "project_id": "project:alpha",
+                    "kind": "screenshot", "locator": str(source), "caption": "Explicit source", "digest": digest}
+        def retain(identity, *, status, evidence_id=None, task_id="task-1", media_digest=digest):
+            name = hashlib.sha256(identity.encode("utf-8")).hexdigest() + ".json"
+            app.store._record_proof_event_receipt(name, mtime_ns=1, size=1, status=status,
+                evidence_id=identity if evidence_id is None else evidence_id, event_digest="a" * 64,
+                task_id=task_id, project_id="project:alpha", media_digest=media_digest, now_ms=1)
+            return name
+        def media(identity, receipt):
+            return app.store.record_proof_media({**event(identity), "source": "CtrlEvidence", "disposition": "PENDING",
+                "receipt": receipt}, now_ms=1, allowed_root=self.root)
+        retain("rejected-proof", status="REJECTED", evidence_id="")
+        imported_name = hashlib.sha256(b"imported-proof").hexdigest() + ".json"
+        imported = media("imported-proof", "proof-event:" + Path(imported_name).stem)
+        retain("imported-proof", status="IMPORTED")
+        media("conflicting-proof", "ctrl-original:task-1")
+        retain("conflicting-proof", status="IMPORTED", task_id="another-task")
+        media("wrong-reference", "proof-event:another-event")
+        retain("wrong-reference", status="IMPORTED")
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                app.authorize_original_proof(event("rejected-proof"))
+            with self.assertRaisesRegex(console.ConsoleError, "receipt"):
+                app.authorize_original_proof(event("conflicting-proof"))
+            with self.assertRaisesRegex(console.ConsoleError, "receipt reference"):
+                app.authorize_original_proof(event("wrong-reference"))
+            self.assertEqual(app.authorize_original_proof(event("imported-proof")), imported)
+            self.assertEqual(app.authorize_original_proof(event("imported-proof")), imported)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_media WHERE evidence_id='rejected-proof'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_media WHERE evidence_id='imported-proof'").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_event_receipts").fetchone()[0], 4)
+
+    def _proof_race_fixture(self, evidence_id: str):
+        from skills.swarm.runtime.proof_events import register_proof_event
+
+        source = self.codex_home / "visualizations" / f"{evidence_id}.png"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        event = register_proof_event(
+            self.codex_home, source, evidence_id=evidence_id, task_id="task-1",
+            kind="screenshot", caption="Race fixture", created_at_ms=1,
+        )
+        app = console.App(self.codex_home, self.config, self.root / "console" / f"{evidence_id}.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        return app, {**event, "acknowledge": True, "project_id": "project:alpha"}, overview
+
+    def _start_proof_race_scanner(self, app, boundary: str):
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-c", _PROOF_RACE_SCANNER,
+             str(self.codex_home), str(app.store.path), boundary],
+            cwd=str(SERVER.parent.parent), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8",
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+
+        def stop_owned_process():
+            if process.poll() is None:
+                try:
+                    release = None if process._proof_race_released else "continue\n"
+                    process._proof_race_released = True
+                    process.communicate(release, timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=5)
+
+        process._proof_race_released = False
+        self.addCleanup(stop_owned_process)
+        lines = queue.Queue()
+        threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True).start()
+        try:
+            ready = lines.get(timeout=45)
+        except queue.Empty:
+            stop_owned_process()
+            self.fail("scanner did not reach the controlled boundary")
+        self.assertEqual(ready.strip(), "SCANNER_READY", "scanner exited before the controlled boundary")
+        return process
+
+    def _finish_proof_race_scanner(self, process):
+        process._proof_race_released = True
+        stdout, stderr = process.communicate("continue\n", timeout=45)
+        self.assertEqual(process.returncode, 0, stderr)
+        return json.loads(stdout.strip().splitlines()[-1])
+
+    def test_proof_race_cleanup_reaps_owned_child_after_completion_timeout(self) -> None:
+        child_code = "import sys,time; print('SCANNER_READY',flush=True); sys.stdin.readline(); time.sleep(30)"
+        app = SimpleNamespace(store=SimpleNamespace(path=self.root / "unused.sqlite3"))
+        with mock.patch.dict(globals(), {"_PROOF_RACE_SCANNER": child_code}):
+            process = self._start_proof_race_scanner(app, "synthetic-timeout")
+        original = process.communicate
+
+        def short_communicate(input=None, timeout=None):
+            return original(input=input, timeout=0.15)
+
+        process.communicate = short_communicate
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                self._finish_proof_race_scanner(process)
+            cleanup, args, kwargs = self._cleanups[-1]
+            cleanup(*args, **kwargs)
+            self.assertIsNotNone(process.poll(), "owned scanner must be reaped after timeout")
+        finally:
+            process.communicate = original
+            if process.poll() is None:
+                process.kill()
+                process.communicate(timeout=5)
+
+    def test_proof_race_cleanup_reaps_owned_child_after_startup_timeout(self) -> None:
+        child_code = "import sys,time; sys.stdin.readline(); time.sleep(30)"
+        app = SimpleNamespace(store=SimpleNamespace(path=self.root / "unused.sqlite3"))
+        children = []
+        original_popen = subprocess.Popen
+        original_get = queue.Queue.get
+
+        def track_child(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            original = process.communicate
+            process.communicate = lambda input=None, timeout=None: original(input=input, timeout=0.15)
+            children.append((process, original))
+            return process
+
+        def short_get(instance, block=True, timeout=None):
+            return original_get(instance, block=block, timeout=0.15 if timeout else timeout)
+
+        try:
+            with mock.patch.dict(globals(), {"_PROOF_RACE_SCANNER": child_code}), \
+                    mock.patch.object(subprocess, "Popen", side_effect=track_child), \
+                    mock.patch.object(queue.Queue, "get", new=short_get):
+                with self.assertRaisesRegex(AssertionError, "did not reach"):
+                    self._start_proof_race_scanner(app, "synthetic-startup-timeout")
+            self.assertEqual(len(children), 1)
+            self.assertIsNotNone(children[0][0].poll(), "owned scanner must be reaped after startup timeout")
+        finally:
+            for process, original in children:
+                process.communicate = original
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
+
+    def _early_rejection_case(self, authority: str, case: str):
+        root = self.root / f"early-{authority}-{case}"
+        home = root / "codex"
+        event_root = home / "swarm" / "proof-events"
+        media_root = home / "swarm" / "proof-media"
+        event_root.mkdir(parents=True)
+        media_root.mkdir()
+        media = media_root / "proof.png"
+        data = b"\x89PNG\r\n\x1a\nfictional-proof"
+        media.write_bytes(data)
+        evidence_id = f"early-{authority}-{case}"
+        event = {"schema_version": 1, "source": "CtrlEvidence", "evidence_id": evidence_id,
+                 "task_id": "task-1", "kind": "screenshot", "locator": "proof-media/proof.png",
+                 "caption": "Fixture proof", "digest": hashlib.sha256(data).hexdigest(),
+                 "size_bytes": len(data), "media_type": "image/png", "disposition": "PENDING"}
+        app = console.App(home, self.config, root / "console.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        payload = {**event, "locator": str(media)}
+        if authority == "legacy":
+            (event_root / "legacy-event.json").write_text(json.dumps(event), encoding="utf-8")
+            result = app.store.reconcile_proof_events(home, overview, now_ms=1)
+            self.assertEqual((result["imported"], result["rejected"]), (1, 0), result)
+        elif authority == "rejected":
+            app.store._record_proof_event_receipt("prior-legacy.json", mtime_ns=1, size=1, status="REJECTED",
+                evidence_id=evidence_id, event_digest="a" * 64, task_id="task-1",
+                project_id="project:alpha", media_digest=event["digest"], now_ms=1)
+        if authority in {"legacy", "direct"}:
+            with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                original = app.register_proof(payload)
+                self.assertEqual(app.register_proof(payload), original)
+        else:
+            original = None
+        return app, event, payload, overview, event_root, original
+
+    @staticmethod
+    def _invalid_canonical_bytes(event: dict, case: str) -> bytes:
+        if case == "malformed":
+            return b"{"
+        if case == "private":
+            return json.dumps({**event, "prompt": "fixture-private-secret"}).encode("utf-8")
+        if case == "envelope":
+            return json.dumps({**event, "schema_version": 2}).encode("utf-8")
+        if case == "missing-id":
+            return json.dumps({key: value for key, value in event.items() if key != "evidence_id"}).encode("utf-8")
+        if case == "mismatched-id":
+            return json.dumps({**event, "evidence_id": event["evidence_id"] + "-other"}).encode("utf-8")
+        raise AssertionError(case)
+
+    def test_proof_invalid_canonical_event_cannot_shadow_prior_authority(self) -> None:
+        for authority in ("legacy", "direct"):
+            for case in ("malformed", "private", "envelope", "missing-id", "mismatched-id"):
+                with self.subTest(authority=authority, case=case):
+                    app, event, payload, overview, event_root, original = self._early_rejection_case(authority, case)
+                    canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+                    with closing(sqlite3.connect(app.store.path)) as db:
+                        before = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts ORDER BY event_name").fetchall()
+                    canonical.write_bytes(self._invalid_canonical_bytes(event, case))
+                    for now_ms in (3, 4):
+                        result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=now_ms)
+                        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+                        self.assertEqual(result["duplicates"], int(authority == "legacy"), result)
+                        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                            self.assertEqual(app.register_proof(payload), original)
+                    self.assertEqual(app.store.proof_feed(), [original])
+                    with closing(sqlite3.connect(app.store.path)) as db:
+                        after = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts ORDER BY event_name").fetchall()
+                        self.assertEqual(after, before)
+                        self.assertNotIn("fixture-private-secret", repr(db.execute("SELECT * FROM proof_event_receipts").fetchall()))
+
+    def test_proof_unknown_invalid_canonical_event_retains_unbound_rejection(self) -> None:
+        for case in ("malformed", "private", "envelope", "missing-id"):
+            with self.subTest(case=case):
+                app, event, payload, overview, event_root, _ = self._early_rejection_case("unknown", case)
+                canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+                canonical.write_bytes(self._invalid_canonical_bytes(event, case))
+                result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+                self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+                with closing(sqlite3.connect(app.store.path)) as db:
+                    rows = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall()
+                    self.assertEqual(rows, [(canonical.name, "REJECTED", "")])
+                    self.assertNotIn("fixture-private-secret", repr(db.execute("SELECT * FROM proof_event_receipts").fetchall()))
+                with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                    with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                        app.register_proof(payload)
+
+    def test_proof_unclaimed_canonical_mismatch_is_unbound_rejection(self) -> None:
+        app, event, payload, overview, event_root, _ = self._early_rejection_case("unknown", "mismatch-fresh")
+        filename_id = event["evidence_id"]
+        payload_id = filename_id + "-other"
+        canonical = event_root / (hashlib.sha256(filename_id.encode()).hexdigest() + ".json")
+        canonical.write_text(json.dumps({**event, "evidence_id": payload_id}), encoding="utf-8")
+        result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        self.assertEqual(app.store.proof_feed(), [])
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall(),
+                             [(canonical.name, "REJECTED", "")])
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                app.register_proof(payload)
+            self.assertEqual(app.register_proof({**payload, "evidence_id": payload_id})["evidence_id"], payload_id)
+
+    @unittest.skipUnless(os.name == "nt", "Windows path identity required")
+    def test_proof_windows_canonical_case_rejection_blocks_direct_registration(self) -> None:
+        for spelling in ("upper", "mixed"):
+            with self.subTest(spelling=spelling):
+                app, event, payload, overview, event_root, _ = self._early_rejection_case("unknown", spelling)
+                digest = hashlib.sha256(event["evidence_id"].encode()).hexdigest()
+                name = (digest.upper() + ".json" if spelling == "upper" else
+                        "".join(c.upper() if i % 2 == 0 else c for i, c in enumerate(digest)) + ".JSON")
+                path = event_root / name
+                path.write_bytes(b"{")
+                self.assertTrue(os.path.samefile(path, event_root / (digest + ".json")))
+                result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+                self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+                with closing(sqlite3.connect(app.store.path)) as db:
+                    self.assertEqual(db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall(),
+                                     [(name, "REJECTED", "")])
+                with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                    with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                        app.register_proof(payload)
+
+    @unittest.skipUnless(os.name == "nt", "Windows path identity required")
+    def test_proof_windows_canonical_case_preserves_existing_authority_and_old_rejection(self) -> None:
+        for authority in ("legacy", "direct", "rejected"):
+            for case in ("malformed", "private", "mismatched-id"):
+                with self.subTest(authority=authority, case=case):
+                    app, event, payload, overview, event_root, original = self._early_rejection_case(authority, "case-existing-" + case)
+                    with closing(sqlite3.connect(app.store.path)) as db:
+                        before = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts ORDER BY event_name").fetchall()
+                    digest = hashlib.sha256(event["evidence_id"].encode()).hexdigest()
+                    (event_root / (digest.upper() + ".JSON")).write_bytes(self._invalid_canonical_bytes(event, case))
+                    result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+                    self.assertEqual(result["rejected"], 1, result)
+                    with closing(sqlite3.connect(app.store.path)) as db:
+                        self.assertEqual(db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts ORDER BY event_name").fetchall(), before)
+                        self.assertNotIn("fixture-private-secret", repr(db.execute("SELECT * FROM proof_event_receipts").fetchall()))
+                    with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                        if authority == "rejected":
+                            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                                app.register_proof(payload)
+                        else:
+                            self.assertEqual(app.register_proof(payload), original)
+
+        app, event, payload, overview, _, _ = self._early_rejection_case("unknown", "old-case")
+        digest = hashlib.sha256(event["evidence_id"].encode()).hexdigest()
+        with closing(sqlite3.connect(app.store.path)) as db:
+            db.execute("INSERT INTO proof_event_receipts(event_name,event_mtime_ns,event_size,status,evidence_id,observed_at_ms) "
+                       "VALUES(?,1,1,'REJECTED','',1)", (digest.upper() + ".JSON",))
+            db.commit()
+        app.store = console.ConsoleStore(app.store.path)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            plan = " ".join(str(row) for row in db.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM proof_event_receipts WHERE event_name = ? COLLATE NOCASE OR evidence_id = ?",
+                (digest + ".json", event["evidence_id"])).fetchall())
+            self.assertIn("proof_event_receipts_name_nocase", plan)
+            self.assertIn("proof_event_receipts_evidence_id", plan)
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                app.register_proof(payload)
+
+    @unittest.skipUnless(os.name == "nt", "Windows path identity required")
+    def test_proof_windows_canonical_variants_validate_payload_identity(self) -> None:
+        for spelling in ("upper", "mixed"):
+            for mismatched in (False, True):
+                with self.subTest(spelling=spelling, mismatched=mismatched):
+                    case = f"case-valid-{spelling}-{mismatched}"
+                    app, event, payload, overview, event_root, _ = self._early_rejection_case("unknown", case)
+                    digest = hashlib.sha256(event["evidence_id"].encode()).hexdigest()
+                    name = (digest.upper() + ".json" if spelling == "upper" else
+                            "".join(c.upper() if i % 2 == 0 else c for i, c in enumerate(digest)) + ".JSON")
+                    body = {**event, "evidence_id": event["evidence_id"] + "-other"} if mismatched else event
+                    (event_root / name).write_text(json.dumps(body), encoding="utf-8")
+                    first = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+                    again = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=3)
+                    with closing(sqlite3.connect(app.store.path)) as db:
+                        rows = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall()
+                    if mismatched:
+                        self.assertEqual((first["imported"], first["rejected"], again["rejected"]), (0, 1, 1), first)
+                        self.assertEqual(rows, [(name, "REJECTED", "")])
+                        self.assertEqual(app.store.proof_feed(), [])
+                    else:
+                        self.assertEqual((first["imported"], again["duplicates"]), (1, 1), first)
+                        self.assertEqual(rows, [(name, "IMPORTED", event["evidence_id"])])
+                        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+                            self.assertEqual(app.register_proof(payload)["evidence_id"], event["evidence_id"])
+
+    def test_proof_invalid_canonical_event_does_not_shadow_prior_legacy_rejection(self) -> None:
+        app, event, payload, overview, event_root, _ = self._early_rejection_case("rejected", "malformed")
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        canonical.write_bytes(b"{")
+        result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall(),
+                             [("prior-legacy.json", "REJECTED", event["evidence_id"])])
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                app.register_proof(payload)
+
+    def test_proof_invalid_canonical_event_cannot_poison_legacy_rehydration(self) -> None:
+        app, event, payload, overview, event_root, _ = self._early_rejection_case("legacy", "rehydrate")
+        with closing(sqlite3.connect(app.store.path)) as db:
+            db.execute("DELETE FROM proof_media WHERE evidence_id=?", (event["evidence_id"],))
+            db.commit()
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        canonical.write_bytes(b"{")
+        result = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["rejected"]), (1, 1), result)
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            recovered = app.register_proof(payload)
+            self.assertEqual(app.register_proof(payload), recovered)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts").fetchall(),
+                             [("legacy-event.json", "IMPORTED", event["evidence_id"])])
+
+    def test_proof_early_rejection_rechecks_direct_authority_after_lock(self) -> None:
+        app, event, overview = self._proof_race_fixture("early-direct-wins")
+        event_root = self.codex_home / "swarm" / "proof-events"
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        canonical.write_bytes(b"{")
+        scanner = self._start_proof_race_scanner(app, "before_begin")
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            direct = app.authorize_original_proof(event)
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            self.assertEqual(app.authorize_original_proof(event), direct)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_event_receipts").fetchone()[0], 0)
+
+    def test_proof_direct_registration_cannot_pass_an_inflight_early_rejection(self) -> None:
+        app, event, overview = self._proof_race_fixture("early-rejection-wins")
+        event_root = self.codex_home / "swarm" / "proof-events"
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        canonical.write_bytes(b"{")
+        scanner = self._start_proof_race_scanner(app, "receipt")
+        original_connect = app.store._connect
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            return connection
+
+        error = None
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app.store, "_connect", side_effect=connect_without_waiting):
+            try:
+                app.authorize_original_proof(event)
+            except sqlite3.OperationalError as exc:
+                error = exc
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertIsInstance(error, sqlite3.OperationalError)
+        self.assertIn("locked", str(error).lower())
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            with self.assertRaisesRegex(console.ConsoleError, "rejected"):
+                app.authorize_original_proof(event)
+        self.assertEqual(app.store.proof_feed(), [])
+
+    def test_proof_canonical_authority_migrates_old_and_null_receipts(self) -> None:
+        root = self.root / "canonical-old-store"
+        home = root / "codex"
+        event_root = home / "swarm" / "proof-events"
+        media_root = home / "swarm" / "proof-media"
+        event_root.mkdir(parents=True)
+        media_root.mkdir()
+        media = media_root / "proof.png"
+        data = b"\x89PNG\r\n\x1a\nold-proof"
+        media.write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        identity, rejected_id, unknown_id = "old-accepted", "old-rejected", "old-unknown"
+        event = {"schema_version": 1, "source": "CtrlEvidence", "evidence_id": identity,
+                 "task_id": "task-1", "kind": "screenshot", "locator": "proof-media/proof.png",
+                 "caption": "Old proof", "digest": digest, "size_bytes": len(data),
+                 "media_type": "image/png", "disposition": "PENDING"}
+        (event_root / "legacy-accepted.json").write_text(json.dumps(event), encoding="utf-8")
+        db_path = root / "legacy.sqlite3"
+        with closing(sqlite3.connect(db_path)) as db:
+            db.execute("CREATE TABLE proof_media (evidence_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+                       "project_id TEXT NOT NULL, kind TEXT NOT NULL, locator TEXT NOT NULL, caption TEXT NOT NULL, "
+                       "claim_limit TEXT NOT NULL, disposition TEXT NOT NULL, receipt TEXT NOT NULL, "
+                       "surface_kind TEXT NOT NULL, media_type TEXT NOT NULL, mtime_ns INTEGER, size_bytes INTEGER, "
+                       "digest TEXT, registered_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)")
+            db.execute("INSERT INTO proof_media VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (identity, "task-1", "project:alpha", "screenshot", str(media.resolve()), "Old proof",
+                 "Available for review; acceptance is recorded separately.", "PENDING", "proof-event:legacy-accepted",
+                 "available_media", "image/png", media.stat().st_mtime_ns, len(data), digest, 1, 1))
+            db.execute("CREATE TABLE proof_event_receipts (event_name TEXT PRIMARY KEY, event_mtime_ns INTEGER NOT NULL, "
+                       "event_size INTEGER NOT NULL, status TEXT NOT NULL, evidence_id TEXT NOT NULL, "
+                       "observed_at_ms INTEGER NOT NULL)")
+            legacy = event_root / "legacy-accepted.json"
+            db.executemany("INSERT INTO proof_event_receipts VALUES (?,?,?,?,?,?)", [
+                (legacy.name, legacy.stat().st_mtime_ns, legacy.stat().st_size, "IMPORTED", identity, 1),
+                ("legacy-rejected.json", 1, 1, "REJECTED", rejected_id, 1),
+                ("legacy-unbound.json", 1, 1, "REJECTED", "", 1),
+            ])
+            db.commit()
+        app = console.App(home, self.config, db_path)
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        with closing(sqlite3.connect(db_path)) as db:
+            self.assertEqual(db.execute("SELECT canonical_event_name FROM proof_media WHERE evidence_id=?", (identity,)).fetchone(),
+                             (hashlib.sha256(identity.encode()).hexdigest() + ".json",))
+            names = dict(db.execute("SELECT event_name,canonical_event_name FROM proof_event_receipts").fetchall())
+            self.assertEqual(names["legacy-rejected.json"], hashlib.sha256(rejected_id.encode()).hexdigest() + ".json")
+            self.assertIsNone(names["legacy-unbound.json"])
+        for value in (identity, rejected_id, unknown_id):
+            (event_root / (hashlib.sha256(value.encode()).hexdigest() + ".json")).write_bytes(b"{")
+        result = app.store.reconcile_proof_events(home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["duplicates"], result["rejected"]), (0, 1, 3), result)
+        with closing(sqlite3.connect(db_path)) as db:
+            rows = db.execute("SELECT event_name,status,evidence_id FROM proof_event_receipts ORDER BY event_name").fetchall()
+            self.assertIn(("legacy-accepted.json", "IMPORTED", identity), rows)
+            self.assertIn(("legacy-rejected.json", "REJECTED", rejected_id), rows)
+            self.assertIn(("legacy-unbound.json", "REJECTED", ""), rows)
+            self.assertIn((hashlib.sha256(unknown_id.encode()).hexdigest() + ".json", "REJECTED", ""), rows)
+            self.assertEqual(len(rows), 4)
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            recovered = app.register_proof({**event, "locator": str(media)})
+            self.assertEqual(app.register_proof({**event, "locator": str(media)}), recovered)
+
+    def test_proof_scan_backfills_new_legacy_nulls_in_bounded_batches(self) -> None:
+        app, event, payload, overview, event_root, original = self._early_rejection_case("direct", "late-null")
+        with closing(sqlite3.connect(app.store.path)) as db:
+            db.execute("UPDATE proof_media SET canonical_event_name=NULL WHERE evidence_id=?", (event["evidence_id"],))
+            for index in range(129):
+                db.execute("INSERT INTO proof_media (evidence_id,task_id,project_id,kind,locator,caption,claim_limit,"
+                           "disposition,receipt,surface_kind,media_type,mtime_ns,size_bytes,digest,registered_at_ms,updated_at_ms) "
+                           "SELECT ?,task_id,project_id,kind,locator,caption,claim_limit,disposition,receipt,surface_kind,"
+                           "media_type,mtime_ns,size_bytes,digest,registered_at_ms,updated_at_ms FROM proof_media WHERE evidence_id=?",
+                           (f"old-writer-{index}", event["evidence_id"]))
+            db.execute("UPDATE proof_media SET canonical_event_name='' WHERE evidence_id='old-writer-128'")
+            db.commit()
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        canonical.write_bytes(b"{")
+        first = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=2)
+        self.assertEqual((first["imported"], first["rejected"], first["retryable"]), (0, 0, 1), first)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_media WHERE canonical_event_name IS NULL").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_media WHERE canonical_event_name=''").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_event_receipts").fetchone()[0], 0)
+        second = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=3)
+        self.assertEqual((second["imported"], second["rejected"], second["retryable"]), (0, 0, 1), second)
+        third = app.store.reconcile_proof_events(app.codex_home, overview, now_ms=4)
+        self.assertEqual((third["imported"], third["rejected"], third["retryable"]), (0, 1, 0), third)
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            self.assertEqual(app.register_proof(payload), original)
+
+    def test_proof_canonical_backfill_does_not_walk_completed_identities(self) -> None:
+        store = console.ConsoleStore(self.root / "console" / "backfill-work.sqlite3")
+        with closing(store._connect()) as db:
+            def add_rows(start, stop):
+                rows = [(f"completed-{index}", console._canonical_proof_event_name(f"completed-{index}"))
+                        for index in range(start, stop)]
+                db.executemany("INSERT INTO proof_media (evidence_id,task_id,project_id,kind,locator,caption,claim_limit,"
+                               "disposition,receipt,surface_kind,media_type,registered_at_ms,updated_at_ms,canonical_event_name) "
+                               "VALUES (?, 'task', 'project', 'screenshot', 'x.png', 'x', 'x', 'PENDING', 'x', "
+                               "'available_media', 'image/png', 1, 1, ?)", rows)
+                db.commit()
+
+            def work():
+                steps = []
+                db.set_progress_handler(lambda: steps.append(1) and 0, 100)
+                try:
+                    store._backfill_proof_canonical_names(db, max_batches=1)
+                finally:
+                    db.set_progress_handler(None, 0)
+                return len(steps) * 100
+
+            add_rows(0, 64)
+            small = work()
+            add_rows(64, 4096)
+            db.execute("UPDATE proof_media SET canonical_event_name=NULL WHERE evidence_id='completed-4095'")
+            db.commit()
+            large = work()
+            self.assertLessEqual(large, small + 1000, (small, large))
+            self.assertIsNotNone(db.execute("SELECT canonical_event_name FROM proof_media WHERE evidence_id='completed-4095'").fetchone()[0])
+
+    def test_proof_canonical_backfill_hash_does_not_hold_writer_lock(self) -> None:
+        app, event, _, _, _, _ = self._early_rejection_case("direct", "migration-writer")
+        other = console.ConsoleStore(app.store.path)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            db.execute("UPDATE proof_media SET canonical_event_name=NULL WHERE evidence_id=?", (event["evidence_id"],))
+            db.commit()
+        original_hash = console._canonical_proof_event_name
+        original_connect = other._connect
+        attempts = []
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            return connection
+
+        def check_unrelated_writer(identity):
+            if identity == event["evidence_id"] and not attempts:
+                try:
+                    with mock.patch.object(other, "_connect", side_effect=connect_without_waiting):
+                        other.set_auto("root", "project:alpha", enabled=True, request_id="migration-writer", now_ms=1)
+                    attempts.append(None)
+                except sqlite3.OperationalError as exc:
+                    attempts.append(exc)
+            return original_hash(identity)
+
+        with mock.patch.object(console, "_canonical_proof_event_name", side_effect=check_unrelated_writer):
+            console.ConsoleStore(app.store.path)
+        self.assertEqual(len(attempts), 1)
+        self.assertIsNone(attempts[0], f"canonical backfill blocked an unrelated writer: {attempts[0]}")
+        self.assertTrue(other.auto_status("root", "project:alpha")["enabled"])
+
+    def test_proof_rejected_identity_cannot_import_under_another_filename(self) -> None:
+        evidence_id = "rejected-cross-name"
+        event_path = self._write_proof_event(evidence_id, "task-1", digest="0" * 64)
+        canonical = event_path.with_name(hashlib.sha256(evidence_id.encode()).hexdigest() + ".json")
+        event_path.rename(canonical)
+        store = console.ConsoleStore(self.root / "console" / "rejected-cross-name.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        first = store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual((first["imported"], first["rejected"]), (0, 1), first)
+        event = json.loads(canonical.read_text(encoding="utf-8"))
+        event["digest"] = hashlib.sha256(b"\x89PNG\r\n\x1a\nproof").hexdigest()
+        canonical.with_name("alternate-event.json").write_text(json.dumps(event), encoding="utf-8")
+        second = store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual(second["imported"], 0, second)
+        self.assertEqual(second["rejected"], 2, second)
+        self.assertEqual(store.proof_feed(), [])
+        with closing(sqlite3.connect(store.path)) as db:
+            self.assertEqual(db.execute("SELECT status FROM proof_event_receipts WHERE event_name=?", (canonical.name,)).fetchone(),
+                             ("REJECTED",))
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_event_receipts WHERE evidence_id=? AND status='IMPORTED'",
+                                        (evidence_id,)).fetchone()[0], 0)
+
+    def test_proof_alternate_filename_respects_unbound_canonical_rejection(self) -> None:
+        evidence_id = "unbound-canonical"
+        self._write_proof_event(evidence_id, "task-1")
+        store = console.ConsoleStore(self.root / "console" / "unbound-canonical.sqlite3")
+        canonical = hashlib.sha256(evidence_id.encode()).hexdigest() + ".json"
+        store._record_proof_event_receipt(canonical, mtime_ns=1, size=1, status="REJECTED", evidence_id="",
+            event_digest="a" * 64, task_id="", project_id="", media_digest="", now_ms=1)
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        self.assertEqual(store.proof_feed(), [])
+
+    def test_proof_rejected_legacy_identity_blocks_canonical_filename(self) -> None:
+        evidence_id = "rejected-legacy-first"
+        legacy = self._write_proof_event(evidence_id, "task-1", digest="0" * 64)
+        store = console.ConsoleStore(self.root / "console" / "rejected-legacy-first.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        first = store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual((first["imported"], first["rejected"]), (0, 1), first)
+        event = json.loads(legacy.read_text(encoding="utf-8"))
+        event["digest"] = hashlib.sha256(b"\x89PNG\r\n\x1a\nproof").hexdigest()
+        canonical = legacy.with_name(hashlib.sha256(evidence_id.encode()).hexdigest() + ".json")
+        canonical.write_text(json.dumps(event), encoding="utf-8")
+        second = store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((second["imported"], second["rejected"]), (0, 2), second)
+        self.assertEqual(store.proof_feed(), [])
+        with closing(sqlite3.connect(store.path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status FROM proof_event_receipts WHERE evidence_id=?",
+                                        (evidence_id,)).fetchall(), [(legacy.name, "REJECTED")])
+
+    def test_proof_identity_lookup_preserves_rejections_when_legacy_store_upgrades(self) -> None:
+        evidence_id = "legacy-store-upgrade"
+        path = self.root / "console" / "old-receipts.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(path)) as db:
+            db.execute("CREATE TABLE proof_event_receipts (event_name TEXT PRIMARY KEY, event_mtime_ns INTEGER NOT NULL, "
+                       "event_size INTEGER NOT NULL, status TEXT NOT NULL, evidence_id TEXT NOT NULL, "
+                       "observed_at_ms INTEGER NOT NULL)")
+            db.execute("INSERT INTO proof_event_receipts VALUES (?, ?, ?, ?, ?, ?)",
+                       ("old-legacy-name.json", 1, 1, "REJECTED", evidence_id, 1))
+            db.commit()
+        store = console.ConsoleStore(path)
+        self._write_proof_event(evidence_id, "task-1")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        self.assertEqual(store.proof_feed(), [])
+        with closing(sqlite3.connect(path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status FROM proof_event_receipts WHERE evidence_id=?",
+                                        (evidence_id,)).fetchall(), [("old-legacy-name.json", "REJECTED")])
+
+    def test_proof_imported_identity_rejects_conflicting_names_without_poisoning_retry(self) -> None:
+        evidence_id = "imported-cross-name"
+        event_path = self._write_proof_event(evidence_id, "task-1")
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        app = console.App(self.codex_home, self.config, self.root / "console" / "imported-cross-name.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False},
+                              {"id": "task-2", "project_id": "project:other", "virtual": False}]}
+        first = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual(first["imported"], 1, first)
+        published = app.store.proof_feed()
+        alternate = event_path.with_name("alternate-conflict.json")
+        alternate.write_text(json.dumps({**event, "digest": "0" * 64}), encoding="utf-8")
+        second = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((second["imported"], second["rejected"]), (0, 1), second)
+        canonical = event_path.with_name(hashlib.sha256(evidence_id.encode()).hexdigest() + ".json")
+        canonical.write_text(json.dumps({**event, "caption": "Conflicting canonical event"}), encoding="utf-8")
+        event_path.with_name("other-project.json").write_text(json.dumps({**event, "task_id": "task-2"}), encoding="utf-8")
+        third = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=3)
+        self.assertEqual(third["imported"], 0, third)
+        self.assertGreaterEqual(third["rejected"], 3, third)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT event_name,status FROM proof_event_receipts WHERE evidence_id=?",
+                                        (evidence_id,)).fetchall(), [(event_path.name, "IMPORTED")])
+            self.assertIsNone(db.execute("SELECT status FROM proof_event_receipts WHERE event_name=?",
+                                         (canonical.name,)).fetchone())
+        source = self.codex_home / "swarm" / event["locator"]
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(app, "observe_once"):
+            self.assertEqual(app.register_proof({**event, "locator": str(source)}), published[0])
+            self.assertEqual(app.register_proof({**event, "locator": str(source)}), published[0])
+        self.assertEqual(app.store.proof_feed(), published)
+
+    def test_proof_bad_alternate_does_not_poison_prior_direct_authorization(self) -> None:
+        app, event, overview = self._proof_race_fixture("direct-before-bad-alias")
+        event_root = self.codex_home / "swarm" / "proof-events"
+        canonical = event_root / (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")
+        original = canonical.read_bytes()
+        bad = json.loads(original)
+        bad["digest"] = "0" * 64
+        canonical.rename(event_root / "bad-direct-alias.json")
+        (event_root / "bad-direct-alias.json").write_text(json.dumps(bad), encoding="utf-8")
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            direct = app.authorize_original_proof(event)
+        rejected = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual((rejected["imported"], rejected["rejected"]), (0, 1), rejected)
+        canonical.write_bytes(original)
+        recovered = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((recovered["imported"], recovered["rejected"]), (1, 1), recovered)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            self.assertEqual(app.authorize_original_proof(event), direct)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT receipt FROM proof_media").fetchone(), ("ctrl-original:task-1",))
+            self.assertEqual(db.execute("SELECT event_name,status FROM proof_event_receipts WHERE evidence_id=?",
+                                        (event["evidence_id"],)).fetchall(), [(canonical.name, "IMPORTED")])
+
+    def test_proof_scanner_rechecks_cross_filename_rejection_under_writer_lock(self) -> None:
+        app, event, _ = self._proof_race_fixture("rejected-name-race")
+        event_root = self.codex_home / "swarm" / "proof-events"
+        canonical = hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json"
+        (event_root / canonical).rename(event_root / "race-alternate.json")
+        scanner = self._start_proof_race_scanner(app, "selected")
+        app.store._record_proof_event_receipt(canonical, mtime_ns=1, size=1, status="REJECTED",
+            evidence_id=event["evidence_id"], event_digest="a" * 64, task_id="task-1",
+            project_id="project:alpha", media_digest="", now_ms=1)
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertEqual((result["imported"], result["rejected"]), (0, 1), result)
+        self.assertEqual(app.store.proof_feed(), [])
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT status FROM proof_event_receipts WHERE evidence_id=?",
+                                        (event["evidence_id"],)).fetchall(), [("REJECTED",)])
+
+    def test_proof_scan_does_not_block_unrelated_writer_during_media_read(self) -> None:
+        app, _, _ = self._proof_race_fixture("slow-media-writer")
+        unrelated = console.ConsoleStore(app.store.path)
+        scanner = self._start_proof_race_scanner(app, "selected")
+        original_connect = unrelated._connect
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            return connection
+
+        error = None
+        with mock.patch.object(unrelated, "_connect", side_effect=connect_without_waiting):
+            try:
+                unrelated.set_auto("root", "project:alpha", enabled=True, request_id="unrelated-writer", now_ms=1)
+            except sqlite3.OperationalError as exc:
+                error = exc
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertIsNone(error, f"unrelated writer was blocked by media validation: {error}")
+        self.assertEqual(result["imported"], 1, result)
+        self.assertTrue(unrelated.auto_status("root", "project:alpha")["enabled"])
+
+    def test_proof_scan_stops_busy_pass_and_retries_after_writer_releases(self) -> None:
+        app, _, overview = self._proof_race_fixture("busy-first")
+        for index in range(3):
+            self._write_proof_event(f"busy-{index}", "task-1")
+        writer = self._start_proof_race_scanner(app, "writer")
+        original_connect = app.store._connect
+        attempts = []
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            connection.set_trace_callback(lambda statement: attempts.append(statement)
+                if statement.lstrip().upper().startswith("BEGIN IMMEDIATE") else None)
+            return connection
+
+        with mock.patch.object(app.store, "_connect", side_effect=connect_without_waiting):
+            result = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self._finish_proof_race_scanner(writer)
+        self.assertEqual(result["imported"], 0, result)
+        self.assertEqual(result["retryable"], 1, result)
+        self.assertEqual(len(attempts), 1, attempts)
+        retried = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual(retried["imported"], 4, retried)
+        self.assertEqual(retried["rejected"], 0, retried)
+
+    def _assert_proof_scan_retries_changed_file(self, *, change_event: bool) -> None:
+        app, event, overview = self._proof_race_fixture("changed-event" if change_event else "changed-media")
+        path = (self.codex_home / "swarm" / "proof-events" /
+                (hashlib.sha256(event["evidence_id"].encode()).hexdigest() + ".json")) if change_event else Path(event["locator"])
+        original = path.read_bytes()
+        original_mtime = path.stat().st_mtime_ns
+        scanner = self._start_proof_race_scanner(app, "validated")
+        if os.name == "nt":
+            blocked = False
+            delete_blocked = False
+            try:
+                path.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+                os.utime(path, ns=(original_mtime, original_mtime))
+            except PermissionError:
+                blocked = True
+            try:
+                path.unlink()
+            except PermissionError:
+                delete_blocked = True
+            result = self._finish_proof_race_scanner(scanner)
+            self.assertTrue(blocked, "Windows allowed a same-size proof rewrite with restored timestamps")
+            self.assertTrue(delete_blocked, "Windows allowed the staged proof file to be replaced")
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual((result["imported"], result["rejected"], result["retryable"]), (1, 0, 0), result)
+            return
+        path.write_bytes(original + b" ")
+        os.utime(path, ns=(original_mtime + 10000000, original_mtime + 10000000))
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertEqual((result["imported"], result["rejected"], result["retryable"]), (0, 0, 1), result)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_media").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM proof_event_receipts").fetchone()[0], 0)
+        path.write_bytes(original)
+        retried = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((retried["imported"], retried["rejected"]), (1, 0), retried)
+
+    def test_proof_scan_guards_or_retries_media_changed_after_validation(self) -> None:
+        self._assert_proof_scan_retries_changed_file(change_event=False)
+
+    def test_proof_scan_guards_or_retries_event_changed_after_validation(self) -> None:
+        self._assert_proof_scan_retries_changed_file(change_event=True)
+
+    @unittest.skipUnless(os.name == "nt", "Windows file-sharing contract")
+    def test_proof_scan_retries_when_media_has_an_existing_writer(self) -> None:
+        app, event, overview = self._proof_race_fixture("busy-media-file")
+        with Path(event["locator"]).open("r+b"):
+            result = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual((result["imported"], result["rejected"], result["retryable"]), (0, 0, 1), result)
+        self.assertEqual(app.store.proof_feed(), [])
+        retried = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((retried["imported"], retried["rejected"]), (1, 0), retried)
+
+    def test_proof_scan_retries_when_outside_original_is_concurrently_authorized(self) -> None:
+        from skills.swarm.runtime.proof_events import register_proof_event
+
+        source = self.root / "late-authorized.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        event = register_proof_event(self.codex_home, source, evidence_id="late-authorized", task_id="task-1",
+            kind="screenshot", caption="Direct authorization", created_at_ms=1)
+        app = console.App(self.codex_home, self.config, self.root / "console" / "late-authorized.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        scanner = self._start_proof_race_scanner(app, "unapproved")
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            direct = app.authorize_original_proof({**event, "acknowledge": True})
+        result = self._finish_proof_race_scanner(scanner)
+        self.assertEqual((result["imported"], result["rejected"], result["retryable"]), (0, 0, 1), result)
+        retried = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        self.assertEqual((retried["imported"], retried["rejected"]), (1, 0), retried)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            self.assertEqual(app.authorize_original_proof({**event, "acknowledge": True}), direct)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT receipt FROM proof_media").fetchone(), ("ctrl-original:task-1",))
+            self.assertEqual(db.execute("SELECT status FROM proof_event_receipts").fetchone(), ("IMPORTED",))
+
+    def test_evidence_http_respects_retained_receipt_and_exact_retry(self) -> None:
+        media_root = self.codex_home / "swarm" / "proof-media"
+        media_root.mkdir(parents=True)
+        source = media_root / "receipt.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "legacy-http.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        payload = {"source": "CtrlEvidence", "evidence_id": "http-rejected", "task_id": "task-1",
+                   "kind": "screenshot", "locator": str(source), "caption": "HTTP proof", "digest": digest}
+        name = hashlib.sha256(payload["evidence_id"].encode()).hexdigest() + ".json"
+        app.store._record_proof_event_receipt(name, mtime_ns=1, size=1, status="REJECTED", evidence_id="",
+            event_digest="a" * 64, task_id="task-1", project_id="project:alpha", media_digest=digest, now_ms=1)
+        server = console.SwarmHTTPServer(("127.0.0.1", 0), console.Handler, app)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+
+        def post(body, token):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                connection.request("POST", "/api/evidence", json.dumps(body),
+                    {"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{port}",
+                     "X-Swarm-Token": token, "Connection": "close"})
+                response = connection.getresponse()
+                return response.status, json.loads(response.read())
+            finally:
+                connection.close()
+
+        try:
+            with mock.patch.object(app, "_host_overview", return_value=overview), \
+                 mock.patch.object(app, "observe_once"):
+                self.assertEqual(post(payload, "wrong-token")[0], 403)
+                status, response = post(payload, app.token)
+                self.assertEqual(status, 400, response)
+                self.assertIn("rejected", str(response).lower())
+                self.assertEqual(app.store.proof_feed(), [])
+
+                valid = {**payload, "evidence_id": "http-valid"}
+                first_status, first = post(valid, app.token)
+                second_status, second = post(valid, app.token)
+                self.assertEqual((first_status, second_status), (200, 200), (first, second))
+                self.assertEqual(first["proof"], second["proof"])
+                self.assertEqual(post({**valid, "caption": "Changed"}, app.token)[0], 400)
+                event_root = self.codex_home / "swarm" / "proof-events"
+                event_root.mkdir(parents=True)
+                event = {**valid, "schema_version": 1, "locator": "proof-media/receipt.png",
+                         "size_bytes": source.stat().st_size, "media_type": "image/png"}
+                (event_root / "legacy-direct.json").write_text(json.dumps(event), encoding="utf-8")
+                scan = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+                self.assertEqual((scan["imported"], scan["rejected"]), (1, 0), scan)
+                status, replay = post(valid, app.token)
+                self.assertEqual(status, 200, replay)
+                self.assertEqual(replay["proof"], first["proof"])
+                with closing(sqlite3.connect(app.store.path)) as db:
+                    self.assertEqual(db.execute("SELECT receipt FROM proof_media WHERE evidence_id='http-valid'").fetchone(),
+                                     ("ctrl-evidence:registered:task-1",))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_proof_scanner_preserves_direct_publication_that_wins_selection_race(self) -> None:
+        app, event, overview = self._proof_race_fixture("race-direct-wins")
+        scanner = self._start_proof_race_scanner(app, "selected")
+        original_connect = app.store._connect
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            return connection
+
+        published = None
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app.store, "_connect", side_effect=connect_without_waiting):
+            try:
+                published = app.authorize_original_proof(event)
+            except sqlite3.OperationalError as exc:
+                self.assertIn("locked", str(exc).lower())
+        direct_won = published is not None
+        result = self._finish_proof_race_scanner(scanner)
+
+        self.assertEqual(result["rejected"], 0, result)
+        self.assertEqual(result["imported"], 1, result)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            if published is None:
+                published = app.authorize_original_proof(event)
+            self.assertEqual(app.authorize_original_proof(event), published)
+        self.assertEqual(app.store.proof_feed(), [published])
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT status FROM proof_event_receipts").fetchall(), [("IMPORTED",)])
+            receipt = db.execute("SELECT receipt FROM proof_media WHERE evidence_id=?", (event["evidence_id"],)).fetchone()[0]
+            expected = "ctrl-original:task-1" if direct_won else "proof-event:" + hashlib.sha256(event["evidence_id"].encode()).hexdigest()
+            self.assertEqual(receipt, expected)
+
+        # The other serialized order must retain a direct publication's provenance.
+        from skills.swarm.runtime.proof_events import register_proof_event
+        source = self.codex_home / "visualizations" / "race-direct-first.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nsecond proof")
+        direct_event = register_proof_event(
+            self.codex_home, source, evidence_id="race-direct-first", task_id="task-1",
+            kind="screenshot", caption="Direct first", created_at_ms=1,
+        )
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            direct_first = app.authorize_original_proof({**direct_event, "acknowledge": True})
+        reconciled = app.store.reconcile_proof_events(self.codex_home, overview, now_ms=124)
+        self.assertEqual((reconciled["imported"], reconciled["rejected"]), (1, 0), reconciled)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            self.assertEqual(app.authorize_original_proof({**direct_event, "acknowledge": True}), direct_first)
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT receipt FROM proof_media WHERE evidence_id='race-direct-first'").fetchone(),
+                             ("ctrl-original:task-1",))
+
+    def test_proof_direct_retry_cannot_observe_scanner_media_without_its_receipt(self) -> None:
+        app, event, overview = self._proof_race_fixture("race-scanner-wins")
+        scanner = self._start_proof_race_scanner(app, "receipt")
+        visible_before_commit = app.store.proof_feed()
+        original_connect = app.store._connect
+
+        def connect_without_waiting():
+            connection = original_connect()
+            connection.execute("PRAGMA busy_timeout = 0")
+            return connection
+
+        first_error = None
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app.store, "_connect", side_effect=connect_without_waiting):
+            try:
+                app.authorize_original_proof(event)
+            except (console.ConsoleError, sqlite3.OperationalError) as exc:
+                first_error = exc
+        result = self._finish_proof_race_scanner(scanner)
+
+        self.assertEqual(visible_before_commit, [], "scanner exposed media before its receipt was committed")
+        self.assertIsInstance(first_error, sqlite3.OperationalError, str(first_error))
+        self.assertIn("locked", str(first_error).lower())
+        self.assertEqual(result["imported"], 1, result)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            published = app.authorize_original_proof(event)
+            self.assertEqual(app.authorize_original_proof(event), published)
+        self.assertEqual(app.store.proof_feed(), [published])
+        with closing(sqlite3.connect(app.store.path)) as db:
+            self.assertEqual(db.execute("SELECT status FROM proof_event_receipts").fetchall(), [("IMPORTED",)])
+            receipt = db.execute("SELECT receipt FROM proof_media WHERE evidence_id=?", (event["evidence_id"],)).fetchone()[0]
+            self.assertEqual(receipt, "proof-event:" + hashlib.sha256(event["evidence_id"].encode()).hexdigest())
+
+    def test_original_proof_ingests_without_copy_and_rechecks_identity(self) -> None:
+        from skills.swarm.runtime.proof_events import register_proof_event
+        source = self.codex_home / "visualizations" / "capture.png"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        event = register_proof_event(self.codex_home, source, evidence_id="original-proof", task_id="task-1", kind="screenshot", caption="Original")
+        self.assertFalse((self.codex_home / "swarm" / "proof-media").exists())
+        store = console.ConsoleStore(self.root / "console" / "original.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual(result["imported"], 1, result)
+        media_root = self.codex_home / "swarm" / "proof-media"
+        item = store.proof_media_item("original-proof", event["digest"], allowed_root=media_root, codex_home=self.codex_home)
+        self.assertEqual(item["path"], source.resolve())
+        source.unlink()
+        with self.assertRaisesRegex(console.ConsoleError, "unavailable"):
+            store.proof_media_item("original-proof", event["digest"], allowed_root=media_root, codex_home=self.codex_home)
+        source.write_bytes(b"\x89PNG\r\n\x1a\nother")
+        with self.assertRaises(console.ConsoleError):
+            store.proof_media_item("original-proof", event["digest"], allowed_root=media_root, codex_home=self.codex_home)
+
+    def test_original_proof_outside_approved_roots_is_rejected(self) -> None:
+        from skills.swarm.runtime.proof_events import register_proof_event
+        source = self.root / "outside.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        register_proof_event(self.codex_home, source, evidence_id="outside-original", task_id="task-1", kind="screenshot", caption="Outside")
+        store = console.ConsoleStore(self.root / "console" / "outside.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=1)
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(result["rejected"], 1)
+        self.assertEqual(store.proof_feed(), [])
+
     def test_proof_event_ingestion_derives_project_and_enforces_media_root(self) -> None:
         swarm_root = self.codex_home / "swarm"
         media_root = swarm_root / "proof-media"
@@ -9817,6 +11903,45 @@ class SwarmConsoleTests(unittest.TestCase):
         current_stat = event_path.stat()
         self.assertEqual(calls, 2)
         self.assertEqual((current_stat.st_mtime_ns, current_stat.st_size), (original_stat.st_mtime_ns, original_stat.st_size))
+
+        # A failed SQLite commit must not report an import or retain partial media.
+        from skills.swarm.runtime.proof_events import register_proof_event
+        commit_home = self.root / "commit-retry-home"
+        source = commit_home / "visualizations" / "source.png"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        with closing(sqlite3.connect(commit_home / "state_5.sqlite")) as host_db:
+            host_db.execute("CREATE TABLE project_roots (project_id TEXT, path TEXT)")
+            host_db.commit()
+        register_proof_event(commit_home, source, evidence_id="commit-retry", task_id="retry-task",
+                             kind="screenshot", caption="Commit retry", created_at_ms=1)
+        retained_event = next((commit_home / "swarm" / "proof-events").glob("*.json"))
+        original_bytes = retained_event.read_bytes()
+        store = console.ConsoleStore(self.root / "console" / "commit-retry.sqlite3")
+        failures = []
+
+        class FailFirstCommit(sqlite3.Connection):
+            def commit(self):
+                if not failures and self.in_transaction:
+                    failures.append("commit failed")
+                    raise sqlite3.OperationalError("synthetic commit failure")
+                return super().commit()
+
+        def failing_connection():
+            connection = sqlite3.connect(store.path, timeout=5, factory=FailFirstCommit)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 5000")
+            return connection
+
+        with mock.patch.object(store, "_connect", side_effect=failing_connection):
+            failed = store.reconcile_proof_events(commit_home, overview, now_ms=10)
+        self.assertEqual((failed["imported"], failed["rejected"], failed["retryable"]), (0, 0, 1), failed)
+        self.assertEqual(store.proof_feed(), [])
+        retried = store.reconcile_proof_events(commit_home, overview, now_ms=11)
+        self.assertEqual((retried["imported"], retried["rejected"]), (1, 0), retried)
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed()], ["commit-retry"])
+        self.assertEqual(retained_event.read_bytes(), original_bytes)
 
     def test_proof_reconciliation_dedupes_and_rejects_conflicting_or_changed_media(self) -> None:
         original = self._write_proof_event("shared-proof", "task-a")
@@ -10927,6 +13052,961 @@ class SwarmConsoleTests(unittest.TestCase):
             console.HTTPStatus.FORBIDDEN, "Auto command requires strict loopback authorization",
         )
 
+    def _native_auto_case(self, *, terminal=True, uncertain=False):
+        self._confirm_root_ctrl()
+        host = {"calls": [], "sent": [], "turns": [{"id": "native-before", "status": "completed", "items": []}],
+                "terminal": terminal, "uncertain": uncertain, "missing_input": False, "deny": False}
+        def request(method, params):
+            host["calls"].append((method, dict(params)))
+            if method == "read_thread":
+                self.assertEqual(params, {"threadId": "task", "turnLimit": 2,
+                    "includeOutputs": False, "maxOutputCharsPerItem": 65536})
+                turns = copy.deepcopy(host["turns"][:2])
+                if host["missing_input"]: turns[0]["items"] = []
+                return {"thread": {"id": "task", "cwd": str(self.alpha_root)},
+                        "page": {"order": "newest_first"}, "turns": turns}
+            if method == "wait_threads":
+                self.assertEqual(params, {"targets": [{"threadId": "task"}], "timeoutMs": 30000})
+                return {"timedOut": True}
+            if method != "send_message_to_thread": raise AssertionError(method)
+            self.assertEqual(set(params), {"threadId", "prompt"})
+            self.assertEqual(params["threadId"], "task")
+            host["sent"].append(dict(params))
+            host["turns"].insert(0, {"id": f"native-turn-{len(host['sent'])}",
+                "status": "completed" if host["terminal"] else "inProgress",
+                "items": [{"type": "userMessage", "content": [{"type": "text", "text": params["prompt"]}]}]})
+            if host["uncertain"]: raise TimeoutError("applied but disconnected")
+            return {"threadId": "task"}
+        authority = SimpleNamespace(
+            grant=lambda state, digest: console.HQAutoGrant("native-grant", state["project_id"], digest,
+                state["ctrl_id"], (console.HQCommandAction.AUTO,), int(time.time() * 1000) + 60000),
+            verify=lambda receipt, envelope, now: not host["deny"],
+        )
+        transport = console.NativeCodexAppTaskTransport(request, clock_ms=lambda: int(time.time() * 1000))
+        app = console.App(self.codex_home, self.config, task_transport=transport, auto_authorization=authority)
+        app.auto_bridge = SimpleNamespace(run=mock.Mock(side_effect=AssertionError("private process fallback")),
+            reconcile=mock.Mock(side_effect=AssertionError("private read fallback")))
+        retained = app.progress_ledger
+        facts = {"projection": self._auto_projection(), "events": [self._auto_lifecycle()]}
+        class LedgerFixture:
+            # Only material input fixtures are controlled; connector writes/replay use real Ledger bytes.
+            def __init__(self, ledger): self.ledger = ledger
+            def __getattr__(self, name): return getattr(self.ledger, name)
+            def replay(self):
+                projection = self.ledger.replay()
+                projection["expected_receipts"] = facts["projection"]["expected_receipts"]
+                return projection
+            def _bounded_tail_records(self): return facts["events"], False
+        app.progress_ledger = LedgerFixture(retained)
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "native-enable"})
+        return app, host, facts, retained, authority, transport
+
+    def _configured_auto_case(self, *, terminal=True, uncertain=False, reserve_later_run=False):
+        from console.tests.test_project_model_views import project_fixture, markdown_fixture
+        _, scope, manifest = self._existing_work_fixture(configured=4 if reserve_later_run else True)
+        app, host, _, ledger, authority, transport = self._native_auto_case(terminal=terminal, uncertain=uncertain)
+        app.progress_ledger = ledger  # All material facts are actual retained Ledger events.
+        now = int(time.time() * 1000)
+        with closing(sqlite3.connect(console.goals_database(self.codex_home))) as connection:
+            connection.execute("CREATE TABLE thread_goals(thread_id TEXT PRIMARY KEY,goal_id TEXT,status TEXT)")
+            connection.execute("INSERT INTO thread_goals VALUES ('root','flow-goal','active')")
+            connection.commit()
+        brief = self.alpha_root / "SWARM.md"
+        brief.write_text(markdown_fixture(project_fixture("alpha")), encoding="utf-8")
+        current = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        nodes = []
+        for name in ("draft", "check"):
+            nodes.append(dict(id=name, objective="Produce " + name, owner_id="task", capability="local-source",
+                dependencies=["draft"] if name == "check" else [],
+                inputs=[dict(node_id="draft", output_id="report")] if name == "check" else [],
+                outputs=["report"], completion="Return an exact verified file", proof_classes=["SOURCE_STATIC"]))
+        current = app.project_flow_command(dict(operation="save", project_id="project:alpha", expected_digest=current["source_digest"],
+            acknowledge=True, definition=dict(id="bounded", version=1, objective="Produce and check", nodes=nodes)))
+        flow = current["definitions"][0]
+        role_ref = ledger.replay()["task_creation_bindings"]["created-task"]["role_manifest_ref"]
+        current = app.project_flow_command(dict(operation="assign", project_id="project:alpha", expected_digest=current["source_digest"], acknowledge=True,
+            assignment=dict(version=1, subject_kind="ROLE", subject_id="developer", subject_version=role_ref["manifest_version"], ctrl_id="root",
+                flow_id=flow["id"], flow_version=1, flow_digest=flow["digest"], label="Finite test", notes="Not dispatch authority", repeat_count=2)))
+        assignment = current["assignments"][0]
+        recipe = dict(run_id="explicit-flow-run", project_id="project:alpha", ctrl_id="root", goal_id="flow-goal",
+            ctrl_manifest_digest=scope["manifest_digest"], root_digest=console._auto_digest({"project_id":"project:alpha",
+                "canonical_root":console._normalized_project_path(str(self.alpha_root))}), brief_digest=current["source_digest"],
+            flow_id=flow["id"], flow_version=1, flow_digest=flow["digest"], assignment_id=assignment["id"],
+            assignment_version=1, assignment_digest=assignment["digest"], iterations=2, operation_bound=4, expires_at_ms=now + 600000,
+            bindings=[dict(iteration=i, node_id=n, task_id="task", manifest_digest=manifest["manifest_digest"],
+                block_id=f"flow-{i}-{n}", attempt=1, role_manifest_ref=role_ref, output_id="report", artifact_path=f"{i}-{n}.txt")
+                for i in (1,2) for n in ("draft", "check")])
+        recipe["digest"] = console._auto_digest(recipe)
+        authority.configured_run = lambda state: copy.deepcopy(recipe)
+        grant = authority.grant
+        authority.grant = lambda state, digest: (self.assertEqual(state["configured_run_digest"], recipe["digest"]) or grant(state, digest))
+        request = transport.request
+        host["consumed"] = []
+        def consume(method, params):
+            if method == "send_message_to_thread":
+                data = json.loads(params["prompt"][params["prompt"].index("{"):])
+                for ref in data["inputs"]:
+                    content = (self.alpha_root / ref["artifact_path"]).read_bytes()
+                    self.assertEqual(hashlib.sha256(content).hexdigest(), ref["sha256"])
+                    host["consumed"].append((ref["iteration"], ref["node_id"], ref["artifact_path"], ref["sha256"]))
+            return request(method, params)
+        transport.request = consume
+        return app, host, ledger, authority, transport, recipe
+
+    def _accept_configured_output(self, app, recipe, index):
+        from contextlib import contextmanager
+        step = recipe["bindings"][index]
+        content = ("Verified " + step["block_id"]).encode()
+        path = self.alpha_root / step["artifact_path"]
+        path.write_bytes(content)
+        sha = hashlib.sha256(content).hexdigest()
+        gates = [["exact-output", [sys.executable, "-c", "from pathlib import Path; import hashlib; assert hashlib.sha256(Path(" +
+            repr(step["artifact_path"]) + ").read_bytes()).hexdigest() == " + repr(sha)]]]
+        with closing(sqlite3.connect(self.database)) as connection:
+            columns = [r[1] for r in connection.execute("PRAGMA table_info(threads)")]
+            row = list(connection.execute("SELECT * FROM threads WHERE id='task'").fetchone())
+            row[columns.index("id")] = "flow-review"
+            connection.execute("INSERT OR IGNORE INTO threads VALUES (" + ",".join("?" for _ in row) + ")", row)
+            connection.commit()
+        binding = console.bound_task_acceptance_binding(project_id=recipe["project_id"], task_id=step["task_id"], block_id=step["block_id"],
+            manifest_digest=step["manifest_digest"], goal_id=recipe["goal_id"], artifact_path=step["artifact_path"], artifact_sha256=sha,
+            gates=gates, review_strategy="light", ctrl_id=recipe["ctrl_id"], root_digest=recipe["root_digest"], role_manifest_ref=step["role_manifest_ref"])
+        verdict = json.dumps(dict(schema=console.BOUND_TASK_REVIEW_SCHEMA, verdict="ACCEPT", binding=binding))
+        turn = "review-" + step["block_id"]
+        @contextmanager
+        def session(cwd, **kwargs):
+            messages = []
+            def receive(predicate):
+                message = messages[-1]
+                self.assertEqual(message["method"], "thread/read")
+                return {"id":message["id"], "result":{"thread":{"id":"flow-review", "cwd":str(self.alpha_root), "turns":[
+                    {"id":turn, "status":"completed", "items":[{"type":"userMessage", "content":[{"type":"text", "text":"Review exact output"}]},
+                        {"type":"agentMessage", "text":verdict}]}]}}}
+            yield messages.append, receive
+        app.auto_bridge.command_session = session
+        result = app.complete_bound_task(dict(project_id=recipe["project_id"], task_id=step["task_id"], block_id=step["block_id"],
+            manifest_digest=step["manifest_digest"], expected_ledger_revision=app.progress_ledger.replay()["cursor"]["event_seq"],
+            artifact_path=step["artifact_path"], artifact_sha256=sha, gates=gates, review_strategy="light",
+            host_review=dict(reviewer_thread_id="flow-review",reviewer_turn_id=turn), acknowledge=True))
+        self.assertEqual(result["status"], "ACCEPTED")
+        return sha
+
+    def test_configured_auto_real_acceptance_dependencies_two_iterations_and_bound(self):
+        app, host, ledger, authority, transport, recipe = self._configured_auto_case()
+        for index, step in enumerate(recipe["bindings"]):
+            result = app.evaluate_auto_once()
+            self.assertTrue(result["dispatched"], result)
+            packet = json.loads(host["sent"][-1]["prompt"][host["sent"][-1]["prompt"].index("{"):])
+            self.assertEqual(packet["step"], step)
+            self.assertEqual(packet["mission_reference"], {"project_id": recipe["project_id"],
+                "brief_digest": recipe["brief_digest"], "pointer": "/project/purpose", "confirmation": "UNVERIFIED"})
+            role = ledger.replay()["role_manifests"]["developer"]["versions"][step["role_manifest_ref"]["manifest_version"]]
+            self.assertEqual((packet["role"]["version"],packet["role"]["instructions"]), (role["version"],role["instructions"]))
+            self.assertFalse(result["work_completed"])
+            before = ledger._state.path.read_bytes()
+            self.assertEqual(app.evaluate_auto_once()["reason"], "REPLAY", "host completion cannot advance configured work")
+            self.assertEqual(before, ledger._state.path.read_bytes())
+            self._accept_configured_output(app, recipe, index)
+        with mock.patch.object(app, "_auto_candidate", wraps=app._auto_candidate) as recovery:
+            self.assertEqual(app.evaluate_auto_once()["reason"], "NO_DUE_DECISION")
+            recovery.assert_called_once()
+        self.assertEqual(len(host["sent"]), 4)
+        self.assertEqual(len(host["consumed"]), 6)
+        auto = [c for c in ledger.replay()["connector_receipts"].values() if c["receipts"][0]["action"] == "AUTO"]
+        self.assertEqual(len(auto), 4)
+        self.assertEqual(len({c["receipts"][0]["command_id"] for c in auto}), 4)
+        self.assertTrue(all(b["lifecycle_state"] == "ACCEPTED" for b in ledger.replay()["blocks"].values()))
+
+    def test_generic_auto_sends_mission_pointer_with_continuation(self):
+        app, host, _, _, _, _ = self._native_auto_case()
+        result = app.evaluate_auto_once(app._host_overview())
+        self.assertTrue(result["dispatched"], result)
+        prompt = host["sent"][0]["prompt"]
+        self.assertIn("project Mission separately from the objective", prompt)
+        self.assertIn("SWARM.md /project/purpose", prompt)
+        self.assertIn("validate project identity and brief digest", prompt)
+
+    def test_configured_auto_completed_history_does_not_capture_recovery_or_later_flow_after_restart(self):
+        app, host, ledger, authority, transport, recipe = self._configured_auto_case(reserve_later_run=True)
+        for index in range(4):
+            self.assertTrue(app.evaluate_auto_once()["dispatched"])
+            self._accept_configured_output(app, recipe, index)
+        before = ledger._state.path.read_bytes()
+        old_commands = {k:copy.deepcopy(c) for k,c in ledger.replay()["connector_receipts"].items() if c["receipts"][0]["action"] == "AUTO"}
+        self.assertEqual(len(old_commands), 4)
+        authority.configured_run = lambda state: None
+        with mock.patch.object(app, "_auto_candidate", return_value=None) as recovery:
+            self.assertEqual(app.evaluate_auto_once()["reason"], "NO_DUE_DECISION")
+            recovery.assert_called_once()
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        # Supported future source edits and retired old output bytes cannot reopen a terminal run.
+        current = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        flow = {k:copy.deepcopy(v) for k,v in current["definitions"][0].items() if k != "digest"}
+        flow.update(version=2, objective="Later independent run")
+        current = app.project_flow_command(dict(operation="save", project_id="project:alpha", expected_digest=current["source_digest"],
+            definition=flow, acknowledge=True))
+        definition = current["definitions"][-1]
+        assignment = {k:v for k,v in current["assignments"][0].items() if k not in {"id", "digest"}}
+        assignment.update(version=2, flow_version=2, flow_digest=definition["digest"])
+        current = app.project_flow_command(dict(operation="assign", project_id="project:alpha", expected_digest=current["source_digest"],
+            assignment=assignment, acknowledge=True))
+        for step in recipe["bindings"]: (self.alpha_root / step["artifact_path"]).unlink()
+        native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+        with mock.patch.object(restarted, "_auto_candidate", return_value=None) as recovery:
+            self.assertEqual(restarted.evaluate_auto_once()["reason"], "NO_DUE_DECISION")
+            recovery.assert_called_once()
+        self.assertEqual(before, restarted.progress_ledger._state.path.read_bytes())
+        self.assertEqual(len(host["sent"]), 4)
+        later = copy.deepcopy(recipe)
+        later.update(run_id="later-flow-run", brief_digest=current["source_digest"], flow_version=2, flow_digest=definition["digest"],
+            assignment_version=2, assignment_digest=current["assignments"][-1]["digest"])
+        for step in later["bindings"]:
+            actual_iteration = step["iteration"] + 2
+            step.update(block_id=f"flow-{actual_iteration}-{step['node_id']}", artifact_path=f"{actual_iteration}-{step['node_id']}.txt")
+        later["digest"] = console._auto_digest({k:v for k,v in later.items() if k != "digest"})
+        authority.configured_run = lambda state: copy.deepcopy(later)
+        grant = authority.grant
+        # The fixture's original exact-run verifier must explicitly observe the new run context.
+        authority.grant = lambda state,digest: console.HQAutoGrant("later-grant",state["project_id"],digest,state["ctrl_id"],
+            (console.HQCommandAction.AUTO,),int(time.time()*1000)+60000) if state["configured_run_digest"] == later["digest"] else grant(state,digest)
+        self.assertTrue(restarted.evaluate_auto_once()["dispatched"])
+        self.assertEqual(len(host["sent"]), 5)
+        packet = json.loads(host["sent"][-1]["prompt"][host["sent"][-1]["prompt"].index("{"):])
+        self.assertEqual(packet["step"]["block_id"], "flow-3-draft")
+        retained = restarted.progress_ledger.replay()["connector_receipts"]
+        for key,value in old_commands.items(): self.assertEqual(retained[key], value)
+        self.assertEqual(len([c for c in retained.values() if c["receipts"][0]["action"] == "AUTO"]),5)
+        self.assertEqual(restarted.evaluate_auto_once()["reason"], "REPLAY")
+        self.assertEqual(len(host["sent"]),5)
+
+    def _assert_configured_auto_redacts_native_tool_error(self, secret, private_fragment):
+        app, host, ledger, authority, transport, _ = self._configured_auto_case(terminal=False)
+        request = transport.request
+        def returned_error(method, params):
+            result = request(method, params)
+            if method == "send_message_to_thread":
+                return {"isError": True, "content": [{"type": "text", "text": secret}]}
+            return result
+        transport.request = returned_error
+        first = app.evaluate_auto_once()
+        self.assertEqual((first["dispatched"], first["reason"]), (False, "APP_TASK_DELIVERY_UNCERTAIN"))
+        self.assertEqual(first["native_send_issue"], {"action": "send_message_to_thread", "kind": "TOOL_ERROR",
+            "reason": "Host tool error details redacted"})
+        self.assertTrue(first["state"]["in_flight"])
+        self.assertEqual(first["state"]["attention"]["native_send_issue"], first["native_send_issue"])
+        self.assertNotIn(secret, repr(first))
+        self.assertNotIn(secret, repr(ledger.replay()["connector_receipts"]))
+        native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+        status = restarted.auto_status("root", "project:alpha")
+        self.assertEqual(status["attention"]["native_send_issue"], first["native_send_issue"])
+        self.assertNotIn(secret, repr(status))
+        with closing(restarted.store._connect()) as db:
+            rows = db.execute("SELECT payload_json FROM execution_event_receipts WHERE identity LIKE 'native-send-issue:%'").fetchall()
+        visible = repr(first) + repr(status) + repr([row[0] for row in rows])
+        self.assertNotIn(secret, visible)
+        self.assertNotIn(private_fragment, visible)
+        if secret == "PIN: 1234":
+            self.assertFalse(any(hashlib.sha256(f"PIN: {pin:04d}".encode()).hexdigest() in visible for pin in range(10000)))
+        self.assertEqual(restarted.evaluate_auto_once()["reason"], "IN_FLIGHT")
+        self.assertEqual(len(host["sent"]), 1)
+
+    def test_configured_auto_surfaces_safe_native_tool_error_and_reconciles_without_resend(self):
+        self._assert_configured_auto_redacts_native_tool_error("PIN: 1234", "PIN: 1234")
+
+    def test_configured_auto_redacts_private_policy_word_suffix(self):
+        self._assert_configured_auto_redacts_native_tool_error(
+            "approval required by workspace policy: never approve", "never approve")
+
+    def test_configured_auto_redacts_negated_policy_message(self):
+        self._assert_configured_auto_redacts_native_tool_error(
+            "approval required: no, policy does not apply", "no, policy does not apply")
+
+    def test_configured_auto_restart_without_transient_material_or_expired_grant_then_fresh_step(self):
+        app, host, ledger, authority, transport, recipe = self._configured_auto_case(terminal=False, uncertain=True)
+        first = app.evaluate_auto_once()
+        self.assertEqual(first["reason"], "APP_TASK_DELIVERY_UNCERTAIN")
+        self.assertEqual(len(host["sent"]), 1)
+        native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=native)
+        self.assertIsNot(restarted.progress_ledger, ledger)
+        restarted._auto_instruction = mock.Mock(side_effect=AssertionError("replay never reconstructs input"))
+        host["uncertain"] = False
+        from itertools import count
+        clock = count(time.time() + 120, 0.001)
+        with mock.patch.object(console.time, "time", side_effect=lambda: next(clock)):
+            self.assertEqual(restarted.evaluate_auto_once()["reason"], "IN_FLIGHT")
+            host["turns"][0]["status"] = "completed"
+            self.assertEqual(restarted.evaluate_auto_once()["reason"], "RECONCILED")
+        self.assertEqual(len(host["sent"]), 1)
+        restarted._auto_instruction.assert_not_called()
+        del restarted._auto_instruction
+        self._accept_configured_output(restarted, recipe, 0)
+        # No new run request is needed: recover reference-only recipe from the same journal.
+        authority.configured_run = lambda state: None
+        restarted.auto_authorization = authority
+        host["terminal"] = True
+        self.assertTrue(restarted.evaluate_auto_once()["dispatched"])
+        self.assertEqual(len(host["sent"]), 2)
+        self.assertEqual(len([c for c in ledger.replay()["connector_receipts"].values() if c["receipts"][0]["action"] == "AUTO"]), 2)
+
+    def _expect_configured_selection_rejection(self, app, reason="."):
+        with mock.patch.object(app, "_auto_candidate", side_effect=AssertionError("rejected scope must never fall back")) as fallback:
+            result = app.evaluate_auto_once()
+        self.assertEqual((result["dispatched"], result["reason"], result["work_completed"]), (False, "CONFIGURED_SCOPE_REJECTED", False))
+        self.assertEqual(len(result["scope_rejections"]), 1)
+        rejection = result["scope_rejections"][0]
+        self.assertEqual((rejection["ctrl_id"], rejection["project_id"]), ("root", "project:alpha"))
+        self.assertRegex(rejection["reason"], reason)
+        fallback.assert_not_called()
+        return result
+
+    def test_configured_auto_invalid_scope_binding_bounds_and_authority_leave_no_lease(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        variants = []
+        for key, value in (("root_digest", "0"*64), ("ctrl_id", "other"), ("project_id", "project:beta"),
+                           ("goal_id", "invented"), ("brief_digest", "0"*64), ("flow_digest", "sha256:" + "0"*64),
+                           ("assignment_digest", "sha256:" + "0"*64), ("iterations", True), ("iterations", 3),
+                           ("operation_bound", 3), ("expires_at_ms", 1)):
+            value_recipe = copy.deepcopy(recipe); value_recipe[key] = value; variants.append(value_recipe)
+        for key, value in (("task_id", "root"), ("block_id", "not-retained"), ("output_id", "invented"),
+                           ("manifest_digest", "sha256:" + "0"*64), ("attempt", 2), ("artifact_path", "../outside.txt"),
+                           ("role_manifest_ref", dict(recipe["bindings"][0]["role_manifest_ref"], manifest_version="missing"))):
+            value_recipe = copy.deepcopy(recipe); value_recipe["bindings"][0][key] = value; variants.append(value_recipe)
+        duplicate = copy.deepcopy(recipe); duplicate["bindings"][1] = duplicate["bindings"][0]; variants.append(duplicate)
+        (self.alpha_root / "output-directory").mkdir()
+        directory = copy.deepcopy(recipe); directory["bindings"][0]["artifact_path"] = "output-directory"; variants.append(directory)
+        for index, invalid in enumerate(variants):
+            with self.subTest(variant=index):
+                invalid["digest"] = console._auto_digest({k:v for k,v in invalid.items() if k != "digest"})
+                authority.configured_run = lambda state: invalid
+                before = ledger._state.path.read_bytes()
+                self._expect_configured_selection_rejection(app)
+                self.assertEqual(before, ledger._state.path.read_bytes())
+                self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+                self.assertEqual(host["sent"], [])
+        authority.configured_run = lambda state: recipe
+        host["deny"] = True
+        with self.assertRaises((ValueError, console.ConsoleError)): app.evaluate_auto_once()
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(host["sent"], [])
+        authority.grant = None
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_HOST_AUTHORIZATION_UNAVAILABLE")
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+
+    def test_configured_auto_stale_selection_from_grant_and_before_admission(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        original = authority.grant
+        brief = self.alpha_root / "SWARM.md"
+        source = brief.read_bytes()
+        def changed(state, digest):
+            result = original(state, digest)
+            brief.write_bytes(source.replace(b"Produce and check", b"Changed objective"))
+            return result
+        authority.grant = changed
+        before = ledger._state.path.read_bytes()
+        with self.assertRaises((ValueError, console.ConsoleError)): app.evaluate_auto_once()
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        brief.write_bytes(source); authority.grant = original
+        # A material append between selection and grant return must not be blessed by a new cursor.
+        def append_material(state, digest):
+            result = original(state, digest)
+            ledger.append_bound_block_evidence(project_id="project:alpha", task_id="task", block_id="flow-1-draft",
+                manifest_digest=recipe["bindings"][0]["manifest_digest"], expected_event_seq=ledger.replay()["cursor"]["event_seq"],
+                evidence_path=self.alpha_root / "1-draft.txt", expected_sha256=hashlib.sha256(b"not accepted").hexdigest())
+            return result
+        (self.alpha_root / "1-draft.txt").write_bytes(b"not accepted")
+        authority.grant = append_material
+        with self.assertRaisesRegex((ValueError, console.ConsoleError), "selection changed"): app.evaluate_auto_once()
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(host["sent"], [])
+        self.assertFalse(any(c["receipts"][0]["action"] == "AUTO" for c in ledger.replay()["connector_receipts"].values()))
+
+    def test_configured_auto_exact_accepted_output_not_bare_sha_or_same_bytes_other_path(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        app.evaluate_auto_once()
+        self._accept_configured_output(app, recipe, 0)
+        original = copy.deepcopy(recipe)
+        (self.alpha_root / "copy.txt").write_bytes((self.alpha_root / "1-draft.txt").read_bytes())
+        recipe["bindings"][0]["artifact_path"] = "copy.txt"
+        recipe["digest"] = console._auto_digest({k:v for k,v in recipe.items() if k != "digest"})
+        before = ledger._state.path.read_bytes()
+        self._expect_configured_selection_rejection(app, "run identity conflicts")
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        recipe["run_id"] = "different-path-probe"
+        recipe["digest"] = console._auto_digest({k:v for k,v in recipe.items() if k != "digest"})
+        self._expect_configured_selection_rejection(app, "exact accepted artifact")
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        recipe.clear(); recipe.update(original)
+        output = self.alpha_root / "1-draft.txt"
+        content = output.read_bytes(); output.write_bytes(b"changed")
+        self._expect_configured_selection_rejection(app, "exact accepted artifact")
+        output.unlink()
+        self._expect_configured_selection_rejection(app)
+        output.write_bytes(content)
+        with mock.patch.object(ledger, "replay", wraps=ledger.replay) as replay:
+            actual = replay._mock_wraps
+            def missing_identity():
+                projection = actual()
+                for block in projection["blocks"].values():
+                    block["proof_receipt_ids"] = [p for p in block["proof_receipt_ids"] if not p.startswith("runtime-artifact:")]
+                return projection
+            replay.side_effect = missing_identity
+            self._expect_configured_selection_rejection(app, "exact accepted artifact")
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertTrue(app.evaluate_auto_once()["dispatched"])
+
+    def test_configured_auto_changed_input_at_reservation_and_cancel_release(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        app.evaluate_auto_once(); self._accept_configured_output(app, recipe, 0)
+        reserve = ledger.reserve_connector_command
+        changed = False
+        def raced(payload, **kwargs):
+            nonlocal changed
+            if not changed:
+                changed = True
+                (self.alpha_root / "1-draft.txt").write_bytes(b"changed after selection")
+            return reserve(payload, **kwargs)
+        with mock.patch.object(ledger, "reserve_connector_command", side_effect=raced):
+            with self.assertRaisesRegex((ValueError, console.ConsoleError), "exact accepted artifact"): app.evaluate_auto_once()
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(len([c for c in ledger.replay()["connector_receipts"].values() if c["receipts"][0]["action"] == "AUTO"]), 1)
+        app.auto_command(dict(command="DISABLE", ctrl_id="root", project_id="project:alpha", request_id="cancel-input-change"))
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_OFF")
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        # The cancelled pre-send preparation must not consume global capacity.
+        app.store.set_auto("ctrl-2", "project:alpha", enabled=True, request_id="other-ctrl", now_ms=int(time.time()*1000))
+        self.assertTrue(app.store.claim_auto_dispatch(self._auto_decision("ctrl-2"), app._auto_generation(), now_ms=int(time.time()*1000))["claimed"])
+
+    def test_configured_auto_brief_writer_interleaves_before_admission_without_host_under_lock(self):
+        from contextlib import contextmanager
+        app, host, ledger, authority, transport, recipe = self._configured_auto_case()
+        lock = console._brief_update_lock
+        held, writer_ready, release_writer = threading.local(), threading.Event(), threading.Event()
+        errors, workers = [], []
+        @contextmanager
+        def observed_lock(path):
+            with lock(path):
+                held.value = True
+                try: yield
+                finally: held.value = False
+        grant, verify, request = authority.grant, authority.verify, transport.request
+        def unlocked(fn, *args):
+            self.assertFalse(getattr(held, "value", False), "host callback inside brief admission scope")
+            return fn(*args)
+        authority.grant = lambda *args: unlocked(grant, *args)
+        authority.verify = lambda *args: unlocked(verify, *args)
+        transport.request = lambda *args: unlocked(request, *args)
+        def writer():
+            try:
+                path = self.alpha_root / "SWARM.md"
+                def before_write():
+                    ledger.replay()  # Canonical writer lock order is brief -> Ledger.
+                    writer_ready.set()
+                    self.assertTrue(release_writer.wait(5))
+                document, _ = console.parse_project_brief_markdown(path.read_text(encoding="utf-8"), root=self.alpha_root)
+                assignment = {**document["flow_assignments"][0], "version":2, "label":"Writer update"}
+                assignment["digest"] = "sha256:" + console._auto_digest({k:v for k,v in assignment.items() if k != "digest"})
+                console.mutate_project_brief(path, expected_digest=recipe["brief_digest"], operation="create",
+                    collection="flow_assignments", record_id=assignment["id"], changes={k:v for k,v in assignment.items() if k != "id"},
+                    updated_at="2026-10-28T00:00:00Z", verify_current_scope=before_write)
+            except BaseException as error:
+                errors.append(error)
+        reserve = ledger.reserve_connector_command
+        def raced(payload, **kwargs):
+            if not workers:
+                worker = threading.Thread(target=writer)
+                workers.append(worker); worker.start()
+                self.assertTrue(writer_ready.wait(5))
+                release_writer.set()
+            return reserve(payload, **kwargs)
+        before = ledger._state.path.read_bytes()
+        try:
+            with mock.patch.object(console, "_brief_update_lock", observed_lock), mock.patch.object(ledger, "reserve_connector_command", side_effect=raced):
+                with self.assertRaisesRegex(console.ConsoleError, "brief changed"):
+                    app.evaluate_auto_once()
+        finally:
+            release_writer.set()
+            for worker in workers: worker.join(5)
+        self.assertFalse(errors, errors)
+        self.assertTrue(all(not worker.is_alive() for worker in workers), "writer/admission deadlock")
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        self.assertEqual(host["sent"], [])
+
+    def _configured_cancel_race(self, admission_wins):
+        app, host, ledger, _, _, _ = self._configured_auto_case()
+        reserve, cancelled = ledger.reserve_connector_command, False
+        def raced(payload, **kwargs):
+            nonlocal cancelled
+            result = reserve(payload, **kwargs) if admission_wins else None
+            if not cancelled and (not admission_wins or result["status"] == "APPENDED"):
+                cancelled = True
+                app.auto_command(dict(command="DISABLE",ctrl_id="root",project_id="project:alpha",request_id="configured-cancel"))
+            return result if admission_wins else reserve(payload, **kwargs)
+        with mock.patch.object(ledger, "reserve_connector_command", side_effect=raced):
+            result = app.evaluate_auto_once()
+        self.assertFalse(result["work_completed"])
+        self.assertEqual(len(host["sent"]), int(admission_wins))
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_CLOSED")
+
+    def test_configured_auto_cancel_wins_before_command(self):
+        self._configured_cancel_race(False)
+
+    def test_configured_auto_admission_wins_cancel_without_duplicate_send(self):
+        self._configured_cancel_race(True)
+
+    def test_configured_auto_multiple_unfinished_runs_and_changed_actor_goal_fail_closed(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        grant = authority.grant
+        def changed_actor(state, digest):
+            result = grant(state, digest)
+            with closing(sqlite3.connect(self.database)) as db:
+                db.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root),)); db.commit()
+            return result
+        authority.grant = changed_actor
+        before = ledger._state.path.read_bytes()
+        with self.assertRaises(console.ConsoleError): app.evaluate_auto_once()
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.alpha_root),)); db.commit()
+        def changed_goal(state, digest):
+            result = grant(state, digest)
+            with closing(sqlite3.connect(console.goals_database(self.codex_home))) as db:
+                db.execute("UPDATE thread_goals SET status='paused'"); db.commit()
+            return result
+        authority.grant = changed_goal
+        with self.assertRaisesRegex(console.ConsoleError, "exact active host goal"): app.evaluate_auto_once()
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        with closing(sqlite3.connect(console.goals_database(self.codex_home))) as db:
+            db.execute("UPDATE thread_goals SET status='active'"); db.commit()
+        authority.grant = grant
+        app.evaluate_auto_once()
+        second = copy.deepcopy(recipe); second["run_id"] = "other-run"
+        second["digest"] = console._auto_digest({k:v for k,v in second.items() if k != "digest"})
+        authority.configured_run = lambda state: second
+        self._expect_configured_selection_rejection(app, "multiple unfinished")
+        self.assertEqual(len(host["sent"]), 1)
+
+    def test_configured_auto_preserves_historical_role_but_denies_rebinding_from_grant(self):
+        app, host, ledger, authority, _, recipe = self._configured_auto_case()
+        pinned = recipe["bindings"][0]["role_manifest_ref"]
+        role = ledger.replay()["role_manifests"]["developer"]["versions"][pinned["manifest_version"]]
+        draft = {k:v for k,v in role.items() if k not in {"id", "version", "source", "provenance"}}
+        draft["instructions"] = [*draft["instructions"], "A later shared default; do not rewrite active history."]
+        revised = console.build_role_manifest("developer", draft, "user_override", ["test:revision"])
+        ledger.append(console.role_material_event("ROLE_MANIFEST_REVISE", event_id="later-role", dedupe_key="later-role",
+            role_id="developer", manifest=revised, expected_active_version=role["version"], assignment_task_id=None,
+            provenance="test:revision", observed_at_ms=20))
+        selected, _ = app._configured_auto_candidate(app.store.auto_status("root", "project:alpha"), ledger.replay())
+        self.assertTrue(selected)
+        candidate = app._configured_auto_step(recipe, recipe, ledger.replay())[0]
+        data = json.loads(candidate["instruction"][candidate["instruction"].index("{"):])
+        self.assertEqual(data["role"]["version"], role["version"])
+        self.assertNotEqual(data["role"]["version"], revised["version"])
+        grant = authority.grant
+        def rebound(state, digest):
+            result = grant(state, digest)
+            ledger.append(console.role_material_event("ROLE_ASSIGNMENT_BOUND", event_id="rebind-task", dedupe_key="rebind-task",
+                role_id="developer", manifest=revised, expected_active_version=revised["version"], assignment_task_id="task",
+                provenance="test:rebind", observed_at_ms=21))
+            return result
+        authority.grant = rebound
+        before = ledger._state.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "task role assignment is already bound"): app.evaluate_auto_once()
+        self.assertEqual(before, ledger._state.path.read_bytes())
+        self.assertEqual(ledger.replay()["role_assignments"]["task"]["manifest_version"], role["version"])
+        self.assertEqual(host["sent"], [])
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+
+    def test_configured_auto_multi_output_planning_definition_remains_valid_but_not_executable(self):
+        app, host, _, authority, _, recipe = self._configured_auto_case()
+        current = app.project_flow_command(dict(operation="read", project_id="project:alpha"))
+        flow = copy.deepcopy(current["definitions"][0]); flow.pop("digest"); flow["version"] = 2
+        flow["nodes"][0]["outputs"].append("second-output")
+        current = app.project_flow_command(dict(operation="save", project_id="project:alpha", expected_digest=current["source_digest"],
+            definition=flow, acknowledge=True))
+        definition = current["definitions"][-1]
+        assignment = {k:v for k,v in current["assignments"][0].items() if k not in {"id", "digest"}}
+        assignment.update(version=2, flow_version=2, flow_digest=definition["digest"])
+        current = app.project_flow_command(dict(operation="assign", project_id="project:alpha", expected_digest=current["source_digest"],
+            assignment=assignment, acknowledge=True))
+        recipe.update(brief_digest=current["source_digest"], flow_version=2, flow_digest=definition["digest"],
+            assignment_version=2, assignment_digest=current["assignments"][-1]["digest"])
+        recipe["digest"] = console._auto_digest({k:v for k,v in recipe.items() if k != "digest"})
+        self._expect_configured_selection_rejection(app, "exactly one named output")
+        self.assertEqual(host["sent"], [])
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+
+    def test_configured_auto_unaccepted_evidence_never_starts_or_unblocks_dependency(self):
+        app, host, ledger, _, _, recipe = self._configured_auto_case()
+        path = self.alpha_root / "1-draft.txt"; path.write_bytes(b"unadmitted proof")
+        ledger.append_bound_block_evidence(project_id="project:alpha", task_id="task", block_id="flow-1-draft",
+            manifest_digest=recipe["bindings"][0]["manifest_digest"], expected_event_seq=ledger.replay()["cursor"]["event_seq"],
+            evidence_path=path, expected_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        before = ledger._state.path.read_bytes()
+        self.assertEqual(app.evaluate_auto_once()["reason"], "CONFIGURED_ACCEPTANCE_OR_BOUND")
+        self.assertEqual(host["sent"], [])
+        self.assertEqual(before, ledger._state.path.read_bytes())
+
+    def _configured_disjoint_case(self, *, terminal=True, other="zz-other"):
+        app, host, ledger, authority, transport, recipe = self._configured_auto_case(terminal=terminal)
+        with closing(sqlite3.connect(self.database)) as db:
+            columns = [r[1] for r in db.execute("PRAGMA table_info(threads)")]
+            for original, target in (("root", other), ("task", "other-owner")):
+                row = list(db.execute("SELECT * FROM threads WHERE id=?", (original,)).fetchone())
+                row[columns.index("id")] = target
+                db.execute("INSERT INTO threads VALUES (" + ",".join("?" for _ in row) + ")",row)
+            db.commit()
+        app.auto_command(dict(command="ENABLE",ctrl_id=other,project_id="project:alpha",request_id="enable-disjoint"))
+        requested, grant = authority.configured_run, authority.grant
+        authority.configured_run = lambda state: requested(state) if state["ctrl_id"] == "root" else None
+        authority.grant = lambda state,digest: grant(state,digest) if state["ctrl_id"] == "root" else console.HQAutoGrant(
+            "other-grant",state["project_id"],digest,state["ctrl_id"],(console.HQCommandAction.AUTO,),int(time.time()*1000)+60000)
+        request, turns, sent = transport.request, [{"id":"other-before","status":"completed","items":[]}], []
+        def native(method, params):
+            ids = [item["threadId"] for item in params["targets"]] if method == "wait_threads" else [params["threadId"]]
+            if ids == ["task"]: return request(method,params)
+            self.assertEqual(ids,["other-owner"])
+            if method == "read_thread":
+                return dict(thread=dict(id="other-owner",cwd=str(self.alpha_root)),page=dict(order="newest_first"),turns=copy.deepcopy(turns[:2]))
+            if method == "wait_threads":return dict(timedOut=True)
+            self.assertEqual(method,"send_message_to_thread")
+            self.assertEqual(set(params),{"threadId","prompt"})
+            sent.append(dict(params));turns.insert(0,dict(id="other-turn",status="completed",items=[
+                dict(type="userMessage",content=[dict(type="text",text=params["prompt"])])]))
+            return dict(threadId="other-owner")
+        transport.request = native
+        return app,host,ledger,authority,recipe,sent
+
+    def _configured_rejection_allows_disjoint_dispatch(self, *, expired, wrong_root=False):
+        from itertools import count
+        app,host,ledger,authority,recipe,sent = self._configured_disjoint_case()
+        self.assertTrue(app.evaluate_auto_once()["dispatched"])
+        self.assertFalse(app.store.auto_status("root","project:alpha")["in_flight"])
+        prior = copy.deepcopy(ledger.replay()["connector_receipts"])
+        if wrong_root:
+            with closing(sqlite3.connect(self.database)) as db:
+                db.execute("UPDATE threads SET cwd=? WHERE id='root'",(str(self.root),));db.commit()
+            with self.assertRaises(console.ConsoleError) as root_error:app._native_auto_scope("root","project:alpha")
+            rejection=str(root_error.exception)
+        elif not expired:
+            current=app.project_flow_command(dict(operation="read",project_id="project:alpha"))
+            flow={k:v for k,v in current["definitions"][0].items() if k!="digest"};flow.update(version=2,objective="Changed current source")
+            app.project_flow_command(dict(operation="save",project_id="project:alpha",expected_digest=current["source_digest"],definition=flow,acknowledge=True))
+        if not wrong_root:rejection="configured Auto run expired" if expired else "configured Auto brief changed"
+        # Exercise the real ordinary selector and native dispatcher with bounded
+        # injected lifecycle facts, just as the adjacent ordinary Auto contracts.
+        ordinary = app._auto_candidate
+        projected = self._auto_projection()
+        projected["expected_receipts"]["expected-auto"]["receipt"].update(task_id="other-owner",owner_id="other-owner")
+        lifecycle=self._auto_lifecycle();lifecycle["event"]["record"]["task_id"]="other-owner"
+        overview=dict(nodes=[dict(id="other-owner",project_id="project:alpha",controller_ids=["zz-other"])])
+        visited=[]
+        def select(state, observed, projection):
+            visited.append(state["ctrl_id"])
+            self.assertEqual(state["ctrl_id"],"zz-other","invalid configured scope fell back")
+            with mock.patch.object(app,"_auto_lifecycle_events",return_value=([dict(lifecycle["event"],event_seq=3,event_digest="f"*64)],False)):
+                return ordinary(state,observed,{**projection,"expected_receipts":projected["expected_receipts"]})
+        clock=count(recipe["expires_at_ms"]/1000+1 if expired else time.time()+1,0.002)
+        with mock.patch.object(console.time,"time",side_effect=lambda:next(clock)), mock.patch.object(app,"_auto_candidate",side_effect=select):
+            result=app.evaluate_auto_once(overview)
+            self.assertTrue(result["dispatched"],result)
+            self.assertEqual(result["reason"],"NATIVE_DELIVERED")
+            self.assertEqual(result["scope_rejections"],[dict(ctrl_id="root",project_id="project:alpha",
+                reason=rejection)])
+            self.assertFalse(result["work_completed"])
+            again=app.evaluate_auto_once(overview)
+            self.assertEqual((again["dispatched"],again["reason"]),(False,"AUTO_SCOPE_REJECTED" if wrong_root else "CONFIGURED_SCOPE_REJECTED"))
+            self.assertEqual(again["scope_rejections"],result["scope_rejections"])
+        self.assertEqual(visited,["zz-other","zz-other"])
+        self.assertEqual(len(host["sent"]),1)
+        self.assertEqual(len(sent),1)
+        after=ledger.replay()["connector_receipts"]
+        for key,value in prior.items():self.assertEqual(after[key],value)
+        new=[value for key,value in after.items() if key not in prior]
+        self.assertEqual(len(new),1)
+        self.assertEqual(new[0]["receipts"][0]["action"],"AUTO")
+        self.assertEqual(new[0]["receipts"][-1]["thread_id"],"other-owner")
+        self.assertFalse(app.store.auto_status("root","project:alpha")["in_flight"])
+        self.assertTrue(app.store.auto_status("root","project:alpha")["enabled"])
+
+    def test_configured_auto_expired_scope_keeps_rejection_and_disjoint_eligible_work_dispatches(self):
+        self._configured_rejection_allows_disjoint_dispatch(expired=True)
+
+    def test_configured_auto_stale_scope_keeps_rejection_and_disjoint_eligible_work_dispatches(self):
+        self._configured_rejection_allows_disjoint_dispatch(expired=False)
+
+    def test_configured_auto_unbound_root_keeps_rejection_and_disjoint_eligible_work_dispatches(self):
+        self._configured_rejection_allows_disjoint_dispatch(expired=False,wrong_root=True)
+
+    def test_configured_auto_in_flight_lease_precedes_earlier_sorted_free_scope(self):
+        app,host,_,_,_,sent=self._configured_disjoint_case(terminal=False,other="aaa-other")
+        # Seed the root operation first while the disjoint scope has no due work.
+        with mock.patch.object(app,"_auto_candidate",return_value=None):app.evaluate_auto_once()
+        self.assertTrue(app.store.auto_status("root","project:alpha")["in_flight"])
+        with mock.patch.object(app,"_auto_candidate",side_effect=AssertionError("must reconcile existing global lease first")):
+            self.assertEqual(app.evaluate_auto_once()["reason"],"IN_FLIGHT")
+        self.assertEqual(len(host["sent"]),1);self.assertEqual(sent,[])
+
+    def test_configured_auto_corrupt_journal_is_not_ignored_as_scoped_wait(self):
+        app,_,_,_,_,_=self._configured_auto_case();app.evaluate_auto_once()
+        with closing(app.store._connect()) as db:
+            db.execute("UPDATE execution_event_receipts SET payload_digest=? WHERE event_kind='AUTO_DECISION' AND identity LIKE 'connector:%'",("0"*64,))
+            db.commit()
+        with mock.patch.object(app,"_auto_candidate",side_effect=AssertionError("corruption cannot fall back")):
+            with self.assertRaisesRegex(console.ConsoleError,"retained packet conflicts"):app.evaluate_auto_once()
+
+    def test_native_auto_production_caller_advances_distinct_material_result_once(self):
+        app, host, facts, ledger, _, _ = self._native_auto_case()
+        first = app.evaluate_auto_once(app._host_overview())
+        self.assertEqual((first["dispatched"], first["work_completed"]), (True, False))
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "REPLAY")
+        self.assertEqual(len(host["sent"]), 1, "turn completion alone cannot trigger another operation")
+        facts["projection"] = self._auto_projection(event_id="lifecycle-4")
+        facts["events"].append(self._auto_lifecycle(sequence=4))
+        second = app.evaluate_auto_once(app._host_overview())
+        self.assertTrue(second["dispatched"])
+        self.assertEqual(len(host["sent"]), 2)
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "REPLAY")
+        commands = ledger.replay()["connector_receipts"]
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(all(r["action"] == "AUTO" for c in commands.values() for r in c["receipts"]))
+        self.assertEqual(ledger.replay()["blocks"], {})
+        app.auto_bridge.run.assert_not_called()
+        app.auto_bridge.reconcile.assert_not_called()
+
+    def test_native_auto_uncertain_restart_reconciles_without_second_send(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case(terminal=False, uncertain=True)
+        first = app.evaluate_auto_once(app._host_overview())
+        self.assertFalse(first["dispatched"])
+        self.assertTrue(first["state"]["in_flight"])
+        fresh_transport = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=fresh_transport)
+        self.assertIsNot(restarted.progress_ledger, ledger)
+        restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+        restarted._auto_instruction = mock.Mock(side_effect=AssertionError("no prompt recovery on restart"))
+        host["uncertain"] = False
+        pending = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(pending["reason"], "IN_FLIGHT")
+        self.assertEqual(len(host["sent"]), 1)
+        host["turns"][0]["status"] = "completed"
+        result = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(result["reason"], "RECONCILED")
+        self.assertFalse(result["state"]["in_flight"])
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(len(ledger.replay()["connector_receipts"]), 1)
+
+    def test_native_auto_packet_interruption_rolls_back_lease_and_restart_can_dispatch(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case()
+        retain = app.store._retain_auto_event
+        def interrupted(connection, **kwargs):
+            if kwargs["event_kind"] == "AUTO_DECISION" and kwargs["identity"].startswith("connector:"):
+                raise OSError("interrupted before recovery packet commit")
+            return retain(connection, **kwargs)
+        with mock.patch.object(app.store, "_retain_auto_event", side_effect=interrupted):
+            with self.assertRaises(OSError): app.evaluate_auto_once(app._host_overview())
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(app.store.load_execution_ledger().reservations, ())
+        self.assertEqual(ledger.replay()["connector_receipts"], {})
+        self.assertEqual(host["calls"], [])
+        self.assertEqual(host["sent"], [])
+        with closing(app.store._connect()) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM execution_event_receipts WHERE event_kind='AUTO_DISPATCH' OR identity LIKE 'connector:%'").fetchone()[0], 0)
+        for _ in range(2):
+            native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+            restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+            restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+            restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(len(ledger.replay()["connector_receipts"]), 1)
+
+    def test_native_auto_busy_pre_send_renews_expired_preparation_only(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case()
+        base, elapsed = time.time(), [0.0]
+        def clock():
+            elapsed[0] += .002
+            return base + elapsed[0]
+        host["turns"][0]["status"] = "inProgress"
+        with mock.patch.object(console.time, "time", side_effect=clock):
+            pending = app.evaluate_auto_once(app._host_overview())
+            self.assertEqual(pending["reason"], "APP_TASK_PRE_SEND_UNAVAILABLE")
+            reservation_id = pending["state"]["reservation_id"]
+            first_packet = app.store.auto_connector_packet(reservation_id)
+            self.assertEqual(ledger.replay()["connector_receipts"], {})
+            self.assertEqual(host["sent"], [])
+            elapsed[0] += 61
+            native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+            restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+            restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+            host["deny"] = True
+            calls = list(host["calls"])
+            # A denied renewal is isolated to this lease (traced, lease retained), never a global abort.
+            denied = restarted.evaluate_auto_once(restarted._host_overview())
+            self.assertEqual([(item["reason"], item["failure_kind"]) for item in denied["scope_rejections"]],
+                             [("LANE_RECONCILE_FAILED", "InvariantError")])
+            self.assertTrue(restarted.store.auto_status("root", "project:alpha")["in_flight"])
+            self.assertEqual(host["calls"], calls)
+            self.assertEqual(app.store.auto_connector_packet(reservation_id), first_packet)
+            self.assertEqual(ledger.replay()["connector_receipts"], {})
+            host["deny"] = False
+            host["turns"][0]["status"] = "completed"
+            result = restarted.evaluate_auto_once(restarted._host_overview())
+            self.assertEqual(result["reason"], "NATIVE_DELIVERED")
+            self.assertTrue(result["dispatched"])
+            self.assertFalse(result["state"]["in_flight"])
+            final_packet = app.store.auto_connector_packet(reservation_id)
+            self.assertEqual(first_packet["envelope"]["idempotency_key"], final_packet["envelope"]["idempotency_key"])
+            self.assertGreater(final_packet["envelope"]["expires_at_ms"], first_packet["envelope"]["expires_at_ms"])
+            commands = ledger.replay()["connector_receipts"]
+            self.assertEqual(len(commands), 1)
+            retained_digest = next(iter(commands.values()))["receipts"][0]["command_digest"]
+            self.assertEqual(app.store.auto_connector_packet(reservation_id, retained_digest), final_packet)
+            self.assertEqual(restarted.evaluate_auto_once(restarted._host_overview())["reason"], "REPLAY")
+        self.assertEqual(len(host["sent"]), 1)
+
+    def test_native_auto_interruption_after_atomic_prepare_restarts_without_duplicate(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case()
+        persist = app.store.persist_execution_ledger
+        def interrupted(*args, **kwargs):
+            persist(*args, **kwargs)
+            raise OSError("interrupted after complete preparation commit")
+        with mock.patch.object(app.store, "persist_execution_ledger", side_effect=interrupted):
+            with self.assertRaises(OSError): app.evaluate_auto_once(app._host_overview())
+        state = app.store.auto_status("root", "project:alpha")
+        self.assertTrue(state["in_flight"])
+        self.assertIsNotNone(app.store.auto_connector_packet(state["reservation_id"]))
+        self.assertEqual(ledger.replay()["connector_receipts"], {})
+        self.assertEqual(host["sent"], [])
+        for _ in range(2):
+            native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+            restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+            restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+            restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(len(ledger.replay()["connector_receipts"]), 1)
+
+    def test_native_auto_retained_command_selects_exact_preparation_not_newest(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case()
+        base, elapsed = time.time(), [0.0]
+        def clock():
+            elapsed[0] += .002
+            return base + elapsed[0]
+        host["turns"][0]["status"] = "inProgress"
+        with mock.patch.object(console.time, "time", side_effect=clock):
+            state = app.evaluate_auto_once(app._host_overview())["state"]
+            original = app.store.auto_connector_packet(state["reservation_id"])
+            elapsed[0] += 61
+            app.evaluate_auto_once(app._host_overview())
+            self.assertNotEqual(app.store.auto_connector_packet(state["reservation_id"]), original)
+            fields = {**original["envelope"], "action": console.HQCommandAction.AUTO,
+                      "target_intent": console.HQTargetIntent.EXISTING_THREAD}
+            envelope = console.HQCommandEnvelope(**fields)
+            # Interleaving fixture: the earlier valid preparation won Ledger admission.
+            ledger.append_connector_receipt(console.UniversalHQConnector._receipt(envelope,
+                receipt_id=envelope.command_id + "-command", index=0, status="COMMAND",
+                observed_at_ms=envelope.submitted_at_ms))
+            self.assertEqual(app.store.auto_connector_packet(state["reservation_id"], envelope.digest), original)
+            native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+            restarted = console.App(self.codex_home, self.config, task_transport=native)
+            restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+            restarted._auto_instruction = mock.Mock(side_effect=AssertionError("no retained prompt recovery"))
+            pending = restarted.evaluate_auto_once(restarted._host_overview())
+            self.assertEqual(pending["reason"], "APP_TASK_EVIDENCE_PENDING")
+        self.assertEqual(host["sent"], [])
+        self.assertEqual(len(ledger.replay()["connector_receipts"]), 1)
+
+    def test_native_auto_cancel_unsubmitted_preparation_releases_other_controller(self):
+        app, host, _, ledger, authority, transport = self._native_auto_case()
+        host["turns"][0]["status"] = "inProgress"
+        pending = app.evaluate_auto_once(app._host_overview())
+        reservation_id = pending["state"]["reservation_id"]
+        self.assertEqual(ledger.replay()["connector_receipts"], {})
+        app.auto_command({"command": "DISABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "cancel-prepared"})
+        native = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=native, auto_authorization=authority)
+        restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+        result = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(result["reason"], "AUTO_OFF")
+        self.assertEqual((result["state"]["enabled"], result["state"]["stop_after_turn"], result["state"]["in_flight"]), (False, False, False))
+        self.assertEqual(restarted.evaluate_auto_once()["reason"], "AUTO_CLOSED")
+        self.assertEqual(host["sent"], [])
+        self.assertEqual(ledger.replay()["connector_receipts"], {})
+        retained = restarted.store.load_execution_ledger().reservation(reservation_id)
+        self.assertEqual(retained.state, console.ExecutionDispatchState.UNVERIFIED)
+        self.assertIsNone(retained.failure_kind)
+        self.assertFalse(retained.host_completed)
+        self.assertIsNotNone(restarted.store.auto_connector_packet(reservation_id))
+        with closing(restarted.store._connect()) as db:
+            release = json.loads(db.execute("SELECT payload_json FROM execution_event_receipts WHERE event_kind='AUTO_RELEASE'").fetchone()[0])
+        self.assertEqual(release["reason"], "PRE_SEND_CANCELLED")
+        self.assertFalse(release["material_progress"])
+        restarted.store.set_auto("ctrl-2", "project:alpha", enabled=True, request_id="another-controller", now_ms=int(time.time()*1000))
+        self.assertTrue(restarted.store.claim_auto_dispatch(self._auto_decision("ctrl-2"), restarted._auto_generation(), now_ms=int(time.time()*1000))["claimed"])
+
+    def _native_auto_cancel_admission_race(self, admission_wins):
+        app, host, _, ledger, _, _ = self._native_auto_case()
+        reserve = ledger.reserve_connector_command
+        def raced(payload, **kwargs):
+            if admission_wins:
+                result = reserve(payload, **kwargs)
+            app.auto_command({"command": "DISABLE", "ctrl_id": "root", "project_id": "project:alpha",
+                              "request_id": "cancel-at-admission"})
+            return result if admission_wins else reserve(payload, **kwargs)
+        with mock.patch.object(ledger, "reserve_connector_command", side_effect=raced):
+            result = app.evaluate_auto_once(app._host_overview())
+        self.assertFalse(result["work_completed"])
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(len(host["sent"]), int(admission_wins))
+        self.assertEqual(len(ledger.replay()["connector_receipts"]), int(admission_wins))
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_CLOSED")
+
+    def test_native_auto_cancellation_wins_command_admission_race(self):
+        self._native_auto_cancel_admission_race(False)
+
+    def test_native_auto_admission_wins_cancellation_race_without_resend(self):
+        self._native_auto_cancel_admission_race(True)
+
+    def test_native_auto_cancel_success_and_max_route_exhaustion_stop(self):
+        app, host, facts, _, _, _ = self._native_auto_case(terminal=False)
+        app.evaluate_auto_once(app._host_overview())
+        app.auto_command({"command": "DISABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "native-disable"})
+        host["turns"][0]["status"] = "completed"
+        app.evaluate_auto_once(app._host_overview())
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_CLOSED")
+        self.assertEqual(len(host["sent"]), 1)
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "native-enable-next"})
+        facts["projection"]["expected_receipts"]["expected-auto"]["result"]["status"] = "MATCHED"
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "NO_DUE_DECISION")
+        facts["projection"] = self._auto_projection(event_id="lifecycle-6")
+        facts["events"] = [self._auto_lifecycle(sequence=i+3, routes=(f"r{i+1}",), turns=(f"t{i+1}",),
+            permitted=("r1", "r2", "r3")) for i in range(3)]
+        facts["events"].append(self._auto_lifecycle("BLOCKED", sequence=6, routes=("r1", "r2", "r3"),
+            permitted=("r1", "r2", "r3"), turns=("t1", "t2", "t3"),
+            release_authority="user", release_receipt_id="release-proof"))
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "TERMINAL_BLOCKED")
+        self.assertEqual(len(host["sent"]), 1)
+
+    def test_native_auto_unknown_input_and_missing_or_forged_authority_fail_closed(self):
+        app, host, _, ledger, authority, _ = self._native_auto_case(uncertain=True)
+        host["deny"] = True
+        before = ledger.replay()["cursor"]
+        with self.assertRaises(ValueError): app.evaluate_auto_once(app._host_overview())
+        self.assertEqual(ledger.replay()["cursor"], before)
+        self.assertEqual(host["sent"], [])
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        app.auto_authorization = None
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "AUTO_HOST_AUTHORIZATION_UNAVAILABLE")
+        app.auto_authorization = authority;host["deny"] = False
+        app.evaluate_auto_once(app._host_overview());host["missing_input"] = True
+        pending = app.evaluate_auto_once(app._host_overview())
+        self.assertEqual(pending["reason"], "APP_TASK_EVIDENCE_PENDING")
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertNotIn("RESULT", [r["status"] for c in ledger.replay()["connector_receipts"].values() for r in c["receipts"]])
+
     def test_auto_waiting_project_does_not_hide_later_project(self) -> None:
         app = object.__new__(console.App)
         app.write_lock = threading.Lock()
@@ -10951,172 +14031,125 @@ class SwarmConsoleTests(unittest.TestCase):
         app._auto_generation = lambda: None
         app._auto_scoped_generations = mock.Mock(return_value=[])
         app.store.claim_auto_dispatch = mock.Mock(return_value={"claimed": False, "reason": "REPLAY"})
+        app._native_auto_dispatch = mock.Mock(return_value={"dispatched": False, "reason": "REPLAY"})
         self.assertEqual(app.evaluate_auto_once({"current": True})["reason"], "REPLAY")
         self.assertEqual(visited, ["waiting", "next"])
-        app.store.claim_auto_dispatch.assert_called_once()
-        app._auto_scoped_generations.assert_called_once_with("waiting", "bound")
+        app._native_auto_dispatch.assert_called_once_with(states[0], replay)
+        app.store.claim_auto_dispatch.assert_not_called()  # Real native dispatch owns this boundary; tested below.
 
     def test_auto_due_event_dispatches_once_and_host_completion_is_zero_progress(self) -> None:
-        self._confirm_root_ctrl()
-        bridge = SimpleNamespace(run=mock.Mock(return_value=console.AutoBridgeResult(
-            True, "thread-auto", "turn-auto", "d" * 64, turn_started=True, terminal=True, reachable=True,
-        )))
-        app = console.App(self.codex_home, self.config, auto_bridge=bridge)
-        app.auto_command({
-            "command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha",
-            "request_id": "enable-auto",
-        })
-        projection = self._auto_projection()
-        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
-        overview = app._host_overview()
-        first = app.evaluate_auto_once(overview)
+        app, host, _, ledger, _, _ = self._native_auto_case()
+        first = app.evaluate_auto_once(app._host_overview())
         self.assertTrue(first["dispatched"])
         self.assertTrue(first["bridge_ok"])
-        self.assertEqual(bridge.run.call_count, 1)
-        status = app.store.auto_status("root", "project:alpha")
-        self.assertEqual(status["phase"], "IDLE")
+        self.assertFalse(first["work_completed"])
+        self.assertEqual(len(host["sent"]), 1)
+        self.assertEqual(app.store.auto_status("root", "project:alpha")["phase"], "IDLE")
         with closing(sqlite3.connect(app.store.path)) as connection:
-            payload = json.loads(connection.execute(
-                "SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_OUTCOME'"
-            ).fetchone()[0])
-        self.assertFalse(payload["material_progress"])
-        self.assertEqual(app.evaluate_auto_once(overview)["reason"], "REPLAY")
-        self.assertEqual(bridge.run.call_count, 1)
+            rows = connection.execute("SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_OUTCOME'").fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertFalse(json.loads(rows[0][0])["material_progress"])
+            payloads = connection.execute("SELECT payload_json FROM execution_event_receipts").fetchall()
+            self.assertTrue(all(host["sent"][0]["prompt"] not in row[0] for row in payloads))
+        self.assertEqual(ledger.replay()["blocks"], {})
+        self.assertEqual(app.evaluate_auto_once(app._host_overview())["reason"], "REPLAY")
+        self.assertEqual(len(host["sent"]), 1)
+        app.auto_bridge.run.assert_not_called()
 
-    def test_auto_prestart_transport_retry_reuses_thread_and_is_bounded(self) -> None:
+    def test_auto_prestart_missing_native_capability_never_uses_private_retry(self) -> None:
         self._confirm_root_ctrl()
-        bridge = SimpleNamespace(run=mock.Mock(side_effect=[
-            console.AutoBridgeResult(False, "thread-reuse", failure_kind="TURN_START_FAILED", transient=True),
-            console.AutoBridgeResult(True, "thread-reuse", "turn-reuse", "d" * 64, turn_started=True, terminal=True, reachable=True),
-        ]))
+        bridge = SimpleNamespace(run=mock.Mock(side_effect=AssertionError("private retry is retired")),
+                                 reconcile=mock.Mock(side_effect=AssertionError("private reconciliation is retired")))
         app = console.App(self.codex_home, self.config, auto_bridge=bridge)
-        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-retry"})
-        projection = self._auto_projection()
-        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-no-native"})
+        app.progress_ledger = self._auto_ledger(self._auto_projection(), self._auto_lifecycle())
         with mock.patch.object(console.time, "sleep") as sleep:
             result = app.evaluate_auto_once(app._host_overview())
-        self.assertTrue(result["bridge_ok"])
-        self.assertEqual(bridge.run.call_count, 2)
-        self.assertEqual(bridge.run.call_args_list[1].kwargs["thread_id"], "thread-reuse")
-        sleep.assert_called_once()
+        self.assertEqual(result["reason"], "NATIVE_AUTO_CAPABILITY_UNAVAILABLE")
+        self.assertFalse(result["dispatched"])
+        self.assertFalse(app.store.auto_status("root", "project:alpha")["in_flight"])
+        self.assertEqual(app.store.load_execution_ledger().reservations, ())
+        bridge.run.assert_not_called()
+        bridge.reconcile.assert_not_called()
+        sleep.assert_not_called()
 
     def test_auto_restart_reconciles_active_turn_and_authorized_release_recovers_global_lease(self) -> None:
-        self._confirm_root_ctrl()
-        def uncertain(*, retain_ids, **_kwargs):
-            retain_ids("thread-retained", "turn-retained", True)
-            return console.AutoBridgeResult(False, "thread-retained", "turn-retained", failure_kind="TRANSPORT_UNAVAILABLE", transient=True, turn_started=True)
-        bridge = SimpleNamespace(
-            run=mock.Mock(side_effect=uncertain),
-            reconcile=mock.Mock(return_value=console.AutoBridgeResult(False, "thread-retained", "turn-retained", failure_kind="TURN_ACTIVE", transient=True, turn_started=True, reachable=True)),
-        )
-        app = console.App(self.codex_home, self.config, auto_bridge=bridge)
+        app, host, _, _, authority, transport = self._native_auto_case(terminal=False, uncertain=True)
         with self.assertRaises(console.ConsoleError):
-            app.auto_command({
-                "command": "ENABLE", "ctrl_id": "root", "project_id": "project:missing",
-                "request_id": "wrong-project",
-            })
-        self.assertEqual(app.store.enabled_auto_states(), [])
-
-        app.auto_command({
-            "command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha",
-            "request_id": "enable-transient",
-        })
-        projection = self._auto_projection()
-        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+            app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:missing", "request_id": "wrong-project"})
         first = app.evaluate_auto_once(app._host_overview())
         self.assertTrue(first["state"]["in_flight"])
-        restarted = console.App(self.codex_home, self.config, auto_bridge=bridge)
-        restarted.progress_ledger = app.progress_ledger
+        fresh_transport = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=fresh_transport, auto_authorization=authority)
+        self.assertIsNot(restarted.progress_ledger, app.progress_ledger.ledger)
+        restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
         second = restarted.evaluate_auto_once(restarted._host_overview())
         self.assertEqual(second["reason"], "IN_FLIGHT")
-        self.assertEqual((bridge.run.call_count, bridge.reconcile.call_count), (1, 1))
+        self.assertEqual(len(host["sent"]), 1)
         reservation_id = second["state"]["reservation_id"]
+        release = {"command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
+                   "request_id": "release-native", "reservation_id": reservation_id,
+                   "recovery_authority": "root", "release_condition": "independently confirmed host absence"}
         with self.assertRaises(console.ConsoleConflict):
-            restarted.auto_command({
-                "command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
-                "request_id": "release-while-active", "reservation_id": reservation_id,
-                "recovery_authority": "root", "release_condition": "caller assertion is insufficient",
-            })
-        bridge.reconcile.return_value = console.AutoBridgeResult(
-            False, "thread-retained", "turn-retained", failure_kind="TURN_UNREACHABLE",
-            transient=True, turn_started=True, reachable=False,
-        )
-        unreachable = restarted.evaluate_auto_once(restarted._host_overview())
-        self.assertEqual(unreachable["reason"], "UNREACHABLE_IN_FLIGHT")
-        released = restarted.auto_command({
-            "command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
-            "request_id": "release-unreachable", "reservation_id": reservation_id,
-            "recovery_authority": "root", "release_condition": "host turn is unreachable after retained status read",
-        })
-        self.assertFalse(released["in_flight"])
-        other = self._auto_decision("ctrl-2")
+            restarted.auto_command(release)
+        fresh_transport.request = mock.Mock(side_effect=OSError("native control offline"))
+        unknown = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(unknown["reason"], "NATIVE_TERMINAL_UNKNOWN")
+        with self.assertRaises(console.ConsoleConflict):
+            restarted.auto_command(release)
+        # An unavailable control route never authorizes release. This separate
+        # fixture represents the existing independent host-absence receipt.
+        restarted.store.retain_auto_control("AUTO_RECONCILE", "independent-host-absence",
+            {"ctrl_id": "root", "project_id": "project:alpha", "reservation_id": reservation_id,
+             "failure_kind": "TURN_UNREACHABLE", "turn_started": True, "reachable": False},
+            now_ms=int(time.time() * 1000))
+        self.assertFalse(restarted.auto_command(release)["in_flight"])
+        self.assertEqual(len(host["sent"]), 1)
         restarted.store.set_auto("ctrl-2", "project:alpha", enabled=True, request_id="enable-two", now_ms=20)
         with self.assertRaises(console.ConsoleConflict):
-            restarted.store.claim_auto_dispatch(other, self._auto_generation(), now_ms=21)
-        self.assertTrue(restarted.store.claim_auto_dispatch(other, restarted._auto_generation(), now_ms=21)["claimed"])
+            restarted.store.claim_auto_dispatch(self._auto_decision("ctrl-2"), self._auto_generation(), now_ms=21)
+        self.assertTrue(restarted.store.claim_auto_dispatch(self._auto_decision("ctrl-2"), restarted._auto_generation(), now_ms=21)["claimed"])
 
     def test_auto_restart_terminal_read_releases_lease_without_second_turn_start(self) -> None:
-        self._confirm_root_ctrl()
-        def uncertain(*, retain_ids, **_kwargs):
-            retain_ids("thread-terminal", "turn-terminal", True)
-            return console.AutoBridgeResult(False, "thread-terminal", "turn-terminal", failure_kind="TRANSPORT_UNAVAILABLE", transient=True, turn_started=True)
-        first_bridge = SimpleNamespace(run=mock.Mock(side_effect=uncertain))
-        app = console.App(self.codex_home, self.config, auto_bridge=first_bridge)
-        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-terminal"})
-        projection = self._auto_projection()
-        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        app, host, _, _, authority, transport = self._native_auto_case(terminal=False)
         self.assertTrue(app.evaluate_auto_once(app._host_overview())["state"]["in_flight"])
-
-        read = mock.Mock(return_value=console.AutoBridgeResult(
-            True, "thread-terminal", "turn-terminal", "d" * 64,
-            turn_started=True, terminal=True, reachable=True,
-        ))
-        restarted = console.App(self.codex_home, self.config, auto_bridge=SimpleNamespace(reconcile=read))
-        restarted.progress_ledger = app.progress_ledger
+        host["turns"][0]["status"] = "completed"
+        fresh_transport = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=fresh_transport, auto_authorization=authority)
+        self.assertIsNot(restarted.progress_ledger, app.progress_ledger.ledger)
+        restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
+        restarted._auto_instruction = mock.Mock(side_effect=AssertionError("transient input must not be recovered"))
         result = restarted.evaluate_auto_once(restarted._host_overview())
         self.assertEqual(result["reason"], "RECONCILED")
         self.assertFalse(result["state"]["in_flight"])
-        read.assert_called_once()
-        self.assertEqual(first_bridge.run.call_count, 1)
+        self.assertFalse(result["work_completed"])
+        self.assertEqual(len(host["sent"]), 1)
 
     def test_auto_restart_with_submitted_thread_and_no_turn_id_reconciles_or_releases_once(self) -> None:
-        self._confirm_root_ctrl()
-        def uncertain(*, retain_ids, **_kwargs):
-            retain_ids("thread-submitted", "", True)
-            return console.AutoBridgeResult(
-                False, "thread-submitted", failure_kind="TRANSPORT_UNAVAILABLE",
-                transient=True, turn_started=True,
-            )
-        first_bridge = SimpleNamespace(run=mock.Mock(side_effect=uncertain))
-        app = console.App(self.codex_home, self.config, auto_bridge=first_bridge)
-        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-submitted"})
-        projection = self._auto_projection()
-        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        app, host, _, ledger, authority, transport = self._native_auto_case(uncertain=True)
         first = app.evaluate_auto_once(app._host_overview())
         self.assertTrue(first["state"]["in_flight"])
-        self.assertEqual((first["state"]["thread_id"], first["state"]["turn_id"]), ("thread-submitted", ""))
-
-        read = mock.Mock(return_value=console.AutoBridgeResult(
-            False, "thread-submitted", failure_kind="TURN_NOT_FOUND",
-            transient=True, turn_started=True, reachable=True,
-        ))
-        restarted = console.App(self.codex_home, self.config, auto_bridge=SimpleNamespace(reconcile=read))
-        restarted.progress_ledger = app.progress_ledger
+        self.assertEqual((first["state"]["thread_id"], first["state"]["turn_id"]), ("task", ""))
+        host["missing_input"] = True
+        fresh_transport = console.NativeCodexAppTaskTransport(transport.request, clock_ms=transport.clock_ms)
+        restarted = console.App(self.codex_home, self.config, task_transport=fresh_transport, auto_authorization=authority)
+        self.assertIsNot(restarted.progress_ledger, app.progress_ledger.ledger)
+        restarted.progress_ledger = type(app.progress_ledger)(restarted.progress_ledger)
         pending = restarted.evaluate_auto_once(restarted._host_overview())
-        self.assertEqual(pending["reason"], "UNREACHABLE_IN_FLIGHT")
-        read.assert_called_once()
-        self.assertEqual(
-            (read.call_args.kwargs["thread_id"], read.call_args.kwargs["turn_id"]),
-            ("thread-submitted", ""),
-        )
-        reservation_id = pending["state"]["reservation_id"]
-        released = restarted.auto_command({
-            "command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
-            "request_id": "release-submitted", "reservation_id": reservation_id,
-            "recovery_authority": "root", "release_condition": "thread read retained no created turn",
-        })
-        self.assertFalse(released["in_flight"])
-        self.assertEqual(first_bridge.run.call_count, 1)
+        self.assertEqual(pending["reason"], "APP_TASK_EVIDENCE_PENDING")
+        self.assertTrue(pending["state"]["in_flight"])
+        self.assertEqual(len(host["sent"]), 1)
+        with self.assertRaises(console.ConsoleConflict):
+            restarted.auto_command({"command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
+                "request_id": "release-unknown", "reservation_id": pending["state"]["reservation_id"],
+                "recovery_authority": "root", "release_condition": "missing input is not host absence"})
+        self.assertEqual([r["status"] for c in ledger.replay()["connector_receipts"].values() for r in c["receipts"]],
+                         ["COMMAND", "ACKNOWLEDGED"])
+        host["missing_input"] = False
+        done = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(done["reason"], "RECONCILED")
+        self.assertFalse(done["state"]["in_flight"])
+        self.assertEqual(len(host["sent"]), 1)
 
     def test_auto_health_setting_defaults_off_and_uses_canonical_validator(self) -> None:
         _, effective, _ = console.load_config(self.config)

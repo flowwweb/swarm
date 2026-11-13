@@ -442,6 +442,9 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(block["proof_receipt_ids"][:2],
                          [f"sha256:{digest}", f"runtime-review:{accepted.review_receipt_digest}"])
         self.assertEqual(block["latest_event_id"], "bound-accepted:task-accept:task-accept-block")
+        retained_event = next(json.loads(line)["event"] for line in retained.decode().splitlines()
+                              if json.loads(line)["event"].get("event_id") == "bound-accepted:task-accept:task-accept-block")
+        self.assertEqual(self.ledger.append(retained_event)["status"], "unchanged")
         again = self.host_ledger(self.root).append_runtime_block_acceptance(swarm=swarm, **request, observed_at_ms=99)
         self.assertEqual(again["status"], "unchanged")
         self.assertEqual(self.ledger._state.path.read_bytes(), retained)
@@ -689,6 +692,606 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(view["display_id"], "SWRM-1")
         wrong_view = Ledger(self.root).project_task_accounting("project-alpha", "wrong-ctrl", "cli-task", observed_after_ms=0, observed_before_ms=10)
         self.assertIsNone(wrong_view["display_id"])
+
+    def _rate_accept(self, ledger: Ledger, block: str, created: int, accepted: int, *, committed: int | None = None,
+                     scope_version: int = 1) -> None:
+        weight = committed or 0
+        for name, kind, state, stamp, admitted in (("created", "BLOCK_CREATED", "ACTIVE", created, 0),
+                ("review", "STATE_CHANGED", "REVIEW", created + 1, 0), ("verified", "PROOF_ADMITTED", "VERIFIED", created + 2, weight),
+                ("accepted", "ACCEPTED", "ACCEPTED", accepted, weight)):
+            ledger.append(self.event(f"{block}-{name}", block, kind=kind, lifecycle=state, observed_at_ms=stamp,
+                                     committed=committed, admitted=admitted, scope_version=scope_version))
+
+    def test_accepted_rate_reports_observed_counts_never_inferred_coverage_or_residence_efficiency(self) -> None:
+        self._rate_accept(self.ledger, "a", 1, 15, committed=5)
+        repeat = self.event("a-again", "a", kind="STATE_CHANGED", lifecycle="ACCEPTED", observed_at_ms=16, committed=5, admitted=5)
+        self.ledger.append(repeat)
+        self.assertEqual(self.ledger.append(repeat)["status"], "unchanged")
+        self._rate_accept(self.ledger, "b", 20, 35)  # Unweighted outcome still counts as one unit.
+        self.ledger.append(self.event("c-planned", "c", observed_at_ms=51))
+        before = {path: path.read_bytes() for path in (self.root / PROGRESS_LEDGER_PATH, self.root / PROGRESS_PROJECTION_PATH)}
+        result = self.ledger.project_accepted_progress_rate("project-alpha", observed_after_ms=1, observed_before_ms=71,
+                                                            as_of_ms=100, bucket_ms=10)
+        # Events at 1 and 51 bracket buckets 1-51, but that never proves continuous recording.
+        self.assertEqual({row["coverage"] for row in result["series"]}, {"UNKNOWN"})
+        self.assertTrue(all("NO_AUTHORITATIVE_COVERAGE" in row["reasons"] for row in result["series"]))
+        self.assertNotIn("COVERED", json.dumps(result))
+        self.assertEqual([row["observed"]["unbound"]["net"] for row in result["series"]], [0, 1, 0, 1, 0, 0, 0])
+        self.assertEqual([row["observed"]["verified"]["net"] for row in result["series"]], [None] * 7)
+        self.assertEqual((result["series"][1]["observed"]["unbound"]["net_weight"],
+                          result["series"][3]["observed"]["unbound"]["net_weight"]), (5, None))
+        self.assertEqual([row["event_id"] for row in result["outcomes"]], ["a-accepted", "b-accepted"])
+        self.assertEqual({row["acceptance_basis"] for row in result["outcomes"]}, {"LEDGER_ACCEPTED_STATE"})
+        self.assertEqual(result["coverage"]["state"], "UNKNOWN")
+        self.assertEqual(result["coverage"]["retained_event_span"], {"first_observed_at_ms": 1, "last_observed_at_ms": 51})
+        self.assertEqual((result["state"], result["reasons"]),
+                         ("PARTIAL", ["NO_AUTHORITATIVE_COVERAGE", "NO_AUTHORITATIVE_WORK_DURATION"]))
+        self.assertEqual((result["throughput"]["state"], result["throughput"]["verified_net_units_per_elapsed_hour"],
+                          result["throughput"]["verified_net_weight_per_elapsed_hour"]), ("UNKNOWN", None, None))
+        efficiency = result["efficiency"]
+        self.assertEqual((efficiency["state"], efficiency["verified_net_units_per_observed_work_hour"], efficiency["reasons"]),
+                         ("UNKNOWN", None, ["NO_AUTHORITATIVE_WORK_DURATION"]))
+        # Declared ACTIVE 1->2 and 20->21 stays separately labelled and is never a denominator.
+        self.assertEqual(result["declared_active_residence"]["ms"], 2)
+        self.assertIn("never an efficiency denominator", result["declared_active_residence"]["claim_limit"])
+        self.assertEqual(result["half_window_observed_counts"]["state"], "UNAVAILABLE")
+        self.assertEqual(Ledger(self.root).project_accepted_progress_rate("project-alpha", observed_after_ms=1,
+                         observed_before_ms=71, as_of_ms=100, bucket_ms=10), result)
+        for path, data in before.items():
+            self.assertEqual(path.read_bytes(), data)
+        empty = Ledger(self.root / "empty").project_accepted_progress_rate("project-alpha", observed_after_ms=0,
+                                                                             observed_before_ms=20, as_of_ms=20, bucket_ms=10)
+        self.assertEqual((empty["state"], empty["throughput"]["verified_net_units_per_elapsed_hour"], empty["efficiency"]["state"]),
+                         ("UNKNOWN", None, "UNKNOWN"))
+        self.assertEqual(empty["coverage"]["retained_event_span"], {"first_observed_at_ms": None, "last_observed_at_ms": None})
+        for bad in (dict(observed_before_ms=25), dict(observed_before_ms=1), dict(as_of_ms=50),
+                    dict(bucket_ms=1, observed_before_ms=200, as_of_ms=200)):
+            with self.subTest(bad=bad), self.assertRaises(ProgressEventError):
+                self.ledger.project_accepted_progress_rate("project-alpha", **{**dict(observed_after_ms=1,
+                    observed_before_ms=71, as_of_ms=100, bucket_ms=10), **bad})
+
+    def test_accepted_rate_nets_reversals_withdrawals_and_marks_scope_changes(self) -> None:
+        self._rate_accept(self.ledger, "w", 10, 13, committed=3)
+        self._rate_accept(self.ledger, "a", 14, 25, committed=2)
+        for name, kind, state, stamp, admitted in (("a-rework", "REWORK_REQUESTED", "INVALIDATED_REWORK", 35, 0),
+                ("a-resume", "STATE_CHANGED", "ACTIVE", 36, 0), ("a-review2", "STATE_CHANGED", "REVIEW", 38, 0),
+                ("a-verified2", "PROOF_ADMITTED", "VERIFIED", 39, 2), ("a-accepted2", "ACCEPTED", "ACCEPTED", 42, 2)):
+            self.ledger.append(self.event(name, "a", kind=kind, lifecycle=state, observed_at_ms=stamp, committed=2, admitted=admitted))
+        self.ledger.append(self.event("w-withdrawn", "w", kind="STATE_CHANGED", lifecycle="TOMBSTONED", observed_at_ms=48, committed=3, admitted=3))
+        self.ledger.append(self.event("w-scope", "w", kind="SCOPE_REVISED", lifecycle="TOMBSTONED", observed_at_ms=55,
+                                      committed=3, scope_version=2))
+        self.ledger.append(self.event("late", "late", observed_at_ms=70, scope_version=2))
+        result = self.ledger.project_accepted_progress_rate("project-alpha", observed_after_ms=10, observed_before_ms=70,
+                                                            as_of_ms=100, bucket_ms=10)
+        self.assertEqual([row["kind"] for row in result["outcomes"]], ["ACCEPTED", "ACCEPTED", "INVALIDATED", "ACCEPTED", "WITHDRAWN"])
+        unbound = [row["observed"]["unbound"] for row in result["series"]]
+        self.assertEqual([row["net"] for row in unbound], [1, 1, -1, 0, 0, 0])
+        self.assertEqual([row["net_weight"] for row in unbound], [3, 2, -2, -1, 0, 0])
+        self.assertEqual(result["observed_totals"]["unbound"],
+                         {"accepted": 3, "invalidated": 1, "withdrawn": 1, "net": 1, "net_weight": 2, "unweighted": 0})
+        self.assertIsNone(result["observed_totals"]["verified"]["net"])
+        self.assertEqual((result["throughput"]["state"], result["throughput"]["verified_net_units_per_elapsed_hour"]), ("UNKNOWN", None))
+        self.assertEqual([change["event_id"] for change in result["scope_changes"]], ["w-scope"])
+        self.assertEqual([row["scope_changed"] for row in result["series"]], [False, False, False, False, True, False])
+        self.assertEqual(result["sustained_degradation"]["state"], "UNKNOWN")
+        # Declared ACTIVE residence: w 10->11, a 14->15 and the rework resume 36->38; still not work time.
+        self.assertEqual((result["efficiency"]["state"], result["declared_active_residence"]["ms"]), ("UNKNOWN", 4))
+
+    def test_accepted_rate_half_split_is_labelled_counts_and_sustained_degradation_stays_unknown(self) -> None:
+        self._rate_accept(self.ledger, "p", 10, 15)
+        self._rate_accept(self.ledger, "q", 16, 25)
+        self._rate_accept(self.ledger, "r", 26, 35)
+        self.ledger.append(self.event("s", "s", observed_at_ms=50))
+        result = self.ledger.project_accepted_progress_rate("project-alpha", observed_after_ms=10, observed_before_ms=50,
+                                                            as_of_ms=60, bucket_ms=10)
+        split = result["half_window_observed_counts"]
+        self.assertEqual((split["label"], split["state"], split["split_at_ms"]),
+                         ("OBSERVED_COUNT_SPLIT_NOT_RATE_OR_DEGRADATION", "OBSERVED_COUNTS_ONLY", 30))
+        self.assertEqual((split["earlier"]["unbound"]["net"], split["later"]["unbound"]["net"]), (2, 1))
+        self.assertFalse(any("ratio" in key for key in split))
+        self.assertEqual(result["sustained_degradation"]["reasons"],
+                         ["NO_AUTHORITATIVE_COVERAGE", "REPEATED_WINDOW_CRITERIA_UNDEFINED"])
+        self.assertNotIn("degradation", result)  # No half-window ratio is presented as degradation.
+        skewed = Ledger(self.root / "skewed")
+        skewed.append(self.event("y", "y", observed_at_ms=40))
+        self._rate_accept(skewed, "x", 10, 22)  # Written after y's later observation: provenance is out of order.
+        skewed.append(self.event("future", "z", observed_at_ms=500))
+        result = skewed.project_accepted_progress_rate("project-alpha", observed_after_ms=10, observed_before_ms=50,
+                                                       as_of_ms=100, bucket_ms=10)
+        self.assertEqual(result["outcomes"][0]["timestamp_status"], "OUT_OF_ORDER")
+        bucket = result["series"][1]  # The skewed outcome is listed and excluded, never counted in its bucket.
+        self.assertEqual((bucket["reasons"], bucket["excluded_event_seqs"], bucket["observed"]["unbound"]["accepted"]),
+                         (["NO_AUTHORITATIVE_COVERAGE", "OUT_OF_ORDER_TIMESTAMP"], [result["outcomes"][0]["event_seq"]], 0))
+        self.assertEqual((result["observed_totals"]["unbound"]["accepted"], result["unplaced"]["unbound"]["accepted"]), (0, 1))
+        self.assertEqual(result["coverage"]["retained_event_span"]["last_observed_at_ms"], 40)
+        self.assertTrue({"TIMESTAMP_AFTER_AS_OF", "OUT_OF_ORDER_TIMESTAMP"} <= set(result["reasons"]))
+
+    def test_velocity_windows_share_one_replay_and_match_individual_reads(self) -> None:
+        from unittest import mock
+        as_of = 200 * 24 * 60 * 60 * 1000 + 123456
+        expected = {str(days): self.ledger.project_velocity("project-alpha", days=days, as_of_ms=as_of) for days in (7, 30, 90)}
+        with mock.patch.object(self.ledger, "_replay_unlocked", wraps=self.ledger._replay_unlocked) as replay:
+            actual = self.ledger.project_velocity_windows("project-alpha", as_of_ms=as_of)
+        self.assertEqual(replay.call_count, 1)
+        self.assertEqual(actual, expected)
+        self.assertEqual(len({str(item["cursor"]) for item in actual.values()}), 1)
+
+    def test_velocity_clock_regression_reports_diagnostic(self) -> None:
+        day = 24 * 60 * 60 * 1000
+        self._bound_task("clock-create", "clock-task")
+        rev = self.ledger.replay()["cursor"]["event_seq"]
+        with mock.patch("skills.swarm.runtime.progress_events.time.time", return_value=(13 * day) / 1000):
+            self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=rev)
+        self.ledger.append(self.event("clock-regression", "clock-block", observed_at_ms=12 * day))
+        result = self.ledger.project_velocity("project-alpha", days=7, as_of_ms=21 * day)
+        self.assertEqual(result["diagnostic"], "VELOCITY_CLOCK_REGRESSION")
+        self.assertTrue(all(point["rate"] is None for point in result["current"]))
+
+    def test_velocity_metadata_is_atomic_cursor_bound_and_restart_safe(self) -> None:
+        self._bound_task("velocity-meta-create", "velocity-meta-task")
+        rev = self.ledger.replay()["cursor"]["event_seq"]
+        before = self.ledger._state.path.read_bytes()
+        metadata = self.ledger._state.path.with_name("velocity-metadata.json")
+        with mock.patch("skills.swarm.runtime.progress_events.os.replace", side_effect=OSError("rename failed")):
+            with self.assertRaisesRegex(ProgressEventError, "velocity metadata could not be saved"):
+                self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=rev)
+        self.assertFalse(metadata.exists())
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        self.assertFalse(list(metadata.parent.glob(".velocity-*")))
+        first = self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=rev)
+        saved = metadata.read_bytes()
+        self.assertEqual(self.host_ledger(self.root).start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=0)["start"], first["start"])
+        self.assertEqual(metadata.read_bytes(), saved)
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        for invalid in (b"{", b"{}", b'{"schema_version":2,"projects":{}}'):
+            metadata.write_bytes(invalid)
+            with self.assertRaisesRegex(ProgressEventError, "corrupt or incompatible"):
+                self.host_ledger(self.root).start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=rev)
+        document = json.loads(saved)
+        document["projects"]["project-alpha"]["event_digest"] = "replaced-ledger"
+        metadata.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaisesRegex(ProgressEventError, "corrupt or incompatible"):
+            self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=rev)
+        metadata.write_bytes(saved)
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+
+    def test_velocity_receipt_failure_preserves_acceptance_and_retry_recovers(self) -> None:
+        from skills.swarm.runtime.progress_events import VelocityMetadataError
+        day = 24 * 60 * 60 * 1000
+        manifest = self._bound_task("velocity-interrupted-create", "velocity-interrupted-task")
+        block = manifest["blocks"][0]["block_id"]
+        rev = self.ledger.replay()["cursor"]["event_seq"]
+        with mock.patch("skills.swarm.runtime.progress_events.time.time", return_value=(13 * day + 1000) / 1000):
+            self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=rev)
+        request = dict(project_id="project-alpha", task_id="velocity-interrupted-task", block_id=block,
+                       manifest_digest=manifest["manifest_digest"])
+        path, digest = self._work_file("velocity-interrupted.md", b"reviewed\n")
+        self.ledger.append_bound_block_evidence(**request, expected_event_seq=rev, evidence_path=path,
+                                                expected_sha256=digest, observed_at_ms=15 * day + 1)
+        swarm = self._accepted_lane("velocity-interrupted-task", "velocity-interrupted.md")
+        rev = self.ledger.replay()["cursor"]["event_seq"]
+        with mock.patch.object(self.ledger, "_write_velocity_metadata_unlocked", side_effect=VelocityMetadataError("write failed")):
+            accepted = self.ledger.append_runtime_block_acceptance(swarm=swarm, **request,
+                                      expected_event_seq=rev, observed_at_ms=15 * day + 2)
+        self.assertEqual(accepted["status"], "appended")
+        self.assertEqual(self.ledger.replay()["blocks"]["project-alpha:" + block]["lifecycle_state"], "ACCEPTED")
+        before = self.ledger._state.path.read_bytes()
+        gap = self.ledger.project_velocity("project-alpha", days=7, as_of_ms=21 * day)
+        self.assertIsNone(gap["current"][1]["rate"])
+        retry = self.ledger.append_runtime_block_acceptance(swarm=swarm, **request, expected_event_seq=rev,
+                                                             observed_at_ms=15 * day + 3)
+        self.assertEqual(retry["status"], "unchanged")
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+        self.assertEqual(self.host_ledger(self.root).project_velocity("project-alpha", days=7,
+                          as_of_ms=21 * day)["current"][1]["rate"], 1 / 24)
+
+    def test_velocity_current_day_uses_only_covered_elapsed_time(self) -> None:
+        hour = 3_600_000
+        day = 24 * hour
+        today = 200 * day
+        start = today + 10 * hour
+        manifest = self._bound_task("partial-velocity-create", "partial-velocity-task")
+        block = manifest["blocks"][0]["block_id"]
+        request = dict(project_id="project-alpha", task_id="partial-velocity-task", block_id=block,
+                       manifest_digest=manifest["manifest_digest"])
+        rev = self.ledger.replay()["cursor"]["event_seq"]
+        with mock.patch("skills.swarm.runtime.progress_events.time.time", return_value=start / 1000):
+            self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=rev)
+        at_start = self.ledger.project_velocity("project-alpha", days=7, as_of_ms=start)
+        self.assertIsNone(at_start["current"][-1]["rate"])
+        path, digest = self._work_file("partial-velocity.md", b"reviewed\n")
+        self.ledger.append_bound_block_evidence(**request, expected_event_seq=rev, evidence_path=path,
+                                                expected_sha256=digest, observed_at_ms=start + hour)
+        swarm = self._accepted_lane("partial-velocity-task", "partial-velocity.md")
+        self.ledger.append_runtime_block_acceptance(swarm=swarm, **request,
+            expected_event_seq=self.ledger.replay()["cursor"]["event_seq"], observed_at_ms=start + 2 * hour)
+        result = self.host_ledger(self.root).project_velocity("project-alpha", days=7, as_of_ms=start + 3 * hour)
+        point = result["current"][-1]
+        self.assertEqual((point["start_ms"], point["end_ms"], point["observed_start_ms"], point["observed_end_ms"]),
+                         (today, today + day, start, start + 3 * hour))
+        self.assertEqual(point["rate"], 1 / 3)
+        self.assertIsNone(result["previous"][-1]["rate"])
+        previous = result["previous"][-1]
+        self.assertEqual(previous["observed_end_ms"] - previous["observed_start_ms"], 3 * hour)
+        self.assertEqual(previous["observed_start_ms"], start - 7 * day)
+        self.assertTrue(all(item["rate"] is None for item in result["current"][:-1] + result["previous"]))
+
+    def test_velocity_start_preserves_legacy_acceptance_retry(self) -> None:
+        manifest = self._bound_task("legacy-velocity-create", "legacy-velocity-task")
+        block = manifest["blocks"][0]["block_id"]
+        path, digest = self._work_file("legacy-velocity.md", b"legacy evidence\n")
+        request = dict(project_id="project-alpha", task_id="legacy-velocity-task", block_id=block,
+                       manifest_digest=manifest["manifest_digest"])
+        self.ledger.append_bound_block_evidence(**request, expected_event_seq=self.ledger.replay()["cursor"]["event_seq"],
+                                                evidence_path=path, expected_sha256=digest, observed_at_ms=10)
+        swarm = self._accepted_lane("legacy-velocity-task", "legacy-velocity.md")
+        rev = self.ledger.replay()["cursor"]["event_seq"]
+        self.ledger.append_runtime_block_acceptance(swarm=swarm, **request, expected_event_seq=rev, observed_at_ms=20)
+        self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=self.ledger.replay()["cursor"]["event_seq"])
+        before = self.ledger._state.path.read_bytes()
+        self.assertEqual(self.ledger.append_runtime_block_acceptance(swarm=swarm, **request, expected_event_seq=rev, observed_at_ms=30)["status"], "unchanged")
+        self.assertEqual(self.ledger._state.path.read_bytes(), before)
+
+    def test_velocity_records_runtime_acceptance_after_project_start(self) -> None:
+        day = 24 * 60 * 60 * 1000
+        manifest = self._bound_task("velocity-create", "velocity-task")
+        block = manifest["blocks"][0]["block_id"]
+        rev = self.ledger.replay()["cursor"]["event_seq"]
+        with self.assertRaisesRegex(ProgressEventError, "ledger changed"):
+            self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=rev - 1)
+        with mock.patch("skills.swarm.runtime.progress_events.time.time", return_value=(13 * day + 1000) / 1000):
+            start = self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=rev)
+        self.assertEqual(start["status"], "appended")
+        self.assertEqual(self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=0)["status"], "unchanged")
+        request = dict(project_id="project-alpha", task_id="velocity-task", block_id=block,
+                       manifest_digest=manifest["manifest_digest"])
+        path, digest = self._work_file("velocity.md", b"velocity evidence\n")
+        self.ledger.append_bound_block_evidence(**request, expected_event_seq=self.ledger.replay()["cursor"]["event_seq"],
+                                                evidence_path=path, expected_sha256=digest, observed_at_ms=15 * day + 1)
+        swarm = self._accepted_lane("velocity-task", "velocity.md")
+        self.ledger.append_runtime_block_acceptance(swarm=swarm, **request,
+                       expected_event_seq=self.ledger.replay()["cursor"]["event_seq"], observed_at_ms=15 * day + 2)
+        result = self.host_ledger(self.root).project_velocity("project-alpha", days=7, as_of_ms=21 * day)
+        self.assertEqual(result["previous"][-1]["rate"], None)
+        self.assertEqual(result["current"][0]["rate"], 0)
+        self.assertEqual(result["current"][1]["rate"], 1 / 24)
+        self.assertEqual(result["current"][2]["rate"], 0)
+        accepted = next(json.loads(line)["event"] for line in self.ledger._state.path.read_text().splitlines()
+                        if json.loads(line)["event"].get("event_id") == f"bound-accepted:velocity-task:{block}")
+        self.ledger.append({**accepted, "event_id": "velocity-rework", "dedupe_key": "velocity-rework",
+                            "event_kind": "REWORK_REQUESTED", "lifecycle_state": "INVALIDATED_REWORK",
+                            "observed_at_ms": 16 * day + 1, "parent_event_id": accepted["event_id"]})
+        second, second_digest = self._work_file("velocity-rework.md", b"reworked velocity evidence\n")
+        self.ledger.append_bound_block_evidence(**request, attempt=2, expected_event_seq=self.ledger.replay()["cursor"]["event_seq"],
+                                                evidence_path=second, expected_sha256=second_digest, observed_at_ms=17 * day + 1)
+        second_swarm = self._accepted_lane("velocity-task", "velocity-rework.md")
+        self.ledger.append_runtime_block_acceptance(swarm=second_swarm, **request, attempt=2,
+                       expected_event_seq=self.ledger.replay()["cursor"]["event_seq"], observed_at_ms=17 * day + 2)
+        result = self.host_ledger(self.root).project_velocity("project-alpha", days=7, as_of_ms=21 * day)
+        self.assertEqual([point["rate"] for point in result["current"][1:4]], [1 / 24, -1 / 24, 1 / 24])
+        metadata = self.ledger._state.path.with_name("velocity-metadata.json")
+        saved_metadata = metadata.read_bytes()
+        corrupted_receipt = json.loads(saved_metadata)
+        next(iter(corrupted_receipt["receipts"].values()))["event_digest"] = "replaced-ledger"
+        metadata.write_text(json.dumps(corrupted_receipt), encoding="utf-8")
+        mismatched = self.ledger.project_velocity("project-alpha", days=7, as_of_ms=21 * day + 1)
+        self.assertEqual(mismatched["diagnostic"], "VELOCITY_METADATA_CORRUPT_OR_INCOMPATIBLE")
+        self.assertTrue(all(point["rate"] is None for point in mismatched["current"]))
+        metadata.write_text("{broken", encoding="utf-8")
+        damaged = self.ledger.project_velocity("project-alpha", days=7, as_of_ms=21 * day + 1)
+        self.assertEqual(damaged["diagnostic"], "VELOCITY_METADATA_CORRUPT_OR_INCOMPATIBLE")
+        self.assertTrue(all(point["rate"] is None for point in damaged["current"] + damaged["previous"]))
+        self.assertEqual(metadata.read_text(encoding="utf-8"), "{broken")
+        metadata.unlink()
+        unknown = self.ledger.project_velocity("project-alpha", days=7, as_of_ms=21 * day + 1)
+        self.assertTrue(all(point["rate"] is None for point in unknown["current"]))
+        with self.assertRaisesRegex(ProgressEventError, "metadata is missing"):
+            self.ledger.start_velocity_instrumentation(project_id="project-alpha", expected_event_seq=self.ledger.replay()["cursor"]["event_seq"])
+
+    def test_velocity_bucket_arithmetic_requires_coverage_and_proven_acceptance(self) -> None:
+        day = 24 * 3_600_000
+        def event(event_id, kind, at, acceptance):
+            return {"event_id": event_id, "kind": kind, "observed_at_ms": at,
+                    "timestamp_status": "ORDERED", "linkage": {"state": "LINKED", "acceptance_event_id": acceptance}}
+        buckets = [{"start_ms": n * day, "end_ms": (n + 1) * day, "scope_changed": False,
+                    "excluded_event_seqs": []} for n in range(4)]
+        accepted = event("accepted-1", "ACCEPTED", 1, "accepted-1")
+        reversed_event = event("reverse-1", "INVALIDATED", day + 1, "accepted-1")
+        reaccepted = event("accepted-2", "ACCEPTED", day + 2, "accepted-2")
+        projection = {"series": buckets, "outcomes": [accepted, accepted, reversed_event, reaccepted]}
+        points = self.ledger._velocity_points(projection, covered_starts=frozenset({0, day, 2 * day}),
+                                             accepted_event_ids=frozenset({"accepted-1", "accepted-2"}))
+        self.assertEqual([point["rate"] for point in points], [1 / 24, 0, 0, None])
+        # Missing coverage or acceptance evidence remains a gap; scope changes remain visible.
+        self.assertIsNone(self.ledger._velocity_points(projection, covered_starts=frozenset({0}),
+                                                       accepted_event_ids=frozenset())[0]["rate"])
+        buckets[0]["scope_changed"] = True
+        self.assertEqual(self.ledger._velocity_points(projection, covered_starts=frozenset({0}),
+                                                       accepted_event_ids=frozenset({"accepted-1"}))[0]["rate"], 1 / 24)
+
+    def test_velocity_daily_comparison_is_null_without_authoritative_coverage(self) -> None:
+        self.ledger.append(self.event("ordinary", "ordinary-block"))
+        before = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        day = 24 * 3_600_000
+        for days in (7, 30, 90):
+            result = self.ledger.project_velocity("project-alpha", days=days, as_of_ms=200 * day + 1)
+            self.assertEqual((result["unit"], result["days"], result["timezone"]), ("blk / h", days, "UTC"))
+            self.assertEqual((len(result["current"]), len(result["previous"])), (days, days))
+            self.assertTrue(all(point["rate"] is None for point in result["current"] + result["previous"]))
+            self.assertEqual(result["previous"][-1]["end_ms"], result["current"][0]["start_ms"])
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
+        with self.assertRaises(ProgressEventError):
+            self.ledger.project_velocity("project-alpha", days=14, as_of_ms=200 * day)
+        from unittest.mock import patch
+        empty = {"series": [], "cursor": {"event_seq": 1}}
+        with patch.object(self.ledger, "project_accepted_progress_rate", side_effect=[empty, {**empty, "cursor": {"event_seq": 2}}]):
+            with self.assertRaisesRegex(ProgressEventError, "changed during Velocity comparison"):
+                self.ledger.project_velocity("project-alpha", days=7, as_of_ms=200 * day)
+
+    def test_velocity_cli_exposes_read_only_daily_gaps(self) -> None:
+        import subprocess
+        import sys
+        self.ledger.append(self.event("ordinary", "ordinary-block"))
+        before = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        script = Path(__file__).parents[1] / "scripts" / "swarm_progress.py"
+        completed = subprocess.run([sys.executable, "-B", str(script), "--velocity", "--ledger-root", str(self.root),
+            "--project-id", "project-alpha", "--days", "7", "--as-of-ms", str(200 * 24 * 3_600_000)],
+            input="", text=True, capture_output=True, check=True)
+        output = json.loads(completed.stdout)
+        self.assertEqual((output["unit"], len(output["current"])), ("blk / h", 7))
+        self.assertTrue(all(item["rate"] is None for item in output["current"]))
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
+
+    def test_generic_append_rejects_bound_lifecycle_regardless_of_declared_identity(self) -> None:
+        manifest = self._bound_task("guard-create", "guard-task")
+        block = manifest["blocks"][0]
+        before = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        for kind, state in (("BLOCK_CREATED", "ACTIVE"), ("STATE_CHANGED", "REVIEW"),
+                            ("PROOF_ADMITTED", "VERIFIED"), ("ACCEPTED", "ACCEPTED")):
+            event = self.event("ordinary-id-" + state, block["block_id"], task_id="guard-task", kind=kind, lifecycle=state)
+            event["source"] = "swarm_runtime"
+            event["provenance"] = "ordinary wording"
+            with self.subTest(state=state), self.assertRaisesRegex(ProgressEventError, "runtime-controlled writer"):
+                self.ledger.append(event)
+        for kind, lineage in (("BLOCK_SPLIT", {"split_from": "other"}), ("BLOCK_MERGED", {"merged_from": ["other", "other-two"]})):
+            event = self.event("ordinary-" + kind, block["block_id"], task_id="guard-task", kind=kind, lifecycle="ACTIVE", **lineage)
+            with self.subTest(kind=kind), self.assertRaisesRegex(ProgressEventError, "runtime-controlled writer"):
+                self.ledger.append(event)
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
+        path, digest = self._work_file("guard.md", b"real evidence\n")
+        self.assertEqual(self.ledger.append_bound_block_evidence(**self._evidence_request(manifest, path, digest))["status"], "appended")
+        event = self.event("after-evidence-split", block["block_id"], task_id="guard-task",
+                           kind="BLOCK_SPLIT", lifecycle="ACTIVE", split_from="other")
+        with self.assertRaisesRegex(ProgressEventError, "runtime-controlled writer"):
+            self.ledger.append(event)
+        self.assertEqual(self.ledger.append(self.event("normal", "other", task_id="unbound"))["status"], "appended")
+
+    def test_accepted_rate_keeps_reconstructed_chain_separate_from_unbound_state(self) -> None:
+        one, _ = self._ticket_execution_setup()
+        block = one["blocks"][0]["block_id"]
+        self._bind(one, block)
+        self._accept_bound_block(one, block, "rate-bound")
+        self._rate_accept(self.ledger, "plain", 21, 24)  # Plain ACCEPTED state, never verified.
+        projection = self.ledger.replay()
+        status = Ledger.ticket_execution_status(projection, "project-alpha", "ticket-a")
+        self.assertTrue(status["completed"])
+        retained = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        window = dict(observed_after_ms=10, observed_before_ms=30, as_of_ms=1000, bucket_ms=10)
+        result = self.ledger.project_accepted_progress_rate("project-alpha", **window)
+        self.assertEqual([(row["event_id"], row["acceptance_basis"], row["display_id"]) for row in result["outcomes"]],
+                         [(f"bound-accepted:task-one:{block}", "RECONSTRUCTED_BOUND_CHAIN", "SWRM-1"),
+                          ("plain-accepted", "LEDGER_ACCEPTED_STATE", None)])
+        self.assertEqual((result["verified_basis"], result["observed_totals"]["verified"]["net"],
+                          result["observed_totals"]["unbound"]["net"]), ("AUTHENTICATED_ACCEPTANCE_UNAVAILABLE", None, 1))
+        self.assertEqual(result["series"][1]["observed"]["reconstructed"]["accepted"], 1)
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), retained)
+        self.assertEqual(Ledger.ticket_execution_status(self.ledger.replay(), "project-alpha", "ticket-a"), status)
+        # A later plain rework debits the reconstructed chain, not the unbound tally.
+        accepted = json.loads(retained.decode().splitlines()[-5])["event"]
+        self.assertEqual(accepted["event_id"], f"bound-accepted:task-one:{block}")
+        rework = {**accepted, "event_id": "bound-rework", "dedupe_key": "bound-rework", "event_kind": "REWORK_REQUESTED",
+                  "lifecycle_state": "INVALIDATED_REWORK", "observed_at_ms": 26, "parent_event_id": accepted["event_id"],
+                  "provenance": "typed owner material boundary"}
+        self.ledger.append(rework)
+        reversed_result = self.ledger.project_accepted_progress_rate("project-alpha", **window)
+        self.assertEqual(reversed_result["outcomes"][-1]["acceptance_basis"], "RECONSTRUCTED_BOUND_CHAIN")
+        self.assertEqual({basis: reversed_result["observed_totals"][basis]["net"] for basis in ("verified", "unbound")},
+                         {"verified": None, "unbound": 1})
+        self.assertEqual(reversed_result["observed_totals"]["reconstructed"]["invalidated"], 1)
+
+    def test_bound_rework_attempt_is_linked_and_retryable(self) -> None:
+        manifest = self._bound_task("create-rework", "task-rework")
+        block = manifest["blocks"][0]["block_id"]
+        first_path, first_digest = self._work_file("first.md", b"first evidence\n")
+        first = dict(project_id="project-alpha", task_id="task-rework", block_id=block,
+                     manifest_digest=manifest["manifest_digest"])
+        self.ledger.append_bound_block_evidence(**first, expected_event_seq=self.ledger.replay()["cursor"]["event_seq"],
+                                                evidence_path=first_path, expected_sha256=first_digest, observed_at_ms=10)
+        old_swarm = self._accepted_lane("task-rework", "first.md")
+        self.ledger.append_runtime_block_acceptance(swarm=old_swarm, **first,
+                       expected_event_seq=self.ledger.replay()["cursor"]["event_seq"], observed_at_ms=20)
+        records = [json.loads(line)["event"] for line in self.ledger._state.path.read_text().splitlines()]
+        accepted = next(row for row in records if row.get("event_id") == f"bound-accepted:task-rework:{block}")
+        self.ledger.append({**accepted, "event_id": "rework-once", "dedupe_key": "rework-once",
+                            "event_kind": "REWORK_REQUESTED", "lifecycle_state": "INVALIDATED_REWORK",
+                            "observed_at_ms": 25, "parent_event_id": accepted["event_id"]})
+        path, digest = self._work_file("second.md", b"revised evidence\n")
+        request = dict(project_id="project-alpha", task_id="task-rework", block_id=block,
+                       manifest_digest=manifest["manifest_digest"], attempt=2)
+        rev = self.ledger.replay()["cursor"]["event_seq"]
+        evidence = self.ledger.append_bound_block_evidence(**request, expected_event_seq=rev,
+                      evidence_path=path, expected_sha256=digest, observed_at_ms=30)
+        self.assertEqual(evidence["status"], "appended")
+        self.assertEqual(self.ledger.append_bound_block_evidence(**request, expected_event_seq=rev,
+                         evidence_path=path, expected_sha256=digest, observed_at_ms=31)["status"], "unchanged")
+        with self.assertRaisesRegex(ProgressEventError, "fresh runtime review"):
+            self.ledger.append_runtime_block_acceptance(swarm=old_swarm, **request,
+                                                        expected_event_seq=self.ledger.replay()["cursor"]["event_seq"])
+        swarm = self._accepted_lane("task-rework", "second.md")
+        rev = self.ledger.replay()["cursor"]["event_seq"]
+        result = self.ledger.append_runtime_block_acceptance(swarm=swarm, **request, expected_event_seq=rev, observed_at_ms=40)
+        self.assertEqual(result["status"], "appended")
+        self.assertEqual(self.ledger.append_runtime_block_acceptance(swarm=swarm, **request, expected_event_seq=rev,
+                         observed_at_ms=41)["status"], "unchanged")
+        self.assertEqual(self.ledger.append_bound_block_evidence(**request, expected_event_seq=0,
+                         evidence_path=path, expected_sha256=digest, observed_at_ms=42)["status"], "unchanged")
+        with self.assertRaisesRegex(ProgressEventError, "stale bound block attempt"):
+            self.ledger.append_runtime_block_acceptance(swarm=swarm, **{**request, "attempt": 1}, expected_event_seq=rev)
+        with self.assertRaisesRegex(ProgressEventError, "stale bound block attempt"):
+            self.ledger.append_bound_block_evidence(**{**request, "attempt": 1}, expected_event_seq=rev,
+                                                    evidence_path=path, expected_sha256=digest)
+        projection = self.ledger.project_accepted_progress_rate("project-alpha", observed_after_ms=10,
+                     observed_before_ms=50, as_of_ms=100, bucket_ms=10)
+        self.assertEqual([row["kind"] for row in projection["outcomes"]], ["ACCEPTED", "INVALIDATED", "ACCEPTED"])
+        self.assertTrue(all(row["linkage"]["state"] == "LINKED" for row in projection["outcomes"]))
+
+    def test_accepted_rate_self_declared_bound_strings_without_binding_stay_unbound(self) -> None:
+        for name, kind, state, stamp in (("b-created", "BLOCK_CREATED", "ACTIVE", 11), ("b-review", "STATE_CHANGED", "REVIEW", 12),
+                                         ("b-verified", "PROOF_ADMITTED", "VERIFIED", 13)):
+            self.ledger.append(self.event(name, "b", task_id="task-b", kind=kind, lifecycle=state, observed_at_ms=stamp))
+        spoof = self.event("bound-accepted:task-b:b", "b", task_id="task-b", kind="ACCEPTED", lifecycle="ACCEPTED", observed_at_ms=14)
+        self.ledger.append({**spoof, "provenance": "bound-task-lifecycle:fake", "source": "swarm_runtime"})
+        self.assertEqual(self.ledger.replay()["task_creation_bindings"], {})
+        window = dict(observed_after_ms=10, observed_before_ms=30, as_of_ms=100, bucket_ms=10)
+        result = self.ledger.project_accepted_progress_rate("project-alpha", **window)
+        (row,) = result["outcomes"]
+        self.assertEqual((row["acceptance_basis"], row["linkage"]["state"], row["linkage"]["reason"], row["linkage"]["operation_id"]),
+                         ("LEDGER_ACCEPTED_STATE", "UNSUPPORTED_BOUND_CLAIM", "NO_TASK_CREATION_BINDING", None))
+        self.assertEqual((result["observed_totals"]["verified"]["accepted"], result["observed_totals"]["unbound"]["accepted"]), (None, 1))
+        self.assertIn("UNSUPPORTED_BOUND_CLAIM", result["reasons"])
+        # Reversing the spoof debits the unbound tally it was credited to, never the verified one.
+        self.ledger.append({**spoof, "event_id": "b-rework", "dedupe_key": "b-rework", "event_kind": "REWORK_REQUESTED",
+                            "lifecycle_state": "INVALIDATED_REWORK", "observed_at_ms": 15, "parent_event_id": spoof["event_id"]})
+        reversed_result = self.host_ledger(self.root).project_accepted_progress_rate("project-alpha", **window)
+        self.assertEqual({basis: (reversed_result["observed_totals"][basis]["invalidated"], reversed_result["observed_totals"][basis]["net"])
+                          for basis in ("verified", "unbound")}, {"verified": (None, None), "unbound": (1, 0)})
+
+    def _forged_bound_chain(self, manifest: dict, block: dict, *, project_id: str = "project-alpha", task_id: str | None = None,
+                            attempt: int = 1, forge_step: str | None = None, start: int = 11) -> str:
+        """Hand-written generic appends shaped like the bound writer, without its runtime review."""
+        from skills.swarm.runtime import progress_events as runtime_events
+        task_id = task_id or manifest["task_id"]
+        p = self.ledger.replay()
+        operation = p["task_creation_operations_by_task"].get(manifest["task_id"])
+        created = next(item["receipt_id"] for item in p["task_creation_bindings"][operation]["receipts"]["block_receipts"]
+                       if item["id"] == manifest["blocks"][0]["block_id"])
+        evidence, review = "sha256:" + "1" * 64, "runtime-review:" + "2" * 64
+        proofs = ([evidence], [evidence, review], [evidence, review, "runtime-artifact:" + "3" * 64], None)
+        parent = operation
+        for offset, (name, kind, lifecycle, admit, claim_limit) in enumerate(runtime_events._BOUND_LIFECYCLE_STEPS):
+            event_id = f"bound-{name}:{task_id}:{block['block_id']}"
+            payload = runtime_events._bound_block_payload(
+                event_id=event_id, kind=kind, lifecycle=lifecycle, project_id=project_id, task_id=task_id, manifest=manifest,
+                block=block, created=created, operation_id=operation, scope_version=1, admit=admit,
+                proof_receipt_ids=proofs[offset] or proofs[2], claim_limit=claim_limit, observed_at_ms=start + offset,
+                parent_event_id=parent if project_id == "project-alpha" else None)
+            payload["rework"]["attempt"] = attempt
+            if name == forge_step:
+                payload["custody"]["receipt_id"] = "forged-custody"
+            # Simulate a historical record from before the generic-writer guard.
+            with self.ledger._state.locked():
+                projection, records = self.ledger._replay_unlocked()
+                self.ledger._append_material_batch_unlocked(projection, records, (runtime_events.validate_progress_material_event(payload),))
+            parent = event_id
+        return parent
+
+    def test_historical_forged_bound_chain_is_reconstructed_not_authenticated(self) -> None:
+        manifest = self._bound_task("legacy-create", "legacy-task", weight=4)
+        self._forged_bound_chain(manifest, manifest["blocks"][0])
+        restarted = self.host_ledger(self.root)
+        result = restarted.project_accepted_progress_rate("project-alpha", observed_after_ms=10,
+            observed_before_ms=30, as_of_ms=1000, bucket_ms=10)
+        self.assertIsNone(result["observed_totals"]["verified"]["accepted"])
+        self.assertEqual(result["observed_totals"]["reconstructed"]["accepted"], 1)
+        self.assertEqual(result["outcomes"][0]["acceptance_basis"], "RECONSTRUCTED_BOUND_CHAIN")
+
+    def test_accepted_rate_reconstructs_retained_bound_linkage_not_declared_strings(self) -> None:
+        from skills.swarm.runtime import progress_events as runtime_events
+        one = self._bound_task("create-one", "task-one", block_count=2)
+        two = self._bound_task("create-two", "task-two", block_count=2)
+        three = self._bound_task("create-three", "task-three", weight=4)
+        invented = {**one["blocks"][0], "block_id": "invented-block"}
+        cases = {
+            self._forged_bound_chain(one, one["blocks"][0], attempt=2): "ATTEMPT_UNSUPPORTED",
+            self._forged_bound_chain(two, one["blocks"][1], task_id="task-two"): "BLOCK_NOT_BOUND",  # Block of another task.
+            self._forged_bound_chain(one, invented): "BLOCK_NOT_BOUND",
+            self._forged_bound_chain(two, two["blocks"][0], forge_step="accepted"): "TRANSITION_MISMATCH",
+            self._forged_bound_chain(two, two["blocks"][1], forge_step="evidence"): "LIFECYCLE_CHAIN_UNLINKED",
+        }
+        beta = self._forged_bound_chain(one, one["blocks"][1], project_id="project-beta")  # Event ids are Ledger-global.
+        request = {"project_id": "project-alpha", "task_id": "task-three", "block_id": three["blocks"][0]["block_id"],
+                   "manifest_digest": three["manifest_digest"]}
+        path, digest = self._work_file("three.md", b"three accepted\n")
+        self.ledger.append_bound_block_evidence(**request, expected_event_seq=self.ledger.replay()["cursor"]["event_seq"],
+                                                evidence_path=path, expected_sha256=digest, observed_at_ms=10)
+        swarm = self._accepted_lane("task-three", "three.md")
+        genuine = self.ledger.append_runtime_block_acceptance(
+            swarm=swarm, **request, expected_event_seq=self.ledger.replay()["cursor"]["event_seq"], observed_at_ms=20)
+        retry = self.host_ledger(self.root).append_runtime_block_acceptance(swarm=swarm, **request, expected_event_seq=0, observed_at_ms=99)
+        self.assertEqual(retry["status"], "unchanged")  # Replayed acceptance retains nothing new.
+        window = dict(observed_after_ms=10, observed_before_ms=30, as_of_ms=1000, bucket_ms=10)
+        result = self.ledger.project_accepted_progress_rate("project-alpha", **window)
+        rows = {row["event_id"]: row for row in result["outcomes"]}
+        self.assertEqual({event_id: (rows[event_id]["acceptance_basis"], rows[event_id]["linkage"]["state"], rows[event_id]["linkage"]["reason"])
+                          for event_id in cases},
+                         {event_id: ("LEDGER_ACCEPTED_STATE", "UNSUPPORTED_BOUND_CLAIM", reason) for event_id, reason in cases.items()})
+        p = self.ledger.replay()
+        binding = p["task_creation_bindings"]["create-three"]
+        self.assertEqual(rows[genuine["event_id"]]["linkage"], {
+            "state": "LINKED", "acceptance_event_id": genuine["event_id"], "reason": None, "operation_id": "create-three",
+            "root_digest": binding["root_digest"], "creation_event_digest": binding["event_digest"],
+            "manifest_digest": three["manifest_digest"], "attempt": 1})
+        self.assertEqual((rows[genuine["event_id"]]["acceptance_basis"], rows[genuine["event_id"]]["weight"]), ("RECONSTRUCTED_BOUND_CHAIN", 4))
+        self.assertEqual((result["observed_totals"]["reconstructed"]["accepted"], result["observed_totals"]["reconstructed"]["net_weight"],
+                          result["observed_totals"]["unbound"]["accepted"]), (1, 4, len(cases)))
+        self.assertIn("UNSUPPORTED_BOUND_CLAIM", result["reasons"])
+        beta_result = self.ledger.project_accepted_progress_rate("project-beta", **window)
+        self.assertEqual([(row["event_id"], row["acceptance_basis"], row["linkage"]["reason"]) for row in beta_result["outcomes"]],
+                         [(beta, "LEDGER_ACCEPTED_STATE", "BINDING_PROJECT_MISMATCH")])
+        self.assertEqual(self.host_ledger(self.root).project_accepted_progress_rate("project-alpha", **window), result)
+        # Rework debits the genuine verified basis; a later plain re-acceptance of that block is never re-verified.
+        accepted = json.loads((self.root / PROGRESS_LEDGER_PATH).read_text().splitlines()[-1])["event"]
+        self.assertEqual(accepted["event_id"], genuine["event_id"])
+        for name, kind, state, stamp in (("three-rework", "REWORK_REQUESTED", "INVALIDATED_REWORK", 22),
+                                         ("three-resume", "STATE_CHANGED", "ACTIVE", 23), ("three-review", "STATE_CHANGED", "REVIEW", 24),
+                                         ("three-verified", "PROOF_ADMITTED", "VERIFIED", 25), ("three-accepted", "ACCEPTED", "ACCEPTED", 26)):
+            payload = {**accepted, "event_id": name, "dedupe_key": name, "event_kind": kind, "lifecycle_state": state,
+                       "observed_at_ms": stamp, "parent_event_id": accepted["event_id"]}
+            with self.ledger._state.locked():
+                projection, records = self.ledger._replay_unlocked()
+                self.ledger._append_material_batch_unlocked(projection, records, (runtime_events.validate_progress_material_event(payload),))
+        after = self.host_ledger(self.root).project_accepted_progress_rate("project-alpha", **window)
+        verified, unbound = after["observed_totals"]["reconstructed"], after["observed_totals"]["unbound"]
+        self.assertEqual((verified["accepted"], verified["invalidated"], verified["net"], verified["net_weight"]), (1, 1, 0, 0))
+        self.assertEqual((unbound["accepted"], unbound["net"]), (len(cases) + 1, len(cases) + 1))
+        again = next(row for row in after["outcomes"] if row["event_id"] == "three-accepted")
+        self.assertEqual((again["acceptance_basis"], again["linkage"]["state"], again["linkage"]["reason"]),
+                         ("LEDGER_ACCEPTED_STATE", "UNSUPPORTED_BOUND_CLAIM", "LIFECYCLE_CHAIN_UNLINKED"))
+
+    def test_accepted_rate_cli_is_read_only_and_reads_no_stdin(self) -> None:
+        import subprocess
+        import sys
+        self._rate_accept(self.ledger, "cli", 60_000, 90_000)
+        self.ledger.append(self.event("cli-tail", "tail", observed_at_ms=180_000))
+        retained = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        script = Path(__file__).resolve().parents[1] / "scripts" / "swarm_progress.py"
+        command = [sys.executable, "-B", str(script), "--accepted-rate", "--ledger-root", str(self.root),
+                   "--project-id", "project-alpha", "--buckets", "2", "--bucket-minutes", "1", "--as-of-ms", "185000"]
+        run = subprocess.run(command, stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr + run.stdout)
+        result = json.loads(run.stdout)
+        self.assertEqual(result["window"], {"start_ms": 60_000, "end_ms": 180_000, "bucket_ms": 60_000, "as_of_ms": 185_000})
+        self.assertEqual([row["observed"]["unbound"]["net"] for row in result["series"]], [1, 0])
+        self.assertEqual((result["state"], result["coverage"]["state"], result["throughput"]["state"]),
+                         ("PARTIAL", "UNKNOWN", "UNKNOWN"))
+        early = subprocess.run(command[:-1] + ["175000"], stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=30)
+        early_result = json.loads(early.stdout)  # The tail is after this reader clock and is not a retained observation yet.
+        self.assertEqual(early_result["window"]["end_ms"], 120_000)  # The open bucket is never extrapolated.
+        self.assertEqual(early_result["coverage"]["retained_event_span"]["last_observed_at_ms"], 90_000)
+        self.assertIn("TIMESTAMP_AFTER_AS_OF", early_result["reasons"])
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), retained)
+        missing = subprocess.run(command[:6] + command[8:], stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=30)
+        self.assertEqual(missing.returncode, 2)
 
     def test_numeric_ticket_corrupt_retained_assignments_fail_closed(self) -> None:
         self.ledger.append(self.event("retained-task", "retained-block", task_id="task-one"))
@@ -992,6 +1595,43 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(blocked.action, ControlPathRecoveryAction.TERMINAL_BLOCKED)
         self.assertEqual(blocked.release_receipt_id, release.receipt)
 
+    def test_native_pre_turn_floor_is_ack_only_restart_safe_and_non_material(self) -> None:
+        command = {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": "native-command",
+            "command_id": "native-task", "receipt_index": 0, "idempotency_key": "native-key",
+            "command_digest": "1" * 64, "project_id": "project-alpha", "root_digest": "2" * 64,
+            "action": "TASK", "status": "COMMAND", "thread_id": None, "turn_id": None,
+            "observed_root_digest": None, "observed_at_ms": 1}
+        self.ledger.append_connector_receipt(command)
+        before = self.ledger.project("project-alpha")
+        ack = {**command, "receipt_id": "native-ack", "receipt_index": 1, "status": "ACKNOWLEDGED",
+               "thread_id": "thread-native", "observed_root_digest": "2" * 64,
+               "observed_at_ms": 2, "native_pre_turn_id": "turn-before"}
+        original = self.ledger._state.path.read_bytes()
+        for invalid in ({**command, "native_pre_turn_id": "turn-before"},
+                        {**ack, "turn_id": "turn-before"},
+                        {**ack, "action": "REPAIR"},
+                        {**ack, "observed_root_digest": "3" * 64},
+                        *({**ack, "native_pre_turn_id": value} for value in (None, True, "", "unsafe/id"))):
+            with self.subTest(invalid=invalid), self.assertRaises(ProgressEventError):
+                self.ledger.append_connector_receipt(invalid)
+            self.assertEqual(self.ledger._state.path.read_bytes(), original)
+        self.assertEqual(self.ledger.append_connector_receipt(ack)["status"], "appended")
+        self.assertEqual(self.ledger.append_connector_receipt(ack)["status"], "unchanged")
+        exact = self.ledger._state.path.read_bytes()
+        restarted = self.host_ledger(self.root)
+        retained = restarted.replay()["connector_receipts"]["native-key"]["receipts"][-1]
+        self.assertEqual((retained["turn_id"], retained["native_pre_turn_id"]), (None, "turn-before"))
+        self.assertEqual(restarted._state.path.read_bytes(), exact)
+        with self.assertRaises(ProgressEventError):
+            restarted.append_connector_receipt({**ack, "native_pre_turn_id": "other-turn"})
+        with self.assertRaises(ProgressEventError):
+            restarted.append_connector_receipt({**ack, "receipt_id": "native-result", "receipt_index": 2,
+                "status": "RESULT", "turn_id": "turn-after"})
+        after = restarted.project("project-alpha")
+        self.assertEqual({k: v for k, v in before.items() if k != "cursor"},
+                         {k: v for k, v in after.items() if k != "cursor"})
+        self.assertEqual(restarted._state.path.read_bytes(), exact)
+
     def test_connector_receipt_is_non_material_idempotent_and_restart_safe(self) -> None:
         base = {
             "schema_version": 1, "record_type": "CONNECTOR", "command_id": "connector-command-1",
@@ -1204,8 +1844,14 @@ class ProgressLedgerContractTests(unittest.TestCase):
             "action": "TASK", "status": "COMMAND", "thread_id": None, "turn_id": None,
             "observed_root_digest": None, "observed_at_ms": 1,
         }
-        appended = self.ledger.reserve_connector_command(command, expected_revision=0)
-        replay = self.ledger.reserve_connector_command(command, expected_revision=0)
+        before = self.ledger.replay()
+        denied = self.ledger.reserve_connector_command(command, expected_revision=0, _before_append=lambda: False)
+        self.assertEqual(denied["status"], "CONFLICT")
+        self.assertEqual(self.ledger.replay(), before)
+        self.assertFalse(self.ledger._state.path.exists())
+        appended = self.ledger.reserve_connector_command(command, expected_revision=0, _before_append=lambda: True)
+        replay = self.ledger.reserve_connector_command(command, expected_revision=0,
+            _before_append=lambda: self.fail("retained replay must not run a new admission check"))
         self.assertEqual((appended["status"], replay["status"]), ("APPENDED", "REPLAY"))
         self.assertEqual(appended["cursor"], replay["cursor"])
         for changed in (
@@ -3117,6 +3763,24 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(Ledger(self.root).project_task_accounting("project-alpha", "ctrl-alpha", "task-a",
             observed_after_ms=10, observed_before_ms=20), result)
         self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
+
+    def test_unverified_ctrl_rotation_claim_is_not_task_custody(self) -> None:
+        from skills.swarm.scripts.swarm_contract import retain_rotation_claim
+
+        self.ledger.append(self.event("before-rotation", "a", task_id="task-a", lifecycle="ACTIVE", observed_at_ms=10))
+        envelope = {"predecessor_id": "task-a", "successor_id": "successor", "baseline_pinned": ["task-a"],
+                    "pinned": ["task-a"], "predecessor_archived": False, "predecessor_in_flight": False,
+                    "successor_ack": False, "user_keep_pinned": False, "expected_title": "Synthetic",
+                    "successor_title": None, "retirement": {"project_id": "project-alpha", "root_digest": "d" * 64,
+                        "goal_id": "goal-a", "handoff_digest": "a" * 64, "automation_id": "automation-a",
+                        "collector_id": "successor", "ack_digest": None, "release_receipt_id": None,
+                        "automation_target_id": None, "archive_receipt_id": None, "active_controller_ids": None,
+                        "readback_id": None, "observed_at_ms": 15, "unresolved_operations": []}}
+        retain_rotation_claim(envelope, self.root)
+        self.ledger.append(self.event("after-rotation", "a", task_id="task-a", kind="STATE_CHANGED", lifecycle="TOMBSTONED", observed_at_ms=20))
+        result = self.ledger.project_task_accounting("project-alpha", "ctrl-alpha", "task-a", observed_after_ms=10, observed_before_ms=20)
+        self.assertEqual((result["coverage"]["state"], result["residence"]["active_ms"]), ("KNOWN", 10))
+        self.assertEqual(result["handoff_boundaries"], [])
 
     def test_task_accounting_conflicting_scope_or_event_and_bad_clock_fail_closed(self) -> None:
         for mode in ("scope", "identity", "clock", "transition"):

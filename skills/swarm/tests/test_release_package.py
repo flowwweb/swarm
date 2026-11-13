@@ -39,6 +39,51 @@ SPEC.loader.exec_module(verifier)
 
 
 class ReleasePackageTests(unittest.TestCase):
+    def test_compact_entry_word_cap_freshness_and_links(self):
+        self.assertEqual(mirror_sync.entry_guidance_violations(REPOSITORY_ROOT), [])
+        self.assertEqual(package_builder.COMPACT_WORD_CAP, 420)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = root / "skills/swarm/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("<!-- compact -->\nRead [guide](guide.md).\n<!-- /compact -->\n")
+            agents = root / "AGENTS.md"
+            agents.write_bytes(("word\u2003" * 420).encode())
+            mirror_sync.write_compact_entries(root)
+            self.assertIn("missing link target", str(mirror_sync.entry_guidance_violations(root)))
+            (skill.parent / "guide.md").write_text("# Guide")
+            self.assertEqual(mirror_sync.entry_guidance_violations(root), [])
+            agents.write_bytes(agents.read_bytes() + b"extra")
+            self.assertIn("421 words exceeds 420", str(mirror_sync.entry_guidance_violations(root)))
+            agents.write_bytes(b"ok")
+            skill.write_bytes(skill.read_bytes() + b"Human-only detail")
+            self.assertIn("stale", str(mirror_sync.entry_guidance_violations(root)))
+            run = subprocess.run([sys.executable, str(BUILDER_PATH.parent / "sync_plugin_mirror.py"),
+                                  "--source", str(root), "--check"], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 2)
+            self.assertIn("stale", run.stderr)
+
+    def test_compact_entry_in_zip_and_project_install(self):
+        native = "skills/swarm/SKILL.md"
+        expected = (REPOSITORY_ROOT / "skills/swarm/swarm.min.md").read_bytes()
+        self.assertEqual((REPOSITORY_ROOT / "plugins/swarm" / native).read_bytes(), expected)
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root = self.make_plugin(parent)
+            shutil.copyfile(REPOSITORY_ROOT / native, root / native)
+            subprocess.run(["git", "-C", str(root), "commit", "-qam", "compact fixture"], check=True)
+            payload, metadata = build_package_bytes(root)
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                self.assertEqual(archive.read(native), expected)
+                self.assertNotIn("skills/swarm/swarm.min.md", archive.namelist())
+            self.assertEqual(metadata["files"][native], hashlib.sha256(expected).hexdigest())
+            project = parent / "project"
+            project.mkdir()
+            verifier.install_agent_skill(project)
+            installed = project / ".agents" / native
+            self.assertEqual(installed.read_bytes(), expected)
+            self.assertFalse((installed.parent / "swarm.min.md").exists())
+
     def test_actual_configured_desktop_entry_serves_hq(self):
         entry = json.loads((REPOSITORY_ROOT / '.mcp.json').read_bytes())['mcpServers']['swarm']
         requests = [
@@ -81,7 +126,7 @@ class ReleasePackageTests(unittest.TestCase):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('{}', encoding='utf-8')
-            dependencies = ('console/static/icon.svg', 'skills/swarm/assets/ui/pinned.css', 'skills/swarm/assets/ui/sdk.js')
+            dependencies = ('console/static/icon.svg', 'skills/swarm/assets/ui/pinned.css', 'skills/swarm/assets/ui/sdk.js', 'skills/swarm/assets/ui/brand/supporters/example.svg')
             digest = hashlib.sha256(b'fixture').hexdigest()
             for relative in dependencies:
                 path = root / relative
@@ -91,6 +136,7 @@ class ReleasePackageTests(unittest.TestCase):
                 'ASSETS = ' + repr({dependencies[0]: digest}), encoding='utf-8')
             (root / 'skills/swarm/scripts/swarm_mcp.py').write_text(
                 'PROJECTS_ASSETS = ' + repr({dependencies[1]: digest}) +
+                '\nSUPPORTER_LOGOS = ' + repr({'example.svg': digest}) +
                 '\nHQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/sdk.js"\nHQ_SDK_SHA256 = ' + repr(digest), encoding='utf-8')
             desktop = root / 'skills/swarm/scripts/swarm_desktop.py'
             mcp_digest = hashlib.sha256((root / 'skills/swarm/scripts/swarm_mcp.py').read_bytes()).hexdigest()
@@ -211,6 +257,31 @@ class ReleasePackageTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'embedding contract'):
                         builder.build(root / 'sdk', root / 'rejected.js')
                     self.assertFalse((root / 'rejected.js').exists())
+
+    def test_hq_builder_rejects_unpinned_compaction_inputs_before_compiler(self):
+        spec = importlib.util.spec_from_file_location('hq_compact_builder', REPOSITORY_ROOT / 'skills/swarm/scripts/build_hq_app.py')
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sdk = root / 'package'
+            (sdk / 'dist/src').mkdir(parents=True)
+            (sdk / 'dist/src/app-with-deps.js').write_bytes(b'fixture-sdk')
+            (sdk / 'package.json').write_text(json.dumps({'name': '@modelcontextprotocol/ext-apps', 'version': '2.0.3'}))
+            compact = root / 'compact.js'
+            parser = root / 'acorn.js'
+            compact.write_bytes(b'bad-compact')
+            parser.write_bytes(b'bad-parser')
+            with mock.patch.object(builder, 'SDK_SHA', hashlib.sha256(b'fixture-sdk').hexdigest()), \
+                    mock.patch.object(builder.subprocess, 'check_output') as execute:
+                with self.assertRaisesRegex(ValueError, 'supplied together'):
+                    builder.build(root, root / 'out.js', compact_sdk=compact)
+                with self.assertRaisesRegex(ValueError, 'compact SDK digest mismatch'):
+                    builder.build(root, root / 'out.js', compact_sdk=compact, acorn=parser)
+                with mock.patch.object(builder, 'COMPACT_SDK_SHA', hashlib.sha256(b'bad-compact').hexdigest()):
+                    with self.assertRaisesRegex(ValueError, 'parser digest mismatch'):
+                        builder.build(root, root / 'out.js', compact_sdk=compact, acorn=parser)
+                execute.assert_not_called()
 
     def test_desktop_bundle_rejects_missing_or_stale_compiled_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -420,6 +491,16 @@ class ReleasePackageTests(unittest.TestCase):
             (root / "README.md").write_text("# SWARM\n", encoding="utf-8")
             self.assertEqual(set(source_file_hashes(root)), {"README.md"})
 
+    def test_private_swarm_incidents_are_excluded_from_source_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private = root / ".codex" / "swarm" / "incidents.jsonl"
+            private.parent.mkdir(parents=True)
+            private.write_text("private fixture", encoding="utf-8")
+            (root / ".codex" / "product.toml").write_text("product fixture", encoding="utf-8")
+            self.assertEqual(set(source_file_hashes(root)), {".codex/product.toml"})
+            self.assertIn(".codex/swarm/incidents.jsonl", installed_file_hashes(root))
+
     def test_source_hashes_ignore_local_environment_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -559,6 +640,23 @@ class ReleasePackageTests(unittest.TestCase):
                 metadata = json.loads(archive.read(PACKAGE_METADATA_PATH))
                 self.assertEqual((metadata["commit"], metadata["tree"]), (commit, tree))
                 self.assertEqual(archive.read("README.md"), original)
+
+    def test_canonical_bytes_apply_git_filter_without_a_second_git_process(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.make_plugin(Path(directory))
+            (root / ".gitattributes").write_text("*.md text eol=lf\n", encoding="utf-8")
+            with mock.patch.object(package_builder, "_git_hash_object", wraps=package_builder._git_hash_object) as git_hash:
+                result = package_builder.canonical_worktree_bytes(root, "README.md", b"one\r\ntwo\r\n")
+            self.assertEqual(result, b"one\ntwo\n")
+            self.assertEqual(git_hash.call_count, 1)
+
+    def test_canonical_bytes_support_sha256_git_object_format(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", "--object-format=sha256", str(root)], check=True)
+            (root / ".gitattributes").write_text("*.md text eol=lf\n", encoding="utf-8")
+            result = package_builder.canonical_worktree_bytes(root, "README.md", b"one\r\ntwo\r\n")
+            self.assertEqual(result, b"one\ntwo\n")
 
     def test_clean_filter_normalization_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

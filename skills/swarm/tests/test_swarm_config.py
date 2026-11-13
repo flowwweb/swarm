@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -22,9 +23,10 @@ class SwarmConfigTests(unittest.TestCase):
     def test_task_title_defaults_and_category_preferences_preserve_custody(self):
         effective = config.merge({})
         before = deepcopy(effective)
-        facts = dict(project="Garden", unit="Studio", role="Designer", responsibility="UI", emoji="🌱")
-        expected = {"controller": "🌱 Garden", "unit": "🌱 Garden · Studio · UI",
-                    "lead": "🌱 Garden · Designer · UI", "worker": "🌱 Garden · Designer · UI"}
+        facts = dict(project="Garden", unit="Studio", role="Designer", responsibility="UI",
+                     created="2026-11-11T09:30:00+07:00", emoji="🌱")
+        expected = {"controller": "🌱 Garden", "unit": "🌱 Garden • Studio • UI • Nov 11",
+                    "lead": "🌱 Garden • Designer • UI • Nov 11", "worker": "🌱 Garden • Designer • UI • Nov 11"}
         for category, title in expected.items():
             with self.subTest(category=category):
                 result = config.resolve_task_presentation(effective, category, **facts)
@@ -49,10 +51,50 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(config.resolve_task_presentation(legacy, "controller", **facts)["title"], "Garden")
         self.assertFalse(config.resolve_task_presentation(legacy, "worker", **facts)["pin_requested"])
 
+    def test_task_title_separator_emoji_custom_and_stable_creation_date(self):
+        facts = dict(project="Garden", unit="Studio", role="Designer", responsibility="UI", emoji="🌱")
+        for separator in config.TITLE_SEPARATORS:
+            settings = config.merge({"task_titles": {"separator": separator}})
+            config.validate({"task_titles": {"separator": separator}}, partial=True)
+            for category, name in (("unit", "Studio"), ("lead", "Designer"), ("worker", "Designer")):
+                with self.subTest(separator=separator, category=category):
+                    title = config.resolve_task_presentation(settings, category, created="2026-11-11", **facts)["title"]
+                    self.assertEqual(title, "🌱 " + separator.join(("Garden", name, "UI", "Nov 11")))
+            self.assertEqual(config.resolve_task_presentation(settings, "controller", **facts)["title"], "🌱 Garden")
+            off = config.merge({"task_titles": {"separator": separator}, "role_icons": {"enabled": False}})
+            for category in config.TITLE_CATEGORIES:
+                title = config.resolve_task_presentation(off, category, created="2026-11-11", **facts)["title"]
+                self.assertFalse(title.startswith("🌱"))
+                self.assertEqual(config.resolve_task_presentation(settings, category, created="2026-11-11",
+                    existing_title="My · own | title", **facts)["title"], "My · own | title")
+        for invalid in (" · ", "•", " - ", "", " •  "):
+            with self.subTest(invalid=invalid), self.assertRaises(config.ConfigError):
+                config.validate({"task_titles": {"separator": invalid}}, partial=True)
+        # The label comes from the retained timestamp itself, never today's clock or a timezone shift.
+        retained = "2026-11-11T23:59:59+07:00"
+        with mock.patch.object(config, "date", wraps=config.date) as today:
+            today.today.side_effect = AssertionError("title date must not use the current clock")
+            first = config.resolve_task_presentation(config.merge({}), "worker", created=retained, **facts)["title"]
+        self.assertEqual(first, config.resolve_task_presentation(config.merge({}), "worker", created=retained, **facts)["title"])
+        self.assertTrue(first.endswith("• Nov 11"))
+        self.assertTrue(config.resolve_task_presentation(config.merge({}), "unit", created="2026-11-11T00:00:00Z",
+                                                         **facts)["title"].endswith("Nov 11"))
+        with self.assertRaises(config.ConfigError):
+            config.resolve_task_presentation(config.merge({}), "worker", created="not-a-date", **facts)
+        # Template segments split, values do not: a value containing a delimiter stays intact.
+        dotted = config.resolve_task_presentation(config.merge({}), "worker", project="A•B", role="Dev",
+                                                  responsibility="x · y", created="2026-11-11")["title"]
+        self.assertEqual(dotted, "📋 A•B • Dev • x · y • Nov 11")
+        legacy = config.merge({"task_titles": {"unit_template": "{project} · {unit}", "separator": " / "}})
+        self.assertEqual(config.resolve_task_presentation(legacy, "unit", **facts)["title"], "🌱 Garden / Studio")
+        template = config.TEMPLATE_PATH.read_text(encoding="utf-8")
+        self.assertIn('separator = " • "', template)
+        self.assertEqual(config.load(config.TEMPLATE_PATH)[0]["task_titles"], config.DEFAULTS["task_titles"])
+
     def test_task_title_template_validation_date_and_empty_segments(self):
         settings = config.merge({"task_titles": {"worker_template": "{project} · {role} · {responsibility} · {created:MMM D}"}})
         result = config.resolve_task_presentation(settings, "worker", project="Garden", created="2026-10-27", emoji="🌱")
-        self.assertEqual(result["title"], "🌱 Garden · Oct 27")
+        self.assertEqual(result["title"], "🌱 Garden • Oct 27")
         self.assertEqual(result, config.resolve_task_presentation(deepcopy(settings), "worker", project="Garden", created="2026-10-27", emoji="🌱"))
         with self.assertRaises(config.ConfigError):
             config.resolve_task_presentation(settings, "worker", project="Garden")
@@ -79,7 +121,8 @@ class SwarmConfigTests(unittest.TestCase):
                     with self.assertRaises(config.ConfigError):
                         config.resolve_task_presentation(config.merge({}), "controller", **values)
         self.assertEqual(config.resolve_task_presentation(config.merge({}), "controller", project="1 Garden", emoji="🌱")["title"], "🌱 1 Garden")
-        self.assertEqual(config.resolve_task_presentation(config.merge({}), "worker", project="Garden", responsibility="", role="", emoji="")["title"], "Garden")
+        self.assertEqual(config.resolve_task_presentation(config.merge({}), "worker", project="Garden", responsibility="", role="", emoji="",
+                                                         created="2026-11-11")["title"], "Garden • Nov 11")
         with self.assertRaises(config.ConfigError):
             config.resolve_task_presentation(config.merge({}), "TASK", project="Garden")
 
@@ -96,6 +139,17 @@ class SwarmConfigTests(unittest.TestCase):
             self.assertEqual(json.loads(run.stdout)["title"], "Garden")
             self.assertFalse(json.loads(run.stdout)["host_mutation_authorized"])
             self.assertEqual(path.read_text(encoding="utf-8"), original)
+            # The existing CLI caller honors the configured separator and the retained creation timestamp.
+            path.write_text('[task_titles]\nseparator=" | "\n[role_icons]\nenabled=false\n', encoding="utf-8")
+            run = subprocess.run([sys.executable, "-B", str(SCRIPT), "--path", str(path), "title-preview",
+                "--category", "worker", "--project", "Garden", "--role", "Designer", "--responsibility", "UI",
+                "--created", "2026-11-11T21:05:00+07:00"], capture_output=True, check=True,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+            self.assertEqual(json.loads(run.stdout.decode("utf-8"))["title"], "Garden | Designer | UI | Nov 11")
+            path.write_text('[task_titles]\nseparator=" - "\n', encoding="utf-8")
+            invalid = subprocess.run([sys.executable, "-B", str(SCRIPT), "--path", str(path), "title-preview",
+                "--category", "worker", "--project", "Garden", "--created", "2026-11-11"], capture_output=True)
+            self.assertNotEqual(invalid.returncode, 0)
 
     def test_model_policy_preserves_explicit_profile_pair_and_conflicts(self) -> None:
         policy = {"model_order": ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"],

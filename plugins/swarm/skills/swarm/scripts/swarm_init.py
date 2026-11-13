@@ -679,6 +679,7 @@ def _adaptive_alignment(root: Path, *, cohort_dir=None, config_path=None, ask=No
     brief = parse_project_brief_markdown(root_text, root=root)[0] if plan["source_binding"]["canonical_brief_digest"] is not None else {}
     objective = brief.get("objective", {})
     summary = {"project_id": brief.get("project", {}).get("id"),
+               "mission": brief.get("project", {}).get("purpose"),
                "objective": objective.get("current"), "documents": [row["name"] for row in plan["documents"]],
                "binding_digest": plan["binding_digest"], "source_state": plan["status"],
                "legacy_root_excerpt": root_text[:1200] if root_text and not brief else None,

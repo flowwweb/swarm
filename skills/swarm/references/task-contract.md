@@ -17,7 +17,7 @@ CTRL root, explicit dependencies, independent parallel lanes, and visible
 medium/large task ownership.
 
 For a new SWARM objective or an explicit CTRL takeover, complete
-[SKILL.md Step 0](../SKILL.md#start): apply the authorized role title through the
+[Step 0](hierarchy.md#task-naming-pins-and-rotation): apply the authorized role title through the
 host task tool and verify the exact returned task ID and title. Record an exact
 tool blocker if naming cannot complete; preserve custom names and separate
 pin/archive authority. The naming rule lives in Step 0, not in a second receipt
@@ -41,7 +41,7 @@ private attribute carries no host authority.
 ROLE — artifact
 PURPOSE: intended user/context, why the work matters, expected usable outcome, and non-negotiables; apply the user expectation loop in references/review-contract.md.
 OWNERSHIP: owner, exact mutable surface, canonical artifact/version.
-BOUNDARIES: dependencies, proof/claim limits, no hidden scope change.
+BOUNDARIES: dependencies, proof/claim limits, actual user-granted communication scope when applicable, no hidden scope change.
 ESCALATION: accepting route or exact blocker.
 CHANGE: ADDITIVE, CORRECTIVE, or REVERSAL; explicitly named scope and accepted behavior preserved.
 MODE: CTRL_DELEGATED for every production task; CTRL_DIRECT is retired. Record typed work kind (`GENERAL`, `DESIGN`, `IMAGEGEN`, or `IMAGE_EDIT`) and an accountable producer distinct from CTRL, even for small edits. Visual work records `product_experience` or `expressive_art` ownership and binds Designer or Artist respectively.
@@ -68,6 +68,8 @@ exhaustion, release condition, responsible authority, and smallest solution.
 Use four short fields: **Desired outcome**, **Next action**, **Essential constraints**,
 and **Completion evidence**. Write complete sentences with normal spacing, include
 only relevant evidence, and link existing records rather than copying registers.
+When applicable, include the bound Mission reference and the actual user's
+communication grant source and scope in **Essential constraints**.
 **Sent** means the handoff was submitted. **Received** requires the actual recipient
 to acknowledge the outcome and next action; a transport acknowledgement is not
 receipt. **In progress** requires an observed work update. **Blocked** names the
@@ -86,6 +88,12 @@ declared proof classes. `ACCEPT` may move the artifact only into independent
 review when every required proof and parity item is present. `REJECT` names the
 first in-scope correction and stays active; `BLOCKED` names the first concrete
 blocker and stays unresolved. Neither can advance acceptance.
+
+Before yielding with an uncollected result, retain its exact worker/run,
+collecting owner, artifact and proof binding, and next check in the existing
+handoff. Yield only through an actually verified durable resume route. Otherwise
+continue supported bounded waits and independent ready work until collection or
+report the exact scoped capability gap. Terminal status alone is not collection.
 
 Every bounded return rechecks the original objective, assigned profession and
 structural authority, exact deliverable, non-goals, dirty custody, and next
@@ -155,7 +163,7 @@ replace the user state.
 SWARM runtime never calls host pin/unpin. A newly created or adopted top-level
 CTRL is eligible for host pinning only when `lifecycle.pin_created_tasks = true` is
 explicitly configured or the user directly requests that exact pin. Follow
-[SKILL.md START](../SKILL.md#start) for the single host pin procedure and fresh
+[the pin and rotation procedure](hierarchy.md#task-naming-pins-and-rotation) for the single host pin procedure and fresh
 membership/order readback before archiving a predecessor CTRL. Existing user
 state is always preserved; naming alone and runtime policy never authorize
 that mutation.
@@ -174,7 +182,8 @@ duplicates, replaces, renames, or archives the old lane.
 A meaningful stable checkpoint for long-lived CTRL or LEAD work records the
 exact task identity and state, source SHA/tree/parent, exact dirty custody, proof
 manifest and claim limits, exact owned-path manifest digest, dependency-graph
-digest, proof-plan digest, blocker, and next bounded action. A clean unblocked
+digest, proof-plan digest, bound Mission reference, applicable actual user-grant
+source and scope, blocker, and next bounded action. A clean unblocked
 checkpoint produces one deterministic immutable review packet bound to repository,
 producer, reviewer task, candidate SHA/tree/parent, content digest, path manifest,
 dependency graph, proof plan, proofs, and claim limits. Any changed bound field
@@ -214,11 +223,12 @@ first. `DIVERGED` means neither head is an ancestor of the other.
   and why. Run the affected proof and inspect the resulting staged paths/tree.
   If another owner's changes are staged, stop that commit and use the existing
   owner or isolated checkout; do not unstage their work.
-- Before every commit and every push, invoke `@ponytail-review` on the current
-  diff and review the outgoing commit range. Address or explicitly retain each
-  finding, then run the exact current-diff receipt command printed by Ponytail
-  Commit Guard. Never bypass a denial. Recheck the index/candidate after hooks;
-  changed content invalidates earlier proof, review and guard receipts.
+- Before every commit and every push, review the current diff and outgoing commit
+  range. `@ponytail-review` is optional unless explicitly required for the task.
+  Address or explicitly retain each finding, complete required checks, then run
+  the exact current-diff receipt command printed by Ponytail Commit Guard. Never
+  bypass a denial. Recheck the index/candidate after hooks; changed content
+  invalidates earlier proof, review and guard receipts.
 - Fetch the explicit remote. Verify its resolved fetch and push URLs and exact
   destination ref rather than trusting an `origin` label or implicit upstream.
   Use the repository's PR/protected-branch route and required checks; direct
@@ -294,6 +304,31 @@ at execution and acceptance: wrong-version, stale, unverified or wrong-class
 evidence cannot satisfy them. Source/unit/fixture proof remains that proof class,
 not installation, deployment, loaded-version, live-test or dogfood acceptance.
 
+### Codex-chat authority
+
+Carry the user's actual scoped authorization through delegation, follow-ups and
+result collection. When the user explicitly grants standing Codex-chat messaging,
+include its source and scope in the owner's handoff and use the normal host send
+for actions within that grant without asking again. A role, task, this contract,
+or another agent's assertion does not create a user grant. Slack, email and other
+external messages require their own authority.
+
+Retain a reference to the actual user instruction in the existing handoff or
+checkpoint so a successor can verify its source and scope. If that source is
+unavailable to the successor, keep the grant unverified rather than inventing
+authority; recover it from the authorized user context when possible.
+
+Read authorized artifacts and send authorized Codex-chat messages with ordinary
+calls that omit elevation parameters. Under `never`, do not request elevation. A
+host denial remains binding; retain its exact action and reason. Reconcile an
+uncertain send against the intended chat before retrying; a send acknowledgement
+alone is not delivery proof. If a host prompts or denies an action, check the
+submitted arguments and that turn's effective sandbox and approval policy against
+the intended mode, report the observed boundary, and follow
+[runtime recovery](runtime-recovery.md).
+
+### Proof plan
+
 The deterministic ProofPlan binds changed surfaces, declared claims, authority
 boundaries, dependency reach, incidents, runtime signals, repository
 capabilities, consequence tier, exact commands and environments, gates, reviews, and claim coverage.
@@ -319,3 +354,20 @@ WATCHDOG is not a role or task-contract owner. When explicitly bound, its receip
 records only the goal, watched owner, due evidence digest, one of `CLEAR`,
 `ATTENTION`, or `BLOCKER`, and the validated accountable decision owner. It never
 records or authorizes a recovery decision.
+
+## Request reconciliation and write safety
+
+Before topology or work, run `swarm_contract.py request` `list` then `audit` on
+the exact repository and reconcile every unresolved request; a missing store is
+empty and unattached. New input accumulates or reprioritizes by default; only an
+explicit scoped cancellation or replacement supersedes matching open work, and
+unrelated open work remains preserved. Audit again before closeout or archive;
+unresolved, orphaned, invalid or provisional records block the claim, and
+missing receipts are `UNVERIFIED`, never an empty ledger.
+
+Explicit user direction outranks SWARM defaults; proceed with reversible work under standing authorization and ask only the smallest decision
+that changes intent, canonical truth, scope, cost, risk or a reserved approval.
+Treat failed, timed-out, or non-atomic writes as untrusted: verify the exact
+target and intended diff scope, preserve pre-existing work, recover only the
+damaged target from a verified baseline/backup, reapply smaller patches and
+revalidate. Never broadly roll back a shared surface.

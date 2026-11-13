@@ -80,6 +80,37 @@ class RequestLedgerTests(unittest.TestCase):
                 restarted=swarm(root); restarted.use_goals=False; restarted.tasks[kind]=current
                 self.assertEqual(restarted.request_audit(6).records[0],done.record)
 
+    def test_direct_lead_request_persists_completion_without_worker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            value = Swarm(request_lifecycle_ledger=Ledger(root))
+            value.add_lead(Role.CTRL, "L")
+            value.attach_request_store(root)
+            current = task("lead-direct")
+            current.owner = "L"
+            current.delegation_contract = replace(current.delegation_contract, owner_id="L")
+            staged = value.stage_request_task(Role.CTRL, current)
+            decision, _ = event(value, current.id, (staged.request_id,), "leadintake", CtrlFeedEventKind.DECISION, "usr")
+            view = bridge.register(value, staged.id, decision, accepted_at=1, due=RequestDue("lead-due", 2))
+            with self.assertRaises(Exception):
+                value.activate_accepted_task(Role.LEAD, current.id, view.record.id, actor_id="other")
+            value.activate_accepted_task(Role.LEAD, current.id, view.record.id, actor_id="L")
+            delegated_accept(value, current.id, actor=Role.LEAD)
+            review_receipt = "rev-direct-request000"
+            value.review(Role.REVIEW, current.id, ReviewEvidence(ReviewStrategy.LIGHT, "independent", True, None, receipt=(("acceptance", review_receipt),), scope=ReviewScope.ACCEPTANCE), True)
+            result, _ = event(value, current.id, (view.record.id,), "leadresult", CtrlFeedEventKind.RESULT, proof_override=review_receipt)
+            value.advance_request(Role.LEAD, view.record.id, result, RequestDue("lead-final", 4))
+            value.complete(Role.LEAD, current.id, True, True, 5, actor_id="L")
+            acceptance, _ = event(value, current.id, (view.record.id,), "leadaccepted", CtrlFeedEventKind.ACCEPTANCE, proof_override=review_receipt)
+            done = value.complete_request(Role.LEAD, view.record.id, acceptance, review_receipt)
+            self.assertEqual(done.record.state, RequestState.COMPLETED)
+            self.assertEqual(value.workers, {})
+            replayed = Swarm(request_lifecycle_ledger=Ledger(root))
+            replayed.add_lead(Role.CTRL, "L")
+            replayed.attach_request_store(root)
+            replayed.tasks[current.id] = current
+            self.assertEqual(replayed.request_audit(6).records[0], done.record)
+
     def test_atomic_request_stays_with_exact_producer_through_completion(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); value=Swarm(request_lifecycle_ledger=Ledger(root)); value.attach_request_store(root)

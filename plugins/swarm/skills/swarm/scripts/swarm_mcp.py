@@ -11,15 +11,18 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import html
 import json
 import os
 import re
+import secrets
 import socket
 import stat
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 SCRIPT_ROOT = Path(__file__).resolve()
@@ -29,8 +32,59 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG = Path(os.environ.get("SWARM_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml"))
 DEFAULT_TELEMETRY = Path(os.environ.get("SWARM_MCP_TELEMETRY_PATH", Path.home() / ".agents" / "swarm" / "mcp-telemetry.jsonl"))
 HQ_SDK_PATH = SWARM_SKILL_ROOT / "assets/ui/swarm-hq-mcp-app.js"
-HQ_SDK_SHA256 = "9410a20fff6adac4758d78f9cdc18d96b68d4182ca04f0f8de0ca4ee1424fb97"
-PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "b0f262a07126fbd5a7180d344849188ec8e28e5cd6595d68f170f0b8ae3b05da", "skills/swarm/assets/ui/swarm-hq-host.css": "36b32b28869faacf7b020c963585c2966432780ac01e374e0289ce1dfb95114b", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250"}
+HQ_SDK_MAX_BYTES = 512 * 1024
+HQ_SDK_SHA256 = "198317a3ca8fb4302946024c5c549275ea1d01765a0fce8d7ee4cedc754fe0d3"
+
+
+def _startup_runtime_identity(root: Path, source: Path) -> dict[str, Any]:
+    identity = {"schema_version": 1, "process_id": os.getpid(), "instance_id": secrets.token_hex(8),
+        "started_at_ms": int(time.time() * 1000), "package_name": None, "package_version": None,
+        "package_state": "UNVERIFIED", "package_commit": None, "package_tree": None,
+        "mcp_source_sha256_at_import": None,
+        "claim_limit": "Process-start observations, not host authority or workflow acceptance. Match the installed tree and fresh native reload too."}
+    def read_json(path):
+        with path.open("rb") as stream:
+            raw = stream.read(512 * 1024 + 1)
+        if len(raw) > 512 * 1024:
+            raise ValueError("runtime metadata exceeds its bound")
+        return json.loads(raw)
+    try:
+        with source.open("rb") as stream:
+            raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("runtime source exceeds its bound")
+        identity["mcp_source_sha256_at_import"] = hashlib.sha256(raw).hexdigest()
+        manifest = read_json(root / ".codex-plugin/plugin.json")
+        if manifest.get("name") != "swarm" or not isinstance(manifest.get("version"), str) or not 1 <= len(manifest["version"]) <= 128:
+            raise ValueError("runtime package identity is invalid")
+        identity.update(package_name="swarm", package_version=manifest["version"], package_state="UNPACKAGED")
+        metadata_path = root / "swarm-package.json"
+        if metadata_path.exists():
+            metadata = read_json(metadata_path)
+            if (metadata.get("schema") != "swarm-package-v2" or metadata.get("version") != manifest["version"]
+                    or metadata.get("files", {}).get(source.relative_to(root).as_posix()) != identity["mcp_source_sha256_at_import"]
+                    or any(re.fullmatch(r"[a-f0-9]{40}", str(metadata.get(key) or "")) is None for key in ("commit", "tree"))):
+                identity["package_state"] = "MISMATCH"
+            else:
+                identity.update(package_state="PACKAGED_MATCH", package_commit=metadata["commit"], package_tree=metadata["tree"])
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+        identity["package_state"] = "UNVERIFIED"
+    return identity
+
+
+# Capture once. A later on-disk edit cannot relabel this already-running process.
+_STARTUP_RUNTIME = _startup_runtime_identity(REPO_ROOT, SCRIPT_ROOT)
+PROJECTS_ASSETS = {"skills/swarm/assets/ui/swarm-hq-projects.html": "8cdb7a58a22498980eebeb75f8c0eb0b5c4ebfb99f09e715d22cf4c0feb7bfac", "skills/swarm/assets/ui/swarm-hq-host.css": "81833ba3243d820222cd614b65c67d1cae63fed6d46e59231d77afcb7a14d3c6", "skills/swarm/assets/ui/swarm-settings.css": "3b49e6fc132218e812f4b4dff86ebe57988581cc62e8a0fe7730436f05aad250", "skills/swarm/assets/ui/supporters.json": "f92e40a5fe6bffd6b51be4a6dc3f7c52dfc799d2db7a7f269010bcb448d1ea47"}
+
+SUPPORTER_LOGOS = {
+    "bluprint-wordmark-alpha-990.png": "700c1fde2233f42ca4a1a87f94de375d5f92827ae26af7f7941ec7407961869f",
+    "boatpedia-logo-dark.svg": "a6455b195453fa49caa651dcda73afe536a88d7b5999ef53d17707a21851744c",
+    "rightwork-logo.svg": "6e5e0eab4ba317ab8eca7fb1c6a197f7ad9532ccbc2306370c96b029e789659a",
+    "rightwork-canonical-white.svg": "866fefb211dafac9cea9ab4a12155cc0639145f1fef81c385af509190c6ccc2e",
+    "unbake-logo.svg": "41cd55104f31dad02a3927ffbcfe3a3021de62db1b8918cffbd9c20011d471cc",
+    "fontgoblin-wordmark.svg": "4d6db1fbba09523869769713d8d12afc976b6f14cc7110cf35f76e2a88de8b50",
+    "whxtever-wordmark.svg": "c5de578a2a2c7ab4e49e6693eed0a7fb73bd1ea4565b9239a3bdb6e600d1ef21",
+}
 
 
 PROJECTS_SUPPORT_IMAGES = {
@@ -65,6 +119,13 @@ PROJECTS_PUBLIC_IMAGES = {
 
 TOOLS: tuple[dict[str, Any], ...] = (
     {
+        "name": "swarm_project_initialize", "title": "Initialize a local project manifest",
+        "description": "Create or adopt the SWARM project documents in one existing directory. Does not register a Codex project.",
+        "inputSchema": {"type": "object", "properties": {"root": {"type": "string", "minLength": 1, "maxLength": 4096}, "acknowledge": {"type": "boolean", "enum": [True]}}, "required": ["root", "acknowledge"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
+    {
         "name": "swarm_role_read", "title": "Read global roles",
         "description": "Read current validated role definitions; an exact role_id includes admitted canonical artwork for its editor. No task assignment or host execution authority.",
         "inputSchema": {"type": "object", "properties": {"role_id": {"type": "string"}}, "additionalProperties": False},
@@ -83,6 +144,25 @@ TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["command", "role_id", "event_id", "dedupe_key", "provenance", "observed_at_ms", "acknowledge"],
             "additionalProperties": False},
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["app"]}},
+    },
+    {
+        "name": "swarm_task_accept", "title": "Accept a reviewed subtask",
+        "description": "Submit one explicitly acknowledged existing subtask completion through the existing independently reviewed host, artifact and proof checks. This does not create a task or a ticket.",
+        "inputSchema": {"type": "object", "properties": {
+            "request": {"type": "object", "properties": {
+                "project_id": {"type": "string"}, "task_id": {"type": "string"}, "block_id": {"type": "string"},
+                "manifest_digest": {"type": "string"}, "expected_ledger_revision": {"type": "integer"},
+                "artifact_path": {"type": "string"}, "artifact_sha256": {"type": "string"},
+                "gates": {"type": "array"}, "review_strategy": {"type": "string"},
+                "host_review": {"type": "object", "properties": {"reviewer_thread_id": {"type": "string"},
+                    "reviewer_turn_id": {"type": "string"}}, "required": ["reviewer_thread_id", "reviewer_turn_id"], "additionalProperties": False},
+                "acknowledge": {"type": "boolean", "enum": [True]}},
+                "required": ["project_id", "task_id", "block_id", "manifest_digest", "expected_ledger_revision",
+                    "artifact_path", "artifact_sha256", "gates", "review_strategy", "host_review", "acknowledge"],
+                "additionalProperties": False}, "acknowledge": {"type": "boolean", "enum": [True]}},
+            "required": ["request", "acknowledge"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
         "_meta": {"ui": {"visibility": ["app"]}},
     },
     {
@@ -106,9 +186,9 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "swarm_project_tickets", "title": "Project tickets",
-        "description": "Read or explicitly create/edit project planning tickets, migrate legacy strings into typed records, or allocate retained typed records their existing Ledger display IDs. No host dispatch or completion authority.",
+        "description": "Read or create/edit project tickets, migrate legacy records, allocate IDs, read activity or logs, and read or add discussion. Comments use id/body/reply_to; attachments use id/name/type/data (base64). Discussion is stored in SWARM.md. No host dispatch or completion authority.",
         "inputSchema": {"type": "object", "properties": {
-            "operation": {"type": "string", "enum": ["read", "create", "update", "migrate_legacy", "allocate_ids"]},
+            "operation": {"type": "string", "enum": ["read", "create", "update", "migrate_legacy", "allocate_ids", "read_discussion", "add_comment", "add_attachment", "read_activity", "read_logs"]},
             "project_id": {"type": "string"}, "expected_digest": {"type": "string"},
             "acknowledge": {"type": "boolean", "enum": [True]},
             "collection": {"type": "string", "enum": ["goals", "milestones", "tasks", "blocks"]},
@@ -129,7 +209,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["kind", "template_id", "name", "objective", "project_id", "ctrl_id", "request_id", "coordinator_role"],
             "additionalProperties": False},
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
-        "_meta": {"ui": {"visibility": ["app"]}},
+        "_meta": {"ui": {"visibility": ["model", "app"]}},
     },
     {
         "name": "swarm_unit_create", "title": "Create an acknowledged Unit coordinator",
@@ -169,6 +249,17 @@ TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["project_id", "expected_digest", "assignment", "acknowledge"], "additionalProperties": False},
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
         "_meta": {"ui": {"visibility": ["app"]}},
+    },
+    {
+        "name": "swarm_project_alias_select", "title": "Select explicit project identity",
+        "description": "Save an acknowledged project identity selection to the existing revision-bound brief. This does not grant execution or acceptance authority.",
+        "inputSchema": {"type": "object", "properties": {
+            "operation": {"type": "string", "enum": ["read", "select", "clear"]},
+            "expected_digest": {"type": "string"}, "selection": {"type": "object"},
+            "acknowledge": {"type": "boolean", "enum": [True]}},
+            "required": ["operation", "selection"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+        "_meta": {"ui": {"visibility": ["model", "app"]}},
     },
     {
         "name": "swarm_settings_read", "title": "Read SWARM Settings",
@@ -235,6 +326,41 @@ def _projects_asset(name: str, digest: str, *, exact_size: int | None = None) ->
     return payload
 
 
+def _supporters_markup(raw: bytes) -> str:
+    try:
+        rows = json.loads(raw)
+        if not isinstance(rows, list) or len(rows) > 64:
+            raise ValueError()
+        result = []
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {"name", "href", "logo"}:
+                raise ValueError()
+            name, href, logo = row["name"], row["href"], row["logo"]
+            if not isinstance(name, str) or not name.strip() or len(name) > 100 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+                raise ValueError()
+            if href is not None:
+                if not isinstance(href, str) or any(ord(c) <= 32 or ord(c) == 127 for c in href):
+                    raise ValueError()
+                url = urlsplit(href)
+                if url.scheme != "https" or not url.hostname or url.username is not None or url.password is not None:
+                    raise ValueError()
+            label = html.escape(name, quote=True)
+            if logo is None:
+                content = label
+            else:
+                if not isinstance(logo, str) or logo not in SUPPORTER_LOGOS:
+                    raise ValueError()
+                payload = _projects_asset("skills/swarm/assets/ui/brand/supporters/" + logo, SUPPORTER_LOGOS[logo])
+                mime = 'image/png' if logo == 'bluprint-wordmark-alpha-990.png' else 'image/svg+xml'
+                content = '<img alt="' + label + '" src="data:' + mime + ';base64,' + base64.b64encode(payload).decode("ascii") + '">'
+            if href is not None:
+                content = '<a data-external href="' + html.escape(href, quote=True) + '">' + content + '</a>'
+            result.append('<li>' + content + '</li>')
+        return ''.join(result)
+    except (ValueError, TypeError, UnicodeError, OSError) as error:
+        raise MCPError("Supporter configuration unavailable") from error
+
+
 class HQApp:
     """Serve one explicitly pinned exporter artifact, never load live host state."""
 
@@ -276,10 +402,10 @@ class HQApp:
     def render(self) -> str:
         value = self.read()
         info = HQ_SDK_PATH.lstat()
-        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or info.st_size > 524288:
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or info.st_size > HQ_SDK_MAX_BYTES:
             raise MCPError("HQ SDK must be a regular file")
         raw = HQ_SDK_PATH.read_bytes()
-        if len(raw) > 524288 or hashlib.sha256(raw).hexdigest() != HQ_SDK_SHA256:
+        if len(raw) > HQ_SDK_MAX_BYTES or hashlib.sha256(raw).hexdigest() != HQ_SDK_SHA256:
             raise MCPError("HQ SDK changed or exceeds its bound")
         sdk = raw.decode("utf-8")
         if re.search(r"</script", sdk, re.IGNORECASE):
@@ -295,6 +421,7 @@ class HQApp:
             assets = {name: _projects_asset(name, digest) for name, digest in PROJECTS_ASSETS.items() if name != settings_name}
             html = assets["skills/swarm/assets/ui/swarm-hq-projects.html"].decode("utf-8")
             html = html.replace("__CSS__", assets["skills/swarm/assets/ui/swarm-hq-host.css"].decode("utf-8"))
+            html = html.replace("__SUPPORTERS__", _supporters_markup(assets["skills/swarm/assets/ui/supporters.json"]))
             html = html.replace('<script type="module">__SCRIPT__</script>', '')
             for token, (name, mime_type, digest) in PROJECTS_SUPPORT_IMAGES.items():
                 if token in html:
@@ -414,6 +541,17 @@ class SwarmProjection:
         if spec is None:
             raise MCPError("unknown tool")
         _validate_arguments(spec, arguments)
+        if name == "swarm_project_initialize":
+            if arguments["acknowledge"] is not True or len(arguments["root"]) > 4096 or not Path(arguments["root"]).is_absolute():
+                raise MCPError("an acknowledged absolute project folder is required")
+            try:
+                if str(REPO_ROOT) not in sys.path:
+                    sys.path.insert(0, str(REPO_ROOT))
+                from skills.swarm.scripts.swarm_init import initialize
+                result = initialize(Path(arguments["root"]))
+                return {"ok": True, **result, "registered": False}
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "state": "REJECTED", "message": str(exc)}
         app = self._load_app()
         if name in {"swarm_unit_prepare", "swarm_unit_create"}:
             from console.server import ConsoleError, ConsoleConflict, _auto_digest, _normalized_project_path
@@ -465,6 +603,16 @@ class SwarmProjection:
             except ConsoleError:
                 return {"ok": False, "state": "REJECTED", "role_id": arguments.get("role_id"),
                         "message": "Role definition or retained avatar is invalid or unavailable."}
+        if name == "swarm_task_accept":
+            from console.server import ConsoleError
+            request = arguments["request"]
+            if arguments["acknowledge"] is not True or request.get("acknowledge") is not True:
+                raise MCPError("subtask acceptance requires explicit acknowledgement")
+            try:
+                with app.write_lock:
+                    return app.complete_bound_task(request)
+            except ConsoleError:
+                return {"ok": False, "state": "REJECTED", "message": "The reviewed subtask could not be accepted. Check its review, proof and current revision before retrying."}
         if name == "swarm_project_ticket_execution":
             from console.server import ConsoleError, ConsoleConflict
             try:
@@ -478,19 +626,28 @@ class SwarmProjection:
                         "message": "No valid ticket binding. Check the retained task, block and project."}
 
         if name == "swarm_project_tickets":
-            from console.server import ConsoleError, ConsoleConflict
+            from console.server import ConsoleError, ConsoleConflict, ProjectBriefMissing, ProjectBriefPathRejected
             try:
                 return app.project_ticket_command(arguments)
             except ConsoleConflict:
                 return {"ok": False, "state": "CONFLICT", "code": "SOURCE_CONFLICT", "project_id": arguments["project_id"],
                         "message": "The project changed. Keep your draft and reload before saving."}
             except ConsoleError as exc:
-                if arguments["operation"] == "read":
-                    return {"ok": False, "state": "REJECTED", "code": "TICKET_READ_FAILED",
+                if arguments["operation"] in {"read", "read_discussion", "read_activity", "read_logs"}:
+                    cause = exc.__cause__
+                    if isinstance(cause, ProjectBriefMissing):
+                        code, state, message = "PROJECT_BRIEF_MISSING", "UNAVAILABLE", "SWARM.md was not found at the saved project root."
+                    elif isinstance(cause, ProjectBriefPathRejected):
+                        code, state, message = "PROJECT_BRIEF_PATH_REJECTED", "UNAVAILABLE", "The saved project path could not be read because it contains a link or reparse point."
+                    else:
+                        code, state, message = "TICKET_READ_FAILED", "REJECTED", "Tickets could not be read. Your records have not been changed."
+                    return {"ok": False, "state": state, "code": code,
                             "project_id": arguments["project_id"],
-                            "message": "Tickets could not be read. Your records have not been changed. Check runtime compatibility before retrying."}
+                            "message": message}
                 code = str(exc).split(":", 1)[0]
                 messages = {"PROJECT_CODE_REQUIRED": "Choose a project code of 1–4 letters.",
+                            "TICKET_DESCRIPTION_TOO_LONG": "Description exceeds 16,384 UTF-8 bytes. Shorten it and try again.",
+                            "DISCUSSION_CAPACITY": "The project brief has no room for more updates. Copy your draft before leaving.",
                             "PROJECT_CODE_INVALID": "Use 1–4 letters for the project code.",
                             "SOURCE_WRITE_UNCERTAIN": "Save is unconfirmed. Keep this draft and reload to reconcile before retrying the same request.",
                             "RECORD_ID_RESERVED": "This draft identity is reserved for an earlier request. Keep its content and start a new draft.",
@@ -518,6 +675,14 @@ class SwarmProjection:
             except ConsoleError:
                 return {"ok": False, "state": "REJECTED", "project_id": arguments["project_id"],
                         "message": "Invalid or unavailable scoped source. Keep the draft and reload."}
+        if name == "swarm_project_alias_select":
+            from console.server import ConsoleError, ConsoleConflict
+            try:
+                return app.project_alias_command(arguments)
+            except ConsoleConflict:
+                return {"ok": False, "state": "CONFLICT", "message": "The project brief or selection changed. Read the current brief digest and reconcile before retrying."}
+            except ConsoleError:
+                return {"ok": False, "state": "REJECTED", "message": "The project selection or current host binding is invalid."}
         if name == "swarm_settings_read":
             return app.config_projection(arguments.get("scope"))
         if name == "swarm_settings_save":
@@ -527,8 +692,13 @@ class SwarmProjection:
             if project_id is not None and (not isinstance(project_id, str) or not project_id.strip()):
                 raise MCPError("project_id must be non-empty text")
             app.refresh_native_observation()
+            runtime = dict(_STARTUP_RUNTIME)
+            code = getattr(getattr(type(app), "__init__", None), "__code__", None)
+            origin = Path(code.co_filename).resolve() if code is not None else None
+            runtime["backend_code_origin"] = (origin.relative_to(REPO_ROOT).as_posix()
+                if origin is not None and origin.is_relative_to(REPO_ROOT) else "OUTSIDE_PACKAGE_OR_UNKNOWN")
             return {**_compact_overview(app.overview(project_id.strip() if project_id else None)),
-                    "device": _device_status(self.telemetry_path)}
+                    "device": _device_status(self.telemetry_path), "runtime": runtime}
         if name == "swarm_projects":
             app.refresh_native_observation()
             return _compact_roster(app.project_roster())
@@ -906,7 +1076,7 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
             if not isinstance(params, dict):
                 raise MCPError("params must be an object")
             if method == "initialize":
-                result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "swarm-mcp", "version": "1.0.0"}}
+                result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "swarm-mcp", "version": _STARTUP_RUNTIME["package_version"] or "unverified"}}
                 if hq_app:
                     result["capabilities"]["resources"] = {"listChanged": False}
             elif method == "tools/list":
@@ -938,9 +1108,10 @@ def serve(*, probe_root: Path | None = None, telemetry_path: Path = DEFAULT_TELE
                     _validate_arguments(spec, arguments)
                     value = _probe(probe_root, name, arguments) if name.startswith("probe_") else projection.call(name, arguments)
                     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-                    if len(encoded.encode("utf-8")) > 262144:
-                        raise MCPError("projection exceeds 262144 bytes; narrow the requested scope")
-                    rejected = name in {"swarm_unit_prepare", "swarm_unit_create", "swarm_role_read", "swarm_role_save", "swarm_library_read", "swarm_flow_save", "swarm_flow_assign", "swarm_project_tickets", "swarm_project_ticket_execution"} and value.get("ok") is False
+                    response_limit = 1048576 if name == "swarm_project_tickets" else 262144
+                    if len(encoded.encode("utf-8")) > response_limit:
+                        raise MCPError(f"projection exceeds {response_limit} bytes; narrow the requested scope")
+                    rejected = name in {"swarm_project_initialize", "swarm_unit_prepare", "swarm_unit_create", "swarm_role_read", "swarm_role_save", "swarm_library_read", "swarm_flow_save", "swarm_flow_assign", "swarm_project_tickets", "swarm_project_ticket_execution", "swarm_project_alias_select", "swarm_task_accept"} and value.get("ok") is False
                     _telemetry(telemetry_path, tool=name, started=started, ok=not rejected,
                                result_bytes=len(encoded.encode("utf-8")), error="projection_rejected" if rejected else "")
                     result = {"content": [{"type": "text", "text": encoded}], "structuredContent": value, "isError": rejected}

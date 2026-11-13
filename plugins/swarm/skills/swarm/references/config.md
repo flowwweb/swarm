@@ -406,7 +406,7 @@ is SWARM's 🐙 icon, not evidence of an explicit user choice or a global fallba
 For unclear project context, use `role_icons.fallback` (default 📋). An explicit
 user emoji choice, including an expressly customized CTRL icon, always wins.
 CTRL titles use `<project emoji> <project>`, or the project name when icons are
-disabled. Existing-title repairs follow [SKILL.md Step 0](../SKILL.md#start):
+disabled. Existing-title repairs follow [Step 0](hierarchy.md#task-naming-pins-and-rotation):
 an authorized icon-only correction preserves all wording, pin state and order;
 custom titles, explicit icons and opt-outs remain protected.
 Hierarchy roles use their matching `role_icons` setting. Contextual tasks use `roles.<ROLE>.icon` when present;

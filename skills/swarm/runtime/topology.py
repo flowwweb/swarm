@@ -19,6 +19,25 @@ _LANE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _STRUCTURAL_ROLES = frozenset({Role.CTRL, Role.LEAD, Role.DOER})
 
 
+_PRESENTATION = None
+
+
+def _presentation():
+    """Load the single shared title/config owner (`scripts/swarm_config.py`), stdlib-only."""
+    global _PRESENTATION
+    if _PRESENTATION is None:
+        import importlib.util
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[1] / "scripts" / "swarm_config.py"
+        spec = importlib.util.spec_from_file_location("swarm_config_presentation", path)
+        if spec is None or spec.loader is None:
+            raise InvariantError("shared task presentation is unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _PRESENTATION = module
+    return _PRESENTATION
+
+
 def _single_line(value: str, label: str, *, allow_empty: bool = False) -> str:
     if not isinstance(value, str) or (not allow_empty and not value.strip()) or any(character in value for character in "\r\n\t"):
         raise InvariantError(f"{label} must be {'empty or ' if allow_empty else ''}single-line text")
@@ -41,6 +60,9 @@ class LaneMaterialization:
     direct_production: bool = False
     durable_boundary: SubordinateBoundaryFacts | None = None
     requested_title: str = ""
+    project: str = ""
+    created: str = ""
+    naming: object = None  # effective SWARM config; None uses shipped defaults
     title: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -64,7 +86,6 @@ class LaneMaterialization:
         if self.structural_role is Role.CTRL:
             if parent or self.profession is not None or boundary or artifact or review_target or self.direct_production or self.durable_boundary is not None:
                 raise InvariantError("CTRL is the sole administrator and cannot be materialized as a profession or producer lane")
-            title = f"{icon} {responsibility}".strip()
         else:
             if not parent or not isinstance(self.profession, ProfessionAssignment) or not icon:
                 raise InvariantError("every visible LEAD and DOER requires a parent, typed profession, and configured icon")
@@ -83,9 +104,25 @@ class LaneMaterialization:
             else:
                 if boundary or not artifact or not self.direct_production or self.durable_boundary is not None:
                     raise InvariantError("DOER requires one bounded artifact and cannot own a mutable lane boundary")
-            title = f"{icon}{self.profession.label} {self.structural_role.value} - {responsibility}"
+        # Host-visible names come only from the shared presentation owner:
+        # CTRL is emoji + project; others are project • role • task • creation date.
+        project = _single_line(self.project, "lane project")
+        created = _single_line(self.created, "lane creation timestamp", allow_empty=self.structural_role is Role.CTRL)
+        module = _presentation()
+        try:
+            effective = module.merge({}) if self.naming is None else self.naming
+            title = module.resolve_task_presentation(
+                effective, {Role.CTRL: "controller", Role.LEAD: "lead", Role.DOER: "worker"}[self.structural_role],
+                project=project, role="" if self.profession is None else self.profession.label,
+                responsibility="" if self.structural_role is Role.CTRL else responsibility,
+                created=created or None, emoji=icon,
+            )["title"]
+        except module.ConfigError as error:
+            raise InvariantError(f"visible lane title cannot be generated: {error}") from error
         if requested_title and requested_title != title:
-            raise InvariantError("visible lane title must equal the generated icon, profession, structural role, and responsibility")
+            raise InvariantError("visible lane title must equal the generated presentation title")
+        object.__setattr__(self, "project", project)
+        object.__setattr__(self, "created", created)
         object.__setattr__(self, "responsibility", responsibility)
         object.__setattr__(self, "parent_lane_id", parent)
         object.__setattr__(self, "icon", icon)

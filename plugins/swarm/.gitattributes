@@ -1,1 +1,4 @@
 * text=auto eol=lf
+
+# Preserve exact supporter artwork bytes across checkout and packaging.
+skills/swarm/assets/ui/brand/supporters/*.svg -text

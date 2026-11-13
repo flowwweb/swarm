@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from threading import Condition
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from weakref import WeakKeyDictionary
 
 from .agent_colors import (
@@ -46,6 +46,25 @@ MAX_FEED_SCAN_BYTES = 1024 * 1024
 MAX_MATERIAL_SENTENCE = 240
 MAX_YIELD_SERIES = 96
 YIELD_TOKEN_SCALE = 100_000
+HOUR_MS = 3_600_000
+MAX_ACCEPTED_RATE_BUCKETS = 168
+MAX_ACCEPTED_RATE_OUTCOMES = 512
+ACCEPTED_RATE_CLAIM_LIMIT = (
+    "Observed counts of retained Ledger ACCEPTED block transitions at their writer-observed time. "
+    "No authoritative recording-coverage or work-duration source exists, so a zero count is not observed "
+    "absence and no throughput, efficiency or degradation is computed. A chain linked to its retained task "
+    "binding and lifecycle is reconstructed, not authenticated: historical records do not establish who "
+    "wrote them or whether independent review occurred. Verified totals are unavailable. "
+    "Plain Ledger ACCEPTED state is counted separately. "
+    "Declared ACTIVE residence is not work time."
+)
+# (name, event kind, lifecycle, admit, claim limit) in the order the bound writers retain them.
+_BOUND_LIFECYCLE_STEPS = (
+    ("evidence", "BLOCK_CREATED", "ACTIVE", False, BOUND_EVIDENCE_CLAIM_LIMIT),
+    ("review", "STATE_CHANGED", "REVIEW", False, BOUND_ACCEPTANCE_CLAIM_LIMIT),
+    ("verified", "PROOF_ADMITTED", "VERIFIED", True, BOUND_ACCEPTANCE_CLAIM_LIMIT),
+    ("accepted", "ACCEPTED", "ACCEPTED", True, BOUND_ACCEPTANCE_CLAIM_LIMIT),
+)
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 PULSE_STATES = frozenset({"planned", "in_progress", "blocked", "complete", "stale"})
 ETA_REASON_CODES = frozenset({
@@ -222,6 +241,15 @@ OWNER_HANDOFF_FIELDS = TASK_HANDOFF_EVENT_FIELDS | frozenset({
     "handoff_type", "structural_role", "persistent", "host_thread_id",
     "capacity_reservation_id", "host_activity_receipt_id",
 })
+CTRL_ROTATION_HANDOFF_FIELDS = TASK_HANDOFF_EVENT_FIELDS | frozenset({
+    "handoff_type", "project_id", "root_digest", "baseline_pinned", "automation_id", "collector_id",
+    "expected_title_digest", "rotation_observation",
+})
+CTRL_ROTATION_OBSERVATION_FIELDS = frozenset({
+    "ack_digest", "release_receipt_id", "automation_target_id", "archive_receipt_id",
+    "active_controller_ids", "readback_id", "observed_at_ms", "unresolved_operations",
+    "pinned", "predecessor_archived", "predecessor_in_flight", "successor_ack", "user_keep_pinned", "observed_title_digest",
+})
 EXPECTED_RECEIPT_FIELDS = frozenset({
     "schema_version", "record_type", "receipt_id", "goal_id",
     "task_id", "owner_id", "lease_version", "target_id", "artifact_digest",
@@ -238,7 +266,7 @@ CONNECTOR_RECEIPT_FIELDS = frozenset({
     "schema_version", "record_type", "receipt_id", "command_id", "receipt_index",
     "idempotency_key", "command_digest", "payload_digest",
     "project_id", "root_digest", "action", "status", "thread_id", "turn_id",
-    "observed_root_digest", "observed_at_ms", "task_creation_identity", "non_delivery_evidence",
+    "observed_root_digest", "observed_at_ms", "task_creation_identity", "non_delivery_evidence", "native_pre_turn_id",
 })
 CONNECTOR_ACTIONS = frozenset({"AUTO", "MANUAL_AGENT", "TASK", "TOPOLOGY_MATERIALIZE", "REPAIR", "LOCAL_HQ"})
 CONNECTOR_STATUSES = frozenset({
@@ -331,6 +359,8 @@ class TaskHandoffEventKind(StrEnum):
     OWNER_SLEEPING = "OWNER_SLEEPING"
     OWNER_WAKING = "OWNER_WAKING"
     OWNER_ACTIVE = "OWNER_ACTIVE"
+    CTRL_ROTATION_PREPARED = "CTRL_ROTATION_PREPARED"
+    CTRL_ROTATION_OBSERVED = "CTRL_ROTATION_OBSERVED"
 
 
 PROGRESS_FLAGS = frozenset({
@@ -345,6 +375,10 @@ PROGRESS_EVENT_SOURCES = frozenset({
 
 class ProgressEventError(ValueError):
     pass
+
+
+class VelocityMetadataError(ProgressEventError):
+    """Optional Velocity metadata cannot be trusted or recovered automatically."""
 
 
 def _ledger_custody_authority():
@@ -655,6 +689,7 @@ def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
     fields = (
         CONTINUATION_HANDOFF_FIELDS if handoff_type == "HOST_THREAD_CONTINUATION"
         else OWNER_HANDOFF_FIELDS if handoff_type == "OWNER_LIFECYCLE"
+        else CTRL_ROTATION_HANDOFF_FIELDS if handoff_type == "CTRL_ROTATION"
         else TASK_HANDOFF_EVENT_FIELDS
     )
     _exact_fields(payload, fields, "task handoff event")
@@ -718,6 +753,50 @@ def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
                 raise ProgressEventError("waking owner requires a prior sleep and capacity reservation")
         elif parent_event_id is None or capacity is None or activity is None:
             raise ProgressEventError("active owner requires waking capacity and exact host activity proof")
+    elif handoff_type == "CTRL_ROTATION":
+        if event_kind not in {TaskHandoffEventKind.CTRL_ROTATION_PREPARED, TaskHandoffEventKind.CTRL_ROTATION_OBSERVED}:
+            raise ProgressEventError("CTRL rotation handoff event kind is invalid")
+        if any(type(payload.get(key)) is not str for key in ("project_id", "root_digest", "automation_id", "collector_id", "expected_title_digest")):
+            raise ProgressEventError("CTRL rotation bindings must be strings")
+        _safe_id(payload.get("project_id"), "rotation project_id")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("root_digest") or "")):
+            raise ProgressEventError("CTRL rotation requires a canonical root digest")
+        _safe_id(payload.get("automation_id"), "rotation automation_id")
+        collector = _safe_id(payload.get("collector_id"), "rotation collector_id")
+        baseline = _safe_ids(payload.get("baseline_pinned"), "rotation baseline_pinned")
+        if (new_owner is None or new_owner == payload["old_owner"] or collector == payload["old_owner"]
+                or payload["task_id"] != payload["old_owner"] or checkpoint_digest is None
+                or payload["old_owner"] not in baseline or new_owner in baseline
+                or payload["scope_version"] != 1 or payload["lease_version"] != 1):
+            raise ProgressEventError("CTRL rotation requires one successor, prior slot, checkpoint and surviving collector")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("expected_title_digest") or "")):
+            raise ProgressEventError("CTRL rotation requires a title digest")
+        if (event_kind is TaskHandoffEventKind.CTRL_ROTATION_PREPARED) != (parent_event_id is None):
+            raise ProgressEventError("CTRL rotation observation requires a retained parent")
+        if host_issued_at_ms is not None or payload.get("receipt_id") != "rotation-unverified":
+            raise ProgressEventError("CTRL rotation caller observations cannot claim host verification")
+        claim = payload.get("rotation_observation")
+        if not isinstance(claim, dict) or set(claim) != CTRL_ROTATION_OBSERVATION_FIELDS:
+            raise ProgressEventError("CTRL rotation requires one complete unverified observation")
+        for key in ("ack_digest", "observed_title_digest"):
+            if claim[key] is not None and (type(claim[key]) is not str or not re.fullmatch(r"[0-9a-f]{64}", claim[key])):
+                raise ProgressEventError(f"rotation {key} must be a SHA-256 digest or null")
+        for key in ("release_receipt_id", "automation_target_id", "archive_receipt_id", "readback_id"):
+            if claim[key] is not None and type(claim[key]) is not str:
+                raise ProgressEventError(f"rotation {key} must be a string or null")
+            _optional_id(claim[key], f"rotation {key}")
+        for key in ("pinned", "active_controller_ids"):
+            if claim[key] is not None:
+                _safe_ids(claim[key], f"rotation {key}")
+        _safe_ids(claim["unresolved_operations"], "rotation unresolved_operations")
+        for key in ("pinned", "active_controller_ids", "unresolved_operations"):
+            if claim[key] is not None and any(type(item) is not str for item in claim[key]):
+                raise ProgressEventError(f"rotation {key} must contain string identifiers")
+        if (any(type(claim[key]) is not bool for key in ("successor_ack", "predecessor_in_flight", "user_keep_pinned"))
+                or type(claim["predecessor_archived"]) not in (bool, type(None))):
+            raise ProgressEventError("rotation observation flags must be boolean or null")
+        if _positive_int(claim["observed_at_ms"], "rotation observation time", allow_zero=True) != payload["observed_at_ms"]:
+            raise ProgressEventError("rotation observation time must match its retained event")
     elif handoff_type != "CUSTODY":
         raise ProgressEventError("task handoff type is invalid")
     elif event_kind is TaskHandoffEventKind.HANDOFF_DUE:
@@ -971,7 +1050,7 @@ def _validate_connector_receipt(payload: Any, *, replay: bool = False) -> dict[s
     admitted = replay and type(version) is int and version == 2
     allowed = set(CONNECTOR_RECEIPT_FIELDS) | (set(CONNECTOR_ADMISSION_FIELDS) if admitted else set())
     actual_fields = set(payload)
-    required = allowed - {"task_creation_identity", "payload_digest", "non_delivery_evidence"}
+    required = allowed - {"task_creation_identity", "payload_digest", "non_delivery_evidence", "native_pre_turn_id"}
     if not required <= actual_fields or actual_fields - allowed:
         raise ProgressEventError("connector receipt fields are incomplete or unexpected")
     if type(version) is not int or version != (2 if admitted else 1) or payload.get("record_type") != "CONNECTOR":
@@ -1037,6 +1116,11 @@ def _validate_connector_receipt(payload: Any, *, replay: bool = False) -> dict[s
         raise ProgressEventError("LOCAL_HQ lifecycle requires the exact local observed root")
     if normalized["action"] != "LOCAL_HQ" and normalized["status"] == "ACKNOWLEDGED" and (not has_thread or has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector acknowledgement requires a thread and exact root binding")
+    if "native_pre_turn_id" in payload:
+        if (normalized["action"] not in {"TASK", "AUTO"} or normalized["status"] != "ACKNOWLEDGED"
+                or not isinstance(payload["native_pre_turn_id"], str)):
+            raise ProgressEventError("native pre-send floor is reserved for a TASK or AUTO acknowledgement")
+        normalized["native_pre_turn_id"] = _safe_id(payload["native_pre_turn_id"], "native pre-send turn")
     if not pre_turn and normalized["action"] not in {"LOCAL_HQ", "ROOT_ADOPT"} and normalized["status"] in {"PROGRESS", "RESULT", "DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and (not has_thread or not has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector progress or result requires thread, turn, and exact root binding")
     if not pre_turn and normalized["status"] in {"DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and normalized["action"] != "REPAIR":
@@ -2638,11 +2722,17 @@ def _bound_evidence_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _bound_attempt_id(name: str, task_id: str, block_id: str, attempt: int) -> str:
+    suffix = "" if attempt == 1 else f":attempt:{attempt}"
+    return f"bound-{name}:{task_id}:{block_id}{suffix}"
+
+
 def _bound_block_payload(
     *, event_id: str, kind: str, lifecycle: str, project_id: str, task_id: str,
     manifest: Mapping[str, Any], block: Mapping[str, Any], created: str, operation_id: str,
     scope_version: int, admit: bool, proof_receipt_ids: list[str], claim_limit: str,
-    observed_at_ms: int, parent_event_id: str,
+    observed_at_ms: int, parent_event_id: str, attempt: int = 1,
+    rework_count: int = 0, invalidated_receipt_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Compose one schema-1 block event from retained manifest and creation-binding facts only."""
     weight = block.get("weight")
@@ -2660,7 +2750,7 @@ def _bound_block_payload(
                         "basis_receipt_ids": [created] if measured else []},
         "proof": {"required_classes": [], "receipt_ids": proof_receipt_ids, "claim_limit": claim_limit},
         "eta": {"start_ms": None, "end_ms": None, "confidence": None, "basis_receipt_ids": []},
-        "rework": {"attempt": 1, "count": 0, "invalidated_receipt_ids": []},
+        "rework": {"attempt": attempt, "count": rework_count, "invalidated_receipt_ids": invalidated_receipt_ids or []},
         "custody": {"surface": "ledger:bound-task-lifecycle", "receipt_id": created},
         "steering_receipt_ids": [], "material_update_sentence": None, "flags": [],
         "provenance": f"bound-task-lifecycle:{operation_id}", "source": "swarm_runtime",
@@ -3686,6 +3776,7 @@ class Ledger:
                 TaskHandoffEventKind.HANDOFF_DUE,
                 TaskHandoffEventKind.CONTINUATION_PREPARED,
                 TaskHandoffEventKind.OWNER_SLEEPING,
+                TaskHandoffEventKind.CTRL_ROTATION_PREPARED,
             }:
                 raise ProgressEventError("task handoff root state is invalid")
             retained_handoff = projection["task_handoff_leases"].get(lease_key)
@@ -3701,7 +3792,10 @@ class Ledger:
             if payload["parent_event_id"] != current["event_id"]:
                 raise ProgressEventError("task handoff parent must bind the current retained event")
             expected = _TASK_HANDOFF_TRANSITIONS.get(TaskHandoffEventKind(current["event_kind"]))
-            if event_kind is not expected:
+            rotation_update = (handoff_type == "CTRL_ROTATION"
+                               and current["event_kind"] in {"CTRL_ROTATION_PREPARED", "CTRL_ROTATION_OBSERVED"}
+                               and event_kind is TaskHandoffEventKind.CTRL_ROTATION_OBSERVED)
+            if event_kind is not expected and not rotation_update:
                 raise ProgressEventError("task handoff transition is invalid")
             immutable = ("goal_id", "task_id", "old_owner", "scope_version", "lease_version")
             if any(payload[key] != current[key] for key in immutable):
@@ -3737,6 +3831,23 @@ class Ledger:
                     )
                     if fenced or unresolved:
                         raise ProgressEventError("owner wake is fenced by paused, keep-out, or unresolved host delivery")
+            if handoff_type == "CTRL_ROTATION":
+                if any(payload[key] != current[key] for key in (
+                    "project_id", "root_digest", "baseline_pinned", "automation_id", "collector_id", "expected_title_digest"
+                )):
+                    raise ProgressEventError("CTRL rotation immutable project, placement, automation or collector conflicts")
+                old_unresolved = set(current["rotation_observation"]["unresolved_operations"])
+                new_unresolved = set(payload["rotation_observation"]["unresolved_operations"])
+                if not old_unresolved <= new_unresolved:
+                    raise ProgressEventError("unverified rotation observation cannot clear an unresolved operation")
+                if current["rotation_observation"]["user_keep_pinned"] and not payload["rotation_observation"]["user_keep_pinned"]:
+                    raise ProgressEventError("unverified rotation observation cannot clear user custody")
+                for key in ("release_receipt_id", "archive_receipt_id"):
+                    previous = current["rotation_observation"][key]
+                    if previous is not None and payload["rotation_observation"][key] != previous:
+                        raise ProgressEventError("unverified rotation observation cannot discard or rebind a retained receipt")
+                if payload["observed_at_ms"] <= current["observed_at_ms"]:
+                    raise ProgressEventError("rotation observations must advance beyond the retained time")
             if payload["observed_at_ms"] < current["observed_at_ms"]:
                 raise ProgressEventError("task handoff observation cannot regress")
         projection["handoff_event_digests"][event_id] = event_digest
@@ -4022,7 +4133,11 @@ class Ledger:
         projection["cursor"] = {"event_seq": event_seq, "event_id": event.event_id, "event_digest": event.digest}
         return check
 
-    def _replay_unlocked(self, *, ticket_tasks: dict[tuple[str, str], int] | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    def _replay_unlocked(
+        self, *, ticket_tasks: dict[tuple[str, str], int] | None = None,
+        inspect: Callable[[Mapping[str, Any], ProgressMaterialEvent, int], None] | None = None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Replay retained records; `inspect` sees each material event against the state just before it applies."""
         projection = _empty_progress_projection()
         retained_tasks = ticket_tasks if ticket_tasks is not None else {}
         self._retry_topology = RetryTopologyLedger()
@@ -4068,6 +4183,8 @@ class Ledger:
                     raw_event,
                     retained_event=(expected_seq, record["event_digest"]),
                 )
+                if inspect is not None:
+                    inspect(projection, event, expected_seq)
                 self._apply(projection, event, expected_seq, replay=True)
                 if event.topology_node_kind == "BLOCK" or event.task_manifest is not None:
                     retained_tasks.setdefault((event.project_id, event.task_id), expected_seq)
@@ -4089,6 +4206,101 @@ class Ledger:
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+
+    def _velocity_metadata_unlocked(self, records: list[dict[str, Any]]) -> dict[str, Any]:
+        path = self._state.path.with_name("velocity-metadata.json")
+        if not path.exists():
+            return {"schema_version": 1, "projects": {}, "receipts": {}}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or set(data) not in ({"schema_version", "projects"}, {"schema_version", "projects", "receipts"}) or type(data["schema_version"]) is not int or data["schema_version"] != 1 or not isinstance(data["projects"], dict):
+                raise ValueError("invalid metadata schema")
+            data.setdefault("receipts", {})
+            if not isinstance(data["receipts"], dict):
+                raise ValueError("invalid receipt collection")
+            for project, start in data["projects"].items():
+                _safe_id(project, "project_id")
+                if not isinstance(start, dict) or set(start) != {"observed_at_ms", "event_seq", "event_digest"}:
+                    raise ValueError("invalid start schema")
+                _positive_int(start["observed_at_ms"], "observed_at_ms")
+                seq = _positive_int(start["event_seq"], "event_seq")
+                if seq > len(records) or records[seq - 1]["event_digest"] != start["event_digest"]:
+                    raise ValueError("start cursor no longer matches retained Ledger")
+            for identity, receipt in data["receipts"].items():
+                if not isinstance(receipt, dict) or set(receipt) != {"project_id", "task_id", "block_id", "attempt", "event_seq", "event_digest"}:
+                    raise ValueError("invalid receipt schema")
+                seq = _positive_int(receipt["event_seq"], "event_seq")
+                if seq > len(records):
+                    raise ValueError("receipt cursor is missing")
+                row = records[seq - 1]
+                event = row["event"]
+                start = data["projects"].get(receipt["project_id"])
+                if (start is None or seq <= start["event_seq"] or row["event_digest"] != receipt["event_digest"]
+                        or event.get("event_id") != identity or event.get("event_kind") != "ACCEPTED"
+                        or any(event.get(key) != receipt[key] for key in ("project_id", "task_id", "block_id"))
+                        or event.get("rework", {}).get("attempt") != receipt["attempt"]):
+                    raise ValueError("receipt does not match retained acceptance")
+            return data
+        except (OSError, ValueError, TypeError, ProgressEventError) as error:
+            raise VelocityMetadataError("velocity metadata is corrupt or incompatible") from error
+
+    def _velocity_starts_unlocked(self, records: list[dict[str, Any]]) -> dict[str, Any]:
+        return self._velocity_metadata_unlocked(records)["projects"]
+
+    def _write_velocity_metadata_unlocked(self, data: dict[str, Any]) -> None:
+        encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        self._state.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile("wb", dir=self._state.path.parent, prefix=".velocity-", delete=False) as handle:
+                handle.write(encoded); handle.flush(); os.fsync(handle.fileno()); temporary = Path(handle.name)
+            os.replace(temporary, self._state.path.with_name("velocity-metadata.json"))
+            temporary = None
+        except OSError as error:
+            raise VelocityMetadataError("velocity metadata could not be saved") from error
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _record_velocity_acceptance_unlocked(self, event: ProgressMaterialEvent, records: list[dict[str, Any]]) -> None:
+        data = self._velocity_metadata_unlocked(records)
+        start = data["projects"].get(event.project_id)
+        row = next((item for item in records if item["event"].get("event_id") == event.event_id), None)
+        if start is None or row is None or row["event_seq"] <= start["event_seq"] or row["event_digest"] != event.digest:
+            return
+        receipt = {"project_id": event.project_id, "task_id": event.task_id, "block_id": event.block_id,
+                   "attempt": event.attempt, "event_seq": row["event_seq"], "event_digest": event.digest}
+        prior = data["receipts"].get(event.event_id)
+        if prior is not None and prior != receipt:
+            raise VelocityMetadataError("velocity receipt conflicts with retained acceptance")
+        if prior is None:
+            data["receipts"][event.event_id] = receipt
+            self._write_velocity_metadata_unlocked(data)
+
+    def start_velocity_instrumentation(self, *, project_id: str, expected_event_seq: int) -> dict[str, Any]:
+        """Start recording SWARM's own accepted blocks from a durable Ledger boundary."""
+        project_id = _safe_id(project_id, "project_id")
+        if type(expected_event_seq) is not int or expected_event_seq < 0:
+            raise ProgressEventError("velocity start requires a nonnegative expected revision")
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            metadata = self._velocity_metadata_unlocked(records)
+            starts = metadata["projects"]
+            existing = starts.get(project_id)
+            if existing is not None:
+                return {"status": "unchanged", "start": existing, "cursor": projection["cursor"]}
+            if projection["cursor"]["event_seq"] != expected_event_seq:
+                raise ProgressEventError("progress ledger changed; reload before starting velocity")
+            if any(row["event"].get("project_id") == project_id
+                   and "runtime-recorded:v1" in row["event"].get("proof", {}).get("receipt_ids", []) for row in records):
+                raise VelocityMetadataError("velocity start metadata is missing for previously recorded acceptances")
+            if not any(binding.get("project_id") == project_id for binding in projection["task_creation_bindings"].values()):
+                raise ProgressEventError("velocity start requires an existing bound project")
+            start = {"observed_at_ms": int(time.time() * 1000), "event_seq": projection["cursor"]["event_seq"],
+                     "event_digest": projection["cursor"]["event_digest"]}
+            starts[project_id] = start
+            self._write_velocity_metadata_unlocked(metadata)
+        return {"status": "appended", "start": start, "cursor": projection["cursor"]}
 
     def append_expected_receipt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         receipt = _validate_expected_receipt(dict(payload))
@@ -4318,7 +4530,8 @@ class Ledger:
             self._condition.notify_all()
         return {"status": "appended", "cursor": trial["cursor"], "event_digest": handoff_digest, "bytes": len(encoded)}
 
-    def reserve_connector_command(self, payload: Mapping[str, Any], *, expected_revision: int) -> dict[str, Any]:
+    def reserve_connector_command(self, payload: Mapping[str, Any], *, expected_revision: int,
+                                  _before_append: Callable[[], bool] | None = None) -> dict[str, Any]:
         event = _validate_connector_receipt(dict(payload), replay=True)
         if event["status"] != "COMMAND" or event["receipt_index"] != 0:
             raise ProgressEventError("connector reservation requires COMMAND index zero")
@@ -4335,6 +4548,8 @@ class Ledger:
                     return {"status": "REPLAY", "command": json.loads(json.dumps(command, sort_keys=True)), "cursor": {"event_seq": retained["event_seq"], "event_id": event["receipt_id"], "event_digest": event_digest}}
                 return {"status": "CONFLICT", "command": json.loads(json.dumps(command, sort_keys=True)), "cursor": projection["cursor"]}
             if retained_digest is not None or command_binding is not None or len(records) != expected_revision:
+                return {"status": "CONFLICT", "command": None, "cursor": projection["cursor"]}
+            if _before_append is not None and _before_append() is not True:
                 return {"status": "CONFLICT", "command": None, "cursor": projection["cursor"]}
             if event["schema_version"] == 2:
                 raise ProgressEventError("retained schema-2 connector receipts are read-only")
@@ -4372,6 +4587,21 @@ class Ledger:
                     conflicted = True
                 elif not conflicted:
                     return {"status": "unchanged", "cursor": projection["cursor"], "event_digest": event.digest}
+            operation = projection["task_creation_operations_by_task"].get(event.task_id)
+            binding = projection["task_creation_bindings"].get(operation, {})
+            task_state = projection["task_manifests"].get(event.task_id, {})
+            bound_block = (binding.get("project_id") == event.project_id
+                           and any(manifest.get("project_id") == event.project_id
+                                   and any(block.get("block_id") == event.block_id for block in manifest.get("blocks", []))
+                                   for manifest in task_state.get("versions", {}).values()))
+            if bound_block and not (self._block_key(event) in projection["blocks"]
+                                    and event.event_kind in {ProgressEventKind.REWORK_REQUESTED, ProgressEventKind.PROOF_INVALIDATED, ProgressEventKind.SCOPE_REVISED}
+                                    and event.lifecycle_state in {ProgressLifecycle.INVALIDATED_REWORK, ProgressLifecycle.TOMBSTONED}):
+                raise ProgressEventError("bound evidence and acceptance require the runtime-controlled writer")
+            if bound_block:
+                current = projection["blocks"][self._block_key(event)]
+                if event.attempt != current["attempt"] or event.rework_count != current["rework_count"]:
+                    raise ProgressEventError("stale bound block attempt")
             if not conflicted and event.material_update_sentence is not None:
                 signature = self._material_signature(event)
                 if projection["latest_material_signatures"].get(self._material_key(event)) == signature:
@@ -4589,6 +4819,86 @@ class Ledger:
         return operation_id, manifest, block, created, (retained[0] if retained else None)
 
     @staticmethod
+    def _bound_lifecycle_step(
+        projection: Mapping[str, Any], event: ProgressMaterialEvent, linked: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """Match one schema-1 event, before it applies, to the exact step the bound writers would retain.
+
+        The expected step is re-derived from the retained creation binding, its connector root, the block's
+        admitted manifest and the already linked prior step; event ids, provenance and source are only compared
+        as derived output, never trusted as the basis. Returns (reason, None) or (None, linkage facts).
+        """
+        project_id, task_id, block_id = event.project_id, event.task_id, event.block_id
+        operation_id = projection["task_creation_operations_by_task"].get(task_id)
+        binding = None if operation_id is None else projection["task_creation_bindings"].get(operation_id)
+        if binding is None:
+            return "NO_TASK_CREATION_BINDING", None
+        if binding["project_id"] != project_id:
+            return "BINDING_PROJECT_MISMATCH", None
+        command = projection["connector_receipts"].get(operation_id, {})
+        identity, receipts = list(command.get("identity") or ()), command.get("receipts") or []
+        if (len(identity) != 5 or identity[2] != project_id or identity[3] != binding["root_digest"]
+                or not receipts or receipts[-1].get("observed_root_digest") != binding["root_digest"]
+                or projection["events"].get(binding["event_id"]) != binding["event_digest"]):
+            return "BINDING_ROOT_MISMATCH", None
+        versions = (projection["task_manifests"].get(task_id) or {}).get("versions", {})
+        introduced = next((value for value in sorted(versions.values(), key=lambda value: int(value["manifest_version"]))
+                           if any(item["block_id"] == block_id for item in value["blocks"])), None)
+        try:
+            if introduced is None:
+                raise ProgressEventError("block is not in an admitted manifest of the bound task")
+            _, manifest, block, created, retained = Ledger._bound_block_context(
+                projection, project_id, task_id, block_id, introduced["manifest_digest"])
+        except ProgressEventError:
+            return "BLOCK_NOT_BOUND", None
+        proofs = list(event.proof_receipt_ids)
+        scope = int(projection["scopes"].get(project_id, 0))
+        restart = (retained is not None and retained["lifecycle_state"] == "INVALIDATED_REWORK"
+                   and event.event_kind is ProgressEventKind.STATE_CHANGED
+                   and event.lifecycle_state is ProgressLifecycle.ACTIVE
+                   and event.attempt == retained["attempt"] + 1)
+        if retained is None or restart:
+            step, parent, scope = 0, operation_id if retained is None else retained["latest_event_id"], scope or 1
+            shaped = len(proofs) == 1 and re.fullmatch(r"sha256:[0-9a-f]{64}", proofs[0]) is not None
+            if retained is None:
+                shaped = shaped and event.attempt == 1 and event.rework_count == 0 and not event.invalidated_receipt_ids
+            else:
+                shaped = (shaped and event.rework_count == max(retained["rework_count"], event.attempt - 1)
+                          and list(event.invalidated_receipt_ids) == retained["invalidated_receipt_ids"])
+        else:
+            prior = linked.get(retained["latest_event_id"])
+            if prior is None and event.attempt > 1:
+                return "ATTEMPT_UNSUPPORTED", None
+            if prior is None or prior["step"] >= len(_BOUND_LIFECYCLE_STEPS) - 1 or event.attempt != prior["attempt"]:
+                return "LIFECYCLE_CHAIN_UNLINKED", None
+            step, parent, before = prior["step"] + 1, retained["latest_event_id"], list(prior["proofs"])
+            shaped = (
+                (step == 1 and len(proofs) == 2 and proofs[0] == before[0] and proofs[1].startswith("runtime-review:"))
+                or (step == 2 and len(proofs) >= 3 and proofs[:2] == before and proofs[2].startswith("runtime-artifact:")
+                    and all(item.startswith("runtime-gate:") for item in proofs[3:] if item != "runtime-recorded:v1")
+                    and proofs.count("runtime-recorded:v1") <= 1)
+                or (step == 3 and proofs == before))
+            shaped = (shaped and event.rework_count == retained["rework_count"]
+                      and list(event.invalidated_receipt_ids) == retained["invalidated_receipt_ids"])
+        name, kind, lifecycle, admit, claim_limit = _BOUND_LIFECYCLE_STEPS[step]
+        if restart:
+            kind = "STATE_CHANGED"
+        try:
+            expected = validate_progress_material_event(_bound_block_payload(
+                event_id=_bound_attempt_id(name, task_id, block_id, event.attempt), kind=kind, lifecycle=lifecycle, project_id=project_id,
+                task_id=task_id, manifest=manifest, block=block, created=created, operation_id=operation_id,
+                scope_version=scope, admit=admit, proof_receipt_ids=proofs, claim_limit=claim_limit,
+                observed_at_ms=event.observed_at_ms, parent_event_id=parent, attempt=event.attempt,
+                rework_count=event.rework_count, invalidated_receipt_ids=list(event.invalidated_receipt_ids)))
+        except (ProgressEventError, AttributeError, KeyError, TypeError, ValueError):
+            return "TRANSITION_MISMATCH", None
+        if not shaped or expected.canonical_payload() != event.canonical_payload():
+            return "TRANSITION_MISMATCH", None
+        return None, {"step": step, "proofs": tuple(proofs), "operation_id": operation_id,
+                      "root_digest": binding["root_digest"], "creation_event_digest": binding["event_digest"],
+                      "manifest_digest": manifest["manifest_digest"], "attempt": event.attempt}
+
+    @staticmethod
     def _retained_prefix(projection: Mapping[str, Any], events: tuple[ProgressMaterialEvent, ...]) -> int:
         retained = [projection["dedupe"].get(event.dedupe_key) for event in events]
         count = 0
@@ -4623,12 +4933,13 @@ class Ledger:
     def append_bound_block_evidence(
         self, *, project_id: str, task_id: str, block_id: str, manifest_digest: str,
         expected_event_seq: int, evidence_path: Path, expected_sha256: str,
-        observed_at_ms: int | None = None,
+        observed_at_ms: int | None = None, attempt: int = 1,
     ) -> dict[str, Any]:
         """Retain owner file evidence for one block of an already host-created bound task."""
         project_id = _safe_id(project_id, "project_id")
         task_id = _safe_id(task_id, "task_id")
         block_id = _safe_id(block_id, "block_id")
+        attempt = _positive_int(attempt, "rework attempt")
         self._require_bound_revision(manifest_digest, expected_event_seq)
         if not isinstance(expected_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
             raise ProgressEventError("bound evidence requires a lowercase SHA-256 digest")
@@ -4640,17 +4951,34 @@ class Ledger:
             projection, records = self._replay_unlocked()
             operation_id, manifest, block, created, retained = self._bound_block_context(
                 projection, project_id, task_id, block_id, manifest_digest)
+            if retained is not None and retained["attempt"] > attempt:
+                raise ProgressEventError("stale bound block attempt")
+            identity = _bound_attempt_id("evidence", task_id, block_id, attempt)
+            existing = next((record["event"] for record in records if record["event"].get("event_id") == identity), None)
+            restart = attempt > 1
+            if existing is not None:
+                parent = existing["parent_event_id"]
+                rework = existing["rework"]
+            elif restart and retained is not None and retained["lifecycle_state"] == "INVALIDATED_REWORK" and attempt == retained["attempt"] + 1:
+                parent = retained["latest_event_id"]
+                rework = {"count": max(retained["rework_count"], attempt - 1), "invalidated_receipt_ids": retained["invalidated_receipt_ids"]}
+            elif not restart:
+                parent = operation_id
+                rework = {"count": 0, "invalidated_receipt_ids": []}
+            else:
+                raise ProgressEventError("bound rework requires the next invalidated attempt")
             event = validate_progress_material_event(_bound_block_payload(
-                event_id=f"bound-evidence:{task_id}:{block_id}", kind="BLOCK_CREATED", lifecycle="ACTIVE",
+                event_id=identity, kind="STATE_CHANGED" if restart else "BLOCK_CREATED", lifecycle="ACTIVE",
                 project_id=project_id, task_id=task_id, manifest=manifest, block=block, created=created,
                 operation_id=operation_id, scope_version=int(projection["scopes"].get(project_id, 0)) or 1,
                 admit=False, proof_receipt_ids=[receipt], claim_limit=BOUND_EVIDENCE_CLAIM_LIMIT,
-                observed_at_ms=observed, parent_event_id=operation_id))
+                observed_at_ms=observed, parent_event_id=parent, attempt=attempt,
+                rework_count=rework["count"], invalidated_receipt_ids=rework["invalidated_receipt_ids"]))
             outcome = {"event_id": event.event_id, "proof_receipt_id": receipt, "accepted": False,
                        "claim_limit": BOUND_EVIDENCE_CLAIM_LIMIT}
             if self._retained_prefix(projection, (event,)) == 1:
                 return {"status": "unchanged", "cursor": projection["cursor"], **outcome}
-            if retained is not None:
+            if retained is not None and not restart:
                 raise ProgressEventError("bound block lifecycle was already started by another writer")
             if projection["cursor"]["event_seq"] != expected_event_seq:
                 raise ProgressEventError("progress ledger changed; reload before submitting evidence")
@@ -4661,7 +4989,7 @@ class Ledger:
 
     def append_runtime_block_acceptance(
         self, *, swarm: Swarm, project_id: str, task_id: str, block_id: str, manifest_digest: str,
-        expected_event_seq: int, observed_at_ms: int | None = None,
+        expected_event_seq: int, observed_at_ms: int | None = None, attempt: int = 1,
     ) -> dict[str, Any]:
         """Retain REVIEW -> VERIFIED -> ACCEPTED from the live runtime that reviewed and completed the task.
 
@@ -4671,6 +4999,7 @@ class Ledger:
         project_id = _safe_id(project_id, "project_id")
         task_id = _safe_id(task_id, "task_id")
         block_id = _safe_id(block_id, "block_id")
+        attempt = _positive_int(attempt, "rework attempt")
         self._require_bound_revision(manifest_digest, expected_event_seq)
         if type(swarm) is not Swarm:
             raise ProgressEventError("bound acceptance requires the live runtime Swarm that reviewed the task")
@@ -4706,13 +5035,33 @@ class Ledger:
                 raise ProgressEventError("runtime acceptance conflicts with the current work assignment")
             if retained is None:
                 raise ProgressEventError("bound acceptance requires retained ACTIVE evidence for the block")
+            if retained["attempt"] != attempt:
+                raise ProgressEventError("stale bound block attempt")
+            accepted_id = _bound_attempt_id("accepted", task_id, block_id, attempt)
+            existing_acceptance = next((item["event"] for item in records if item["event"].get("event_id") == accepted_id), None)
+            existing_verified = next((item["event"] for item in records if item["event"].get("event_id") == _bound_attempt_id("verified", task_id, block_id, attempt)), None)
+            try:
+                velocity_active = project_id in self._velocity_starts_unlocked(records)
+            except VelocityMetadataError:
+                velocity_active = False
+            if (existing_acceptance is not None and "runtime-recorded:v1" in existing_acceptance.get("proof", {}).get("receipt_ids", [])) or (
+                    existing_acceptance is None and existing_verified is not None and "runtime-recorded:v1" in existing_verified.get("proof", {}).get("receipt_ids", [])) or (
+                    existing_acceptance is None and existing_verified is None and velocity_active):
+                proof_ids.append("runtime-recorded:v1")
+            if attempt > 1 and any(
+                    row.get("project_id") == project_id and row.get("task_id") == task_id
+                    and row.get("block_id") == block_id and row.get("event_kind") == "ACCEPTED"
+                    and row.get("rework", {}).get("attempt", attempt) < attempt
+                    and review_receipt in row.get("proof", {}).get("receipt_ids", [])
+                    for row in (item["event"] for item in records)):
+                raise ProgressEventError("bound rework requires a fresh runtime review")
             if any(item["task_id"] == task_id and item["block_id"] != block_id
                    and review_receipt in item["proof_receipt_ids"] for item in projection["blocks"].values()):
                 raise ProgressEventError("runtime review already accepted another block")
             if retained["committed_weight"] != block["weight"]:
                 raise ProgressEventError("bound block weight changed after evidence")
-            evidence_id = f"bound-evidence:{task_id}:{block_id}"
-            ids = tuple(f"bound-{name}:{task_id}:{block_id}" for name in ("review", "verified", "accepted"))
+            evidence_id = _bound_attempt_id("evidence", task_id, block_id, attempt)
+            ids = tuple(_bound_attempt_id(name, task_id, block_id, attempt) for name in ("review", "verified", "accepted"))
             steps = (("STATE_CHANGED", "REVIEW", False, [evidence_receipt, review_receipt]),
                      ("PROOF_ADMITTED", "VERIFIED", True, proof_ids),
                      ("ACCEPTED", "ACCEPTED", True, proof_ids))
@@ -4722,13 +5071,20 @@ class Ledger:
                 event_id=identity, kind=kind, lifecycle=lifecycle, project_id=project_id, task_id=task_id,
                 manifest=manifest, block=block, created=created, operation_id=operation_id,
                 scope_version=scope_version, admit=admit, proof_receipt_ids=receipts,
-                claim_limit=BOUND_ACCEPTANCE_CLAIM_LIMIT, observed_at_ms=moment, parent_event_id=parent))
+                claim_limit=BOUND_ACCEPTANCE_CLAIM_LIMIT, observed_at_ms=moment, parent_event_id=parent,
+                attempt=attempt, rework_count=retained["rework_count"],
+                invalidated_receipt_ids=retained["invalidated_receipt_ids"]))
                 for identity, parent, (kind, lifecycle, admit, receipts)
                 in zip(ids, (evidence_id, *ids[:-1]), steps))
             outcome = {"event_id": ids[-1], "proof_receipt_ids": proof_ids, "accepted": True,
                        "claim_limit": BOUND_ACCEPTANCE_CLAIM_LIMIT}
             retained_count = self._retained_prefix(projection, events)
             if retained_count == len(events):
+                try:
+                    accepted_row = next(item for item in records if item["event"].get("event_id") == ids[-1])
+                    self._record_velocity_acceptance_unlocked(validate_progress_material_event(accepted_row["event"]), records)
+                except VelocityMetadataError:
+                    pass  # Acceptance survives unavailable optional analytics.
                 return {"status": "unchanged", "cursor": projection["cursor"], **outcome}
             if not retained_count and (retained["lifecycle_state"] != ProgressLifecycle.ACTIVE.value
                     or retained["latest_event_id"] != evidence_id
@@ -4739,6 +5095,11 @@ class Ledger:
             if projection["cursor"]["event_seq"] not in {expected_event_seq, expected_event_seq + retained_count}:
                 raise ProgressEventError("progress ledger changed; reload before retaining acceptance")
             trial = self._append_material_batch_unlocked(projection, records, events[retained_count:])
+            try:
+                _, updated_records = self._replay_unlocked()
+                self._record_velocity_acceptance_unlocked(events[-1], updated_records)
+            except VelocityMetadataError:
+                pass  # An incomplete sidecar leaves this acceptance uncounted, not rolled back.
         with self._condition:
             self._condition.notify_all()
         return {"status": "appended", "cursor": trial["cursor"], **outcome}
@@ -4965,7 +5326,8 @@ class Ledger:
         for record in records:
             raw = record["event"]
             if self._is_non_material_record(raw):
-                if raw.get("record_type") == "TASK_HANDOFF" and raw.get("task_id") == task_id:
+                if (raw.get("record_type") == "TASK_HANDOFF" and raw.get("handoff_type") != "CTRL_ROTATION"
+                        and raw.get("task_id") == task_id):
                     handoffs.append({"event_seq": record["event_seq"], "event_id": raw["event_id"],
                                      "event_digest": record["event_digest"], "observed_at_ms": raw["observed_at_ms"],
                                      "scope_version": raw["scope_version"], "lease_version": raw["lease_version"]})
@@ -5404,6 +5766,368 @@ class Ledger:
             "conflict_count": conflicts,
             "claim_limit": "Verified yield is current-scope admitted proof delta per observed local token count; it is not completion percentage, billing, quality, productivity ranking, or provider usage.",
         }
+
+    @staticmethod
+    def _velocity_points(projection: Mapping[str, Any], *, covered_starts: frozenset[int],
+                         accepted_event_ids: frozenset[str]) -> list[dict[str, Any]]:
+        """Arithmetic only. Callers must independently validate coverage and acceptance."""
+        seen: dict[str, dict[str, Any]] = {}
+        for row in projection["outcomes"]:
+            event_id = row["event_id"]
+            if row["kind"] not in {"ACCEPTED", "INVALIDATED", "WITHDRAWN"}:
+                raise ProgressEventError("Velocity outcome kind is invalid")
+            if event_id in seen and seen[event_id] != row:
+                raise ProgressEventError("Velocity outcome identity conflicts")
+            seen[event_id] = row
+        result = []
+        for bucket in projection["series"]:
+            eligible = [row for row in seen.values() if bucket["start_ms"] <= row["observed_at_ms"] < bucket["end_ms"]
+                        and row["timestamp_status"] == "ORDERED"]
+            valid = (not projection.get("outcomes_truncated", False)
+                     and bucket["start_ms"] in covered_starts
+                     and not bucket["excluded_event_seqs"]
+                     and all(row["linkage"]["state"] == "LINKED"
+                             and row["linkage"]["acceptance_event_id"] in accepted_event_ids for row in eligible))
+            net = sum(1 if row["kind"] == "ACCEPTED" else -1 for row in eligible)
+            elapsed_hours = (bucket["end_ms"] - bucket["start_ms"]) / HOUR_MS
+            if elapsed_hours <= 0:
+                raise ProgressEventError("Velocity bucket duration must be positive")
+            result.append({"start_ms": bucket["start_ms"], "end_ms": bucket["end_ms"],
+                           "rate": net / elapsed_hours if valid else None, "scope_changed": bucket["scope_changed"]})
+        return result
+
+    def _velocity_read_snapshot(self, project_id: str):
+        # Bound linkage is decided by replay against the state just before each event, never afterwards.
+        steps: dict[str, dict[str, Any]] = {}
+        acceptance_links: dict[str, dict[str, Any]] = {}
+
+        def inspect(state: Mapping[str, Any], event: ProgressMaterialEvent, _: int) -> None:
+            if event.schema_version != 1 or event.project_id != project_id or event.event_id in state["events"]:
+                return
+            prior = state["blocks"].get(Ledger._block_key(event))
+            accepting = (event.lifecycle_state is ProgressLifecycle.ACCEPTED
+                         and (prior is None or prior["lifecycle_state"] != ProgressLifecycle.ACCEPTED.value))
+            starts = ((prior is None and event.event_kind is ProgressEventKind.BLOCK_CREATED)
+                      or (prior is not None and prior["lifecycle_state"] == "INVALIDATED_REWORK"
+                          and event.lifecycle_state is ProgressLifecycle.ACTIVE))
+            if not (accepting or starts or (prior is not None and prior["latest_event_id"] in steps)):
+                return
+            reason, facts = Ledger._bound_lifecycle_step(state, event, steps)
+            if facts is not None:
+                steps[event.event_id] = facts
+            if accepting:
+                claimed = (event.custody_surface == "ledger:bound-task-lifecycle" or event.event_id.startswith("bound-")
+                           or event.provenance.startswith("bound-task-lifecycle:"))
+                acceptance_links[event.event_id] = {
+                    "state": "LINKED" if facts else "UNSUPPORTED_BOUND_CLAIM" if claimed else "UNLINKED",
+                    "acceptance_event_id": event.event_id, "reason": reason,
+                    **{name: None if facts is None else facts[name]
+                       for name in ("operation_id", "root_digest", "creation_event_digest", "manifest_digest", "attempt")}}
+
+        with self._state.locked():
+            projection, records = self._replay_unlocked(inspect=inspect)
+            try:
+                metadata = self._velocity_metadata_unlocked(records)
+                diagnostic = None
+            except VelocityMetadataError:
+                metadata = None
+                diagnostic = "VELOCITY_METADATA_CORRUPT_OR_INCOMPATIBLE"
+        return projection, records, metadata, diagnostic, acceptance_links
+
+    def project_velocity_windows(self, project_id: str, *, as_of_ms: int) -> dict[str, Any]:
+        snapshot = self._velocity_read_snapshot(_safe_id(project_id, "project_id"))
+        return {str(days): self.project_velocity(project_id, days=days, as_of_ms=as_of_ms, _snapshot=snapshot)
+                for days in (7, 30, 90)}
+
+    def project_velocity(self, project_id: str, *, days: int, as_of_ms: int, _snapshot=None) -> dict[str, Any]:
+        """Return UTC daily rates, including the covered elapsed part of the current day."""
+        if type(days) is not int or days not in {7, 30, 90}:
+            raise ProgressEventError("Velocity window must be 7, 30, or 90 days")
+        as_of = _positive_int(as_of_ms, "as_of_ms")
+        day = 24 * HOUR_MS
+        today = as_of - as_of % day
+        partial = as_of > today
+        split = today - (days - 1 if partial else days) * day
+        start = split - days * day
+        if start < 0:
+            raise ProgressEventError("Velocity comparison predates the supported epoch")
+        if _snapshot is None:
+            _snapshot = self._velocity_read_snapshot(project_id)
+        retained, records, metadata, diagnostic, acceptance_links = _snapshot
+        if metadata is not None:
+            activation = metadata["projects"].get(project_id)
+            receipts = metadata["receipts"]
+        else:
+            activation = None
+            receipts = {}
+        if activation is None and diagnostic is None and any(
+                row["event"].get("project_id") == project_id
+                and "runtime-recorded:v1" in row["event"].get("proof", {}).get("receipt_ids", []) for row in records):
+            diagnostic = "VELOCITY_METADATA_MISSING"
+        if activation is not None and any(
+                row["event_seq"] > activation["event_seq"] and row["event"].get("project_id") == project_id
+                and not self._is_non_material_record(row["event"])
+                and row["event"].get("observed_at_ms", 0) < activation["observed_at_ms"]
+                for row in records):
+            activation = None  # A clock regression makes the retained interval ambiguous.
+            diagnostic = "VELOCITY_CLOCK_REGRESSION"
+        accepted_ids = frozenset(identity for identity, receipt in receipts.items()
+                                 if activation is not None and receipt["project_id"] == project_id)
+        def query(lower, upper, size):
+            result = self.project_accepted_progress_rate(project_id, observed_after_ms=lower,
+                observed_before_ms=upper, as_of_ms=as_of, bucket_ms=size,
+                _snapshot=(retained, records, acceptance_links))
+            if result["cursor"] != retained["cursor"]:
+                raise ProgressEventError("Ledger changed during Velocity comparison; retry the read")
+            return result
+        def points(projection):
+            starts = frozenset(bucket["start_ms"] for bucket in projection["series"]
+                               if activation is not None and bucket["start_ms"] >= activation["observed_at_ms"])
+            return self._velocity_points(projection, covered_starts=starts, accepted_event_ids=accepted_ids)
+        if not partial:
+            previous = points(query(start, split, day))
+            current = points(query(split, today, day))
+        else:
+            previous = points(query(start, split - day, day))
+            current = points(query(split, today, day))
+            lower = max(today, activation["observed_at_ms"]) if activation is not None else today
+            previous_day = split - day
+            duration = as_of - lower
+            if duration > 0:
+                def partial_point(lower_bound, upper_bound, day_start):
+                    point = points(query(lower_bound, upper_bound, upper_bound - lower_bound))[0]
+                    return {**point, "start_ms": day_start, "end_ms": day_start + day, "partial": True,
+                            "observed_start_ms": lower_bound, "observed_end_ms": upper_bound}
+                current.append(partial_point(lower, as_of, today))
+                previous_lower = previous_day + (lower - today)
+                previous.append(partial_point(previous_lower, previous_lower + duration, previous_day))
+            else:
+                current.append({"start_ms": today, "end_ms": today + day, "rate": None, "scope_changed": False, "partial": True})
+                previous.append({"start_ms": previous_day, "end_ms": previous_day + day, "rate": None, "scope_changed": False, "partial": True})
+        return {"project_id": project_id, "unit": "blk / h", "days": days, "timezone": "UTC",
+                "cursor": retained["cursor"], "current": current, "previous": previous,
+                "coverage": "RECORDED_FROM_START" if activation else "UNKNOWN", "acceptance": "RUNTIME_RECORDED",
+                "diagnostic": diagnostic,
+                "claim_limit": "SWARM-recorded accepted blocks per elapsed hour; excludes external actions. Earlier or incomplete data is unknown."}
+
+    def project_accepted_progress_rate(
+        self, project_id: str, *, observed_after_ms: int, observed_before_ms: int, as_of_ms: int,
+        bucket_ms: int = HOUR_MS, _snapshot=None,
+    ) -> dict[str, Any]:
+        """Read-only observed accepted-outcome counts per bucket; time is observed, never synthesized.
+
+        Retained events never prove continuous recording, and declared ACTIVE residence is not work
+        time, so coverage, throughput, efficiency and sustained degradation stay UNKNOWN with explicit
+        reasons until an authoritative source exists. A bound chain linked by replay is reconstructed,
+        not authenticated; plain Ledger ACCEPTED
+        state, including self-declared bound strings, is tallied separately and never mixed into it.
+        """
+        project_id = _safe_id(project_id, "project_id")
+        start = _positive_int(observed_after_ms, "observed_after_ms", allow_zero=True)
+        end = _positive_int(observed_before_ms, "observed_before_ms", allow_zero=True)
+        as_of = _positive_int(as_of_ms, "as_of_ms")
+        size = _positive_int(bucket_ms, "bucket_ms")
+        if end <= start or (end - start) % size:
+            raise ProgressEventError("accepted progress window must be a positive whole number of buckets")
+        if (end - start) // size > MAX_ACCEPTED_RATE_BUCKETS:
+            raise ProgressEventError(f"accepted progress window exceeds {MAX_ACCEPTED_RATE_BUCKETS} buckets")
+        if end > as_of:
+            raise ProgressEventError("accepted progress window cannot end after as_of_ms")
+        if _snapshot is None:
+            projection, records, _, _, acceptance_links = self._velocity_read_snapshot(project_id)
+        else:
+            projection, records, acceptance_links = _snapshot
+
+        reasons: set[str] = set()
+        handoffs: dict[str, list[int]] = {}
+        events: list[tuple[int, ProgressMaterialEvent]] = []
+        seen: set[str] = set()
+        conflicts = 0
+        for record in records:
+            raw = record["event"]
+            if self._is_non_material_record(raw):
+                if raw.get("record_type") == "TASK_HANDOFF" and raw.get("handoff_type") != "CTRL_ROTATION":
+                    handoffs.setdefault(str(raw.get("task_id")), []).append(int(record["event_seq"]))
+                continue
+            event = validate_progress_material_event(raw)
+            # Schema-2 records are topology definitions; block lifecycle lives only in schema-1 events.
+            if event.schema_version != 1 or event.project_id != project_id:
+                continue
+            if (projection["events"].get(event.event_id) != event.digest
+                    or projection["dedupe"].get(event.dedupe_key) != event.semantic_digest):
+                conflicts += 1
+                continue
+            if event.event_id in seen:
+                continue  # A replayed line never earns a second credit.
+            seen.add(event.event_id)
+            events.append((int(record["event_seq"]), event))
+        if conflicts:
+            reasons.add("EVENT_IDENTITY_CONFLICT")
+        if projection["topology_conflicts"]:
+            reasons.add("TOPOLOGY_CONFLICT")
+
+        timed = [event.observed_at_ms for _, event in events if event.observed_at_ms <= as_of]
+        if len(timed) != len(events):
+            reasons.add("TIMESTAMP_AFTER_AS_OF")
+        span = (min(timed), max(timed)) if timed else None
+        assignments = projection["ticket_identities"].get(project_id, {})
+        code = assignments.get("project_code")
+
+        outcomes: list[dict[str, Any]] = []
+        scope_changes: list[dict[str, Any]] = []
+        previous: dict[str, tuple[int, ProgressMaterialEvent]] = {}
+        credited: dict[str, tuple[str, int | None, dict[str, Any]]] = {}
+        intervals: list[tuple[int, int]] = []
+        interval_issues: set[str] = set()
+        high_water = 0
+        for seq, event in events:
+            usable = event.observed_at_ms <= as_of
+            ordered = event.observed_at_ms >= high_water
+            if usable:
+                high_water = max(high_water, event.observed_at_ms)
+            if event.event_kind is ProgressEventKind.SCOPE_REVISED and not any(
+                    change["scope_version"] == event.scope_version for change in scope_changes):
+                scope_changes.append({"event_seq": seq, "event_id": event.event_id, "event_digest": event.digest,
+                                      "scope_version": event.scope_version, "observed_at_ms": event.observed_at_ms})
+            key = Ledger._block_key(event)
+            prior = previous.get(key)
+            old_state = None if prior is None else prior[1].lifecycle_state
+            new_state = event.lifecycle_state
+            if prior is not None and old_state is ProgressLifecycle.ACTIVE:
+                left_seq, left = prior
+                lower, upper = max(start, left.observed_at_ms), min(end, event.observed_at_ms)
+                if not (left.observed_at_ms <= as_of and usable):
+                    interval_issues.add("TIMESTAMP_AFTER_AS_OF")
+                elif (left.owner_id != event.owner_id
+                      or event.event_kind in {ProgressEventKind.TAKEOVER_STARTED, ProgressEventKind.RETRY_STARTED}
+                      or any(left_seq < handoff <= seq for handoff in handoffs.get(event.task_id, ()))):
+                    interval_issues.add("HANDOFF_OR_RETRY_BOUNDARY")
+                elif set(left.flags + event.flags) & {"stale", "conflicted", "unverified"}:
+                    interval_issues.add("UNVERIFIED_BOUNDARY")
+                elif upper > lower:
+                    intervals.append((lower, upper))
+            previous[key] = (seq, event)
+            kind = None
+            if new_state is ProgressLifecycle.ACCEPTED and old_state is not ProgressLifecycle.ACCEPTED:
+                kind = "ACCEPTED"
+                measured = (event.measurement_state is ProgressMeasurementState.MEASURED
+                            and event.committed_weight is not None and event.committed_weight > 0)
+                link = acceptance_links.get(event.event_id) or {  # Fail closed if replay never saw this transition.
+                    "state": "UNLINKED", "acceptance_event_id": event.event_id, "reason": "LIFECYCLE_CHAIN_UNLINKED",
+                    **dict.fromkeys(("operation_id", "root_digest", "creation_event_digest", "manifest_digest", "attempt"))}
+                credited[key] = ("RECONSTRUCTED_BOUND_CHAIN" if link["state"] == "LINKED" else "LEDGER_ACCEPTED_STATE",
+                                 event.admitted_proof_weight if measured else None, link)
+            elif old_state is ProgressLifecycle.ACCEPTED and new_state is ProgressLifecycle.INVALIDATED_REWORK:
+                kind = "INVALIDATED"
+            elif old_state is ProgressLifecycle.ACCEPTED and new_state is ProgressLifecycle.TOMBSTONED:
+                kind = "WITHDRAWN"
+            if kind is None:
+                continue
+            # A reversal debits the basis of the exact credit it reverses, never the other tally.
+            basis, weight, link = credited[key]
+            number = assignments.get("assignments", {}).get(event.task_id)
+            outcomes.append({
+                "event_seq": seq, "event_id": event.event_id, "event_digest": event.digest,
+                "kind": kind, "block_id": event.block_id, "task_id": event.task_id,
+                "display_id": f"{code}-{number}" if code and number is not None else None,
+                "scope_version": event.scope_version, "observed_at_ms": event.observed_at_ms,
+                "timestamp_status": "AFTER_AS_OF" if not usable else "ORDERED" if ordered else "OUT_OF_ORDER",
+                "acceptance_basis": basis, "weight": weight, "linkage": link,
+            })
+        if any(row["linkage"]["state"] == "UNSUPPORTED_BOUND_CLAIM" for row in outcomes):
+            reasons.add("UNSUPPORTED_BOUND_CLAIM")
+        open_active = sum(1 for _, event in previous.values()
+                          if event.lifecycle_state is ProgressLifecycle.ACTIVE and event.observed_at_ms < end)
+
+        def window_union(ranges: list[tuple[int, int]], lower: int, upper: int) -> int:
+            total, boundary = 0, lower
+            for left, right in sorted(ranges):
+                left, right = max(left, boundary), min(right, upper)
+                if right > left:
+                    total += right - left
+                    boundary = right
+            return total
+
+        def tally(rows: list[dict[str, Any]], basis: str) -> dict[str, Any]:
+            rows = [row for row in rows if row["acceptance_basis"] == basis]
+            counts = {name: sum(row["kind"] == kind for row in rows) for name, kind in
+                      (("accepted", "ACCEPTED"), ("invalidated", "INVALIDATED"), ("withdrawn", "WITHDRAWN"))}
+            unweighted = sum(row["weight"] is None for row in rows)
+            weight = sum(row["weight"] if row["kind"] == "ACCEPTED" else -row["weight"]
+                         for row in rows if row["weight"] is not None)
+            return {**counts, "net": counts["accepted"] - counts["invalidated"] - counts["withdrawn"],
+                    "net_weight": None if unweighted else weight, "unweighted": unweighted}
+
+        def tallies(rows: list[dict[str, Any]]) -> dict[str, Any]:
+            return {"verified": {key: None for key in ("accepted", "invalidated", "withdrawn", "net", "net_weight", "unweighted")},
+                    "reconstructed": tally(rows, "RECONSTRUCTED_BOUND_CHAIN"),
+                    "unbound": tally(rows, "LEDGER_ACCEPTED_STATE")}
+
+        # Only an ordered timestamp is placed; an out-of-order or post-clock one is listed, never bucketed.
+        placed = [row for row in outcomes if row["timestamp_status"] == "ORDERED" and start <= row["observed_at_ms"] < end]
+        unplaced = [row for row in outcomes if row["timestamp_status"] == "AFTER_AS_OF"
+                    or (row["timestamp_status"] == "OUT_OF_ORDER" and start <= row["observed_at_ms"] < end)]
+        if any(row["timestamp_status"] == "OUT_OF_ORDER" for row in unplaced):
+            reasons.add("OUT_OF_ORDER_TIMESTAMP")
+        series: list[dict[str, Any]] = []
+        for bucket_start in range(start, end, size):
+            bucket_end = bucket_start + size
+            members = [row for row in placed if bucket_start <= row["observed_at_ms"] < bucket_end]
+            excluded = [row["event_seq"] for row in unplaced if bucket_start <= row["observed_at_ms"] < bucket_end]
+            series.append({
+                "start_ms": bucket_start, "end_ms": bucket_end, "coverage": "UNKNOWN",
+                "reasons": ["NO_AUTHORITATIVE_COVERAGE", *(["OUT_OF_ORDER_TIMESTAMP"] if excluded else [])],
+                "observed": tallies(members),
+                "scope_versions": sorted({row["scope_version"] for row in members}),
+                "scope_changed": any(bucket_start <= change["observed_at_ms"] < bucket_end for change in scope_changes),
+                "outcome_event_seqs": [row["event_seq"] for row in members], "excluded_event_seqs": excluded,
+            })
+        reasons.update({"NO_AUTHORITATIVE_COVERAGE", "NO_AUTHORITATIVE_WORK_DURATION"})
+        residence_reasons = set(interval_issues)
+        if open_active:
+            residence_reasons.add("OPEN_ACTIVE_INTERVAL_UNCOUNTED")
+        half = len(series) // 2
+        split = None if len(series) < 2 or len(series) % 2 else {
+            "earlier": tallies([row for row in placed if row["observed_at_ms"] < start + half * size]),
+            "later": tallies([row for row in placed if row["observed_at_ms"] >= start + half * size])}
+
+        in_window = [row for row in outcomes if start <= row["observed_at_ms"] < end or row["timestamp_status"] == "AFTER_AS_OF"]
+        result = {
+            "schema_version": 3, "project_id": project_id,
+            "window": {"start_ms": start, "end_ms": end, "bucket_ms": size, "as_of_ms": as_of},
+            "cursor": projection["cursor"], "state": "PARTIAL" if events else "UNKNOWN", "reasons": sorted(reasons),
+            "timestamp_basis": "LEDGER_EVENT_OBSERVED_AT_MS", "verified_basis": "AUTHENTICATED_ACCEPTANCE_UNAVAILABLE",
+            "coverage": {"state": "UNKNOWN", "reasons": ["NO_AUTHORITATIVE_COVERAGE"],
+                         "retained_event_span": {"first_observed_at_ms": span[0] if span else None,
+                                                 "last_observed_at_ms": span[1] if span else None},
+                         "claim_limit": "Retained event times do not prove continuous recording between them."},
+            "series": series, "observed_totals": tallies(placed), "unplaced": tallies(unplaced),
+            "throughput": {"state": "UNKNOWN", "reasons": ["NO_AUTHORITATIVE_COVERAGE"],
+                           "verified_net_units_per_elapsed_hour": None, "verified_net_weight_per_elapsed_hour": None,
+                           "required_evidence": "authoritative continuous recording coverage for each bucket"},
+            "efficiency": {"state": "UNKNOWN", "reasons": ["NO_AUTHORITATIVE_WORK_DURATION"],
+                           "verified_net_units_per_observed_work_hour": None,
+                           "required_evidence": "authoritative observed work duration, not declared lifecycle residence"},
+            "declared_active_residence": {
+                "ms": window_union(intervals, start, end), "open_active_blocks": open_active,
+                "reasons": sorted(residence_reasons),
+                "claim_limit": "Declared ACTIVE lifecycle residence; not observed work time and never an efficiency denominator."},
+            "half_window_observed_counts": {
+                "label": "OBSERVED_COUNT_SPLIT_NOT_RATE_OR_DEGRADATION",
+                "state": "UNAVAILABLE" if split is None else "OBSERVED_COUNTS_ONLY",
+                "reasons": ["WINDOW_NOT_SPLITTABLE"] if split is None else ["NO_AUTHORITATIVE_COVERAGE"],
+                "split_at_ms": None if split is None else start + half * size,
+                "earlier": None if split is None else split["earlier"], "later": None if split is None else split["later"]},
+            "sustained_degradation": {"state": "UNKNOWN",
+                                      "reasons": ["NO_AUTHORITATIVE_COVERAGE", "REPEATED_WINDOW_CRITERIA_UNDEFINED"],
+                                      "required_evidence": "comparable covered repeated windows under defined criteria"},
+            "scope_changes": scope_changes,
+            "outcomes": in_window[:MAX_ACCEPTED_RATE_OUTCOMES],
+            "outcomes_truncated": len(in_window) > MAX_ACCEPTED_RATE_OUTCOMES,
+            "conflict_count": conflicts, "claim_limit": ACCEPTED_RATE_CLAIM_LIMIT,
+        }
+        result["projection_digest"] = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return result
 
     def project_topology(
         self,
