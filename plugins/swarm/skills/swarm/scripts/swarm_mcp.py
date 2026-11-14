@@ -283,8 +283,8 @@ TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "swarm_status",
         "title": "Read SWARM status",
-        "description": "Read the authoritative local SWARM overview: active projects, hierarchy nodes, progress, and current data coverage. No model calls or task mutations; console initialization may maintain local state and calls append metadata telemetry.",
-        "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}, "additionalProperties": False},
+        "description": "Read the authoritative local SWARM overview: active projects, hierarchy nodes, progress, and current data coverage. Pass compact=true unless you are drawing charts or auditing device activation: it omits the burn-rate and Velocity point series and all but the latest activation receipt, which together are most of the result. No model calls or task mutations; console initialization may maintain local state and calls append metadata telemetry.",
+        "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}, "compact": {"type": "boolean"}}, "additionalProperties": False},
         "annotations": {"title": "Read SWARM status", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     },
     {
@@ -697,8 +697,13 @@ class SwarmProjection:
             origin = Path(code.co_filename).resolve() if code is not None else None
             runtime["backend_code_origin"] = (origin.relative_to(REPO_ROOT).as_posix()
                 if origin is not None and origin.is_relative_to(REPO_ROOT) else "OUTSIDE_PACKAGE_OR_UNKNOWN")
-            return {**_compact_overview(app.overview(project_id.strip() if project_id else None)),
-                    "device": _device_status(self.telemetry_path), "runtime": runtime}
+            status = {**_compact_overview(app.overview(project_id.strip() if project_id else None)),
+                      "device": _device_status(self.telemetry_path), "runtime": runtime}
+            if not arguments.get("compact"):
+                return status
+            receipts = status["device"]["activation_receipts"]
+            return _without_series({**status, "device": {
+                **status["device"], "activation_receipts": receipts[-1:], "activation_receipts_omitted": max(0, len(receipts) - 1)}})
         if name == "swarm_projects":
             app.refresh_native_observation()
             return _compact_roster(app.project_roster())
@@ -786,6 +791,29 @@ def _compact_overview(view: dict[str, Any]) -> dict[str, Any]:
         "claim_limits": view.get("claim_limits", {}),
         "truncated": len(view.get("nodes", [])) > len(nodes) or len(view.get("projects", [])) > len(projects) or len(view.get("links", [])) > len(links),
     }
+
+
+def _without_series(value: dict[str, Any]) -> dict[str, Any]:
+    """Status without the chart point series, which are most of a project-scoped status.
+
+    The caller opts in with compact=true, which reduces both the text and structured
+    blocks and keeps only the latest activation receipt. Each Velocity window keeps
+    its metadata and latest point. Without that option, both blocks retain the series.
+    """
+    metrics = value.get("overview_metrics")
+    usage = metrics.get("usage") if isinstance(metrics, dict) else None
+    if not isinstance(usage, dict) or "series_omitted" in value:
+        return value
+    metrics = {**metrics, "usage": {key: item for key, item in usage.items() if key != "burn_rate_series"}}
+    velocity = metrics.get("velocity")
+    if isinstance(velocity, dict) and isinstance(velocity.get("windows"), dict):
+        metrics["velocity"] = {**velocity, "windows": {
+            days: {**{key: item for key, item in window.items() if key not in ("current", "previous")},
+                   "latest": (window.get("current") or [None])[-1]} if isinstance(window, dict) else window
+            for days, window in velocity["windows"].items()}}
+    return {**value, "overview_metrics": metrics,
+            "series_omitted": "burn_rate_series and the Velocity current/previous point series; "
+                              "a call without compact=true returns them in structuredContent"}
 
 
 def _compact_hives(topology: Any) -> dict[str, Any]:
