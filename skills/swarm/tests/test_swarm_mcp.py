@@ -1641,6 +1641,63 @@ class SwarmMCPTests(unittest.TestCase):
                 self.assertTrue(json.loads(output.getvalue())["result"]["isError"])
                 self.assertLess(len(output.getvalue()), 1024)
 
+    def test_status_compact_is_opt_in_and_default_text_stays_complete(self) -> None:
+        day = 86400000
+        def points(count):
+            return [{"start_ms": i * day, "end_ms": (i + 1) * day, "rate": None, "scope_changed": False} for i in range(count)]
+        windows = {str(days): {"project_id": "project:alpha", "unit": "blk / h", "days": days, "timezone": "UTC",
+                               "cursor": {"event_seq": 1}, "current": points(days), "previous": points(days),
+                               "coverage": "UNKNOWN", "acceptance": "RUNTIME_RECORDED", "diagnostic": None,
+                               "claim_limit": "fixture"} for days in (7, 30, 90)}
+        view = {"nodes": [{"id": "task"}], "projects": [], "overview_metrics": {
+            "accepted_scope_id": "project:alpha",
+            "usage": {"status": "KNOWN", "burn_rate_series": [{"bucket_ms": i * 60000, "tokens": i} for i in range(120)]},
+            "velocity": {"schema_version": 1, "unit": "blk / h", "ledger_project_id": "project:alpha", "windows": windows}}}
+        app = Mock()
+        app.overview.return_value = view
+        real_call = mcp.SwarmProjection.call
+        requests = [{"jsonrpc": "2.0", "id": index, "method": "tools/call", "params": {"name": "swarm_status", "arguments": arguments}}
+                    for index, arguments in enumerate([{"project_id": "project:alpha"}, {"project_id": "project:alpha", "compact": True},
+                                                       {"project_id": "project:alpha", "compact": "yes"}])]
+        receipts = [{"tool": "workflow_activation", "timestamp": f"2026-11-01T00:00:{index:02d}Z", "host": "fixture", "hook_event": "SessionStart",
+                     "session_hash": f"{index:064x}", "plugin_version": "1.0.0", "skill_sha256": "a" * 64, "success": True} for index in range(50)]
+        with tempfile.TemporaryDirectory() as directory:
+            stream = Path(directory) / "telemetry.jsonl"
+            stream.write_text("".join(json.dumps(receipt) + "\n" for receipt in receipts), encoding="utf-8")
+            projection = mcp.SwarmProjection(telemetry_path=stream)
+            projection._app = app
+            with patch.object(mcp.SwarmProjection, "call", side_effect=lambda name, arguments: real_call(projection, name, arguments)), \
+                    patch.object(sys, "stdin", io.StringIO("\n".join(map(json.dumps, requests)))), patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+                mcp.serve(telemetry_path=stream)
+            telemetry = [record for record in map(json.loads, stream.read_text(encoding="utf-8").splitlines()) if record["tool"] == "swarm_status"]
+        full, compact, invalid = (json.loads(line)["result"] for line in output.getvalue().splitlines())
+        self.assertFalse(full["isError"])
+        value = full["structuredContent"]  # an existing caller, such as the Projects app, still receives every point
+        self.assertEqual(json.loads(full["content"][0]["text"]), value)
+        self.assertEqual(value["overview_metrics"], mcp._compact_overview(view)["overview_metrics"])
+        self.assertEqual(len(value["device"]["activation_receipts"]), 50)
+        self.assertNotIn("series_omitted", value)
+        structured_bytes = len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
+        self.assertEqual(telemetry[0]["result_bytes"], structured_bytes)
+        # compact=true omits the series and older receipts from both blocks.
+        self.assertFalse(compact["isError"])
+        text = json.loads(compact["content"][0]["text"])
+        self.assertEqual(text, compact["structuredContent"])
+        for days, window in text["overview_metrics"]["velocity"]["windows"].items():
+            kept = {key: item for key, item in windows[days].items() if key not in {"current", "previous"}}
+            self.assertEqual(window, {**kept, "latest": windows[days]["current"][-1]})
+        self.assertEqual(text["overview_metrics"]["usage"], {"status": "KNOWN"})
+        self.assertIn("compact=true", text["series_omitted"])
+        self.assertEqual({key: item for key, item in text.items() if key not in {"overview_metrics", "device", "series_omitted"}},
+                         {key: item for key, item in value.items() if key not in {"overview_metrics", "device"}})
+        self.assertEqual(compact["structuredContent"]["device"]["activation_receipts"], value["device"]["activation_receipts"][-1:])
+        self.assertEqual(compact["structuredContent"]["device"]["activation_receipts_omitted"], 49)
+        self.assertLess(len(json.dumps(compact, ensure_ascii=False, separators=(",", ":")).encode()), structured_bytes // 4)
+        self.assertTrue(invalid["isError"])
+        # A status without Velocity (all projects) and any other tool keep their full text copy.
+        self.assertNotIn("velocity", mcp._without_series(mcp._compact_overview({"overview_metrics": {}}))["overview_metrics"])
+        self.assertEqual(mcp._without_series({"nodes": []}), {"nodes": []})
+
     def test_usage_continuity_raw_compacted_and_omitted_runs(self):
         from console.server import TOKEN_SAMPLE_SECONDS
         self.assertEqual(TOKEN_SAMPLE_SECONDS * 1000, 60000)  # Bind the projection decoder to the existing store cadence.

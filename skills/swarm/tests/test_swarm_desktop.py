@@ -64,6 +64,12 @@ class PackagedDesktopTests(unittest.TestCase):
         self.assertFalse(result['structuredContent']['approval_verified'])
         self.assertEqual(snapshot.read_bytes(), before)
 
+    def test_entrypoint_pin_names_the_shipped_mcp(self):
+        # After an intended swarm_mcp.py change, this failure states the digest to pin.
+        digest = hashlib.sha256((ROOT / 'skills/swarm/scripts/swarm_mcp.py').read_bytes()).hexdigest()
+        pin = (ROOT / 'skills/swarm/scripts/swarm_desktop.py').read_text(encoding='utf-8').splitlines()[8]
+        self.assertEqual(pin, f'MCP_SHA256 = {digest!r}')
+
     def test_packaged_entrypoint_rejects_changed_mcp_before_loading_it(self):
         script = ROOT / 'skills/swarm/scripts/swarm_desktop.py'
         mcp = ROOT / 'skills/swarm/scripts/swarm_mcp.py'
